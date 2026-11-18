@@ -8,10 +8,9 @@
   const bMarker = document.getElementById("b-marker");
   const swap = document.getElementById("pause-swap");
   swap.innerHTML = mic.icon("pause", "a") + mic.icon("play", "b");
-  document.addEventListener("DOMContentLoaded", () => mic.applyIcons());
   mic.applyIcons();
 
-  const meters = { mic: mic.meter(document.getElementById("m-mic")), sys: mic.meter(document.getElementById("m-sys")) };
+  const meters = { mic: mic.wave(document.getElementById("m-mic"), { bar: 2, gap: 2, min: 1.5, fade: 0.2 }), sys: mic.wave(document.getElementById("m-sys"), { bar: 2, gap: 2, min: 1.5, fade: 0.2 }) };
 
   const S = { elapsed: 0, since: performance.now(), paused: false, running: false };
   let tickTimer = 0;
@@ -21,9 +20,9 @@
   function stopLoop() { clearInterval(tickTimer); tickTimer = 0; }
 
   const poll = mic.pollLevels((m, s) => {
-    if (S.paused) { meters.mic.set(0); meters.sys.set(0); return; }
-    meters.mic.set(mic.levelToUi(m));
-    meters.sys.set(mic.levelToUi(s));
+    if (S.paused) { meters.mic.push(0); meters.sys.push(0); return; }
+    meters.mic.push(mic.levelToUi(m));
+    meters.sys.push(mic.levelToUi(s));
   });
 
   let leaveTimer = 0;
@@ -86,7 +85,7 @@
     setProvisional(p) { el.dataset.provisional = String(!!p); },
     stop() { S.running = false; stopLoop(); poll.stop(); meters.mic.reset(); meters.sys.reset(); },
     /** for screenshots / standalone */
-    setLevels(m, s) { meters.mic.raw(mic.levelToUi(m)); meters.sys.raw(mic.levelToUi(s)); },
+    setLevels(m, s) { meters.mic.fill(mic.levelToUi(m)); meters.sys.fill(mic.levelToUi(s)); },
     setHover,
   };
 

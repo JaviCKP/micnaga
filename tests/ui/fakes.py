@@ -61,6 +61,10 @@ class FakeWin32(winapi.Win32):
         self.dwm.append((hwnd, attr, value))
         return self.dwm_ok
 
+    def extend_frame(self, hwnd: int) -> bool:
+        self.calls.append(("extend_frame", (hwnd,)))
+        return True
+
     def client_area_animation(self) -> bool:
         return self.animation
 

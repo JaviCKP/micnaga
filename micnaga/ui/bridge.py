@@ -76,6 +76,8 @@ class SurfaceController(Protocol):
 
     def handle_popup_activate(self) -> None: ...
 
+    def popup_state(self) -> dict[str, Any]: ...
+
     def handle_pill_hover(self, hovering: bool) -> None: ...
 
     def handle_pill_marker(self) -> None: ...
@@ -116,6 +118,11 @@ class PopupApi:
 
     def popup_activate(self) -> None:
         self._c.handle_popup_activate()
+
+    def popup_state(self) -> dict[str, Any]:
+        """``{"remaining_s", "total_s", "paused"}``: la cuenta atras autoritativa es la del
+        vigilante (el JS solo la dibuja; ``paused`` = congelada por raton/pausa/senal)."""
+        return self._c.popup_state()
 
 
 class PillApi:
@@ -496,7 +503,9 @@ class WizardApi:
         levels: LevelsProvider,
         callbacks: UiCallbacks,
         play_test: Callable[[], None] | None = None,
+        auto_finish: bool = False,
     ) -> None:
+        self._auto_finish = auto_finish
         self._download = download_models
         self._levels = levels
         self._cb = callbacks
@@ -535,6 +544,11 @@ class WizardApi:
             self._state = "failed" if bad else "done"
             if bad:
                 self._error = bad[0].message or bad[0].name
+            finished = self._state == "done"
+        if finished and self._auto_finish:
+            # Sin decisiones: terminada la descarga se cierra el asistente y la app pasa a la
+            # bandeja (equivale a pulsar «Terminar»).
+            self.finish()
 
     def _on_progress(self, ev: ModelProgress) -> None:
         with self._lock:

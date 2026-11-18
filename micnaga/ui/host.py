@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Callable
@@ -49,15 +50,17 @@ from micnaga.ui.contracts import (
 )
 from micnaga.ui.icons import ICO_PATH
 from micnaga.ui.media import LocalServer
-from micnaga.ui.toast import ToastNotifier
+from micnaga.ui.toast import ToastNotifier, default_aumid
 from micnaga.ui.tray import Tray
 from micnaga.ui.windows import PywebviewFactory, UiWindow, WindowFactory, WindowSpec
 
 log = logging.getLogger(__name__)
 
 FLY_SECONDS = 0.4
+PILL_FLUSH_S = 2.0
 THEME_POLL_S = 5.0
-_BG = {"light": "#f4f3f1", "dark": "#1b1b1d"}
+_BG = {"light": "#eceef3", "dark": "#050507"}
+ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
 
 
 class FileConfigStore:
@@ -107,6 +110,7 @@ class UiHost:
         play: Callable[[bytes], None] | None = None,
         tray: bool = True,
         folder_opener: Callable[[Path], None] | None = None,
+        acrylic: bool | None = None,
     ) -> None:
         self._store: ConfigStore = config_store or FileConfigStore()
         self._config: Config = config if config is not None else self._store.load()
@@ -123,12 +127,18 @@ class UiHost:
         self._factory: WindowFactory = factory or PywebviewFactory(self._server, self._w32)
         self._db_factory = db_factory or (lambda: open_database(self._config))
         self._backdrop = backdrop
+        self._acrylic_pref = acrylic
+        self._acrylic = False
+        """Acrilico real de DWM activo en popup y pastilla (decidido en ``_bootstrap``)."""
         self._spawn = spawn or _spawn_thread
         self._play = play
         self._want_tray = tray
         self._folder_opener = folder_opener
         self._toast = ToastNotifier(
-            self._open_from_toast, language=self._config.ui.language, toaster=toaster
+            self._open_from_toast,
+            language=self._config.ui.language,
+            aumid=default_aumid(),
+            toaster=toaster,
         )
 
         self._lock = threading.RLock()
@@ -148,6 +158,9 @@ class UiHost:
         self._popup_mon: winapi.MonitorInfo | None = None
         self._popup_shown_at = 0.0
         self._popup_on_timeout = "provisional"
+        self._popup_total_s = 15.0
+        self._popup_state_provider: Callable[[], tuple[float, bool] | None] | None = None
+        self._pill_flush_timer: threading.Timer | None = None
         # pastilla
         self._pill = _Pill()
         self._pill_after_morph: tuple[float, bool] | None = None
@@ -191,6 +204,8 @@ class UiHost:
                 win.wait_loaded(15.0)
                 if win.hwnd:
                     winapi.apply_no_activate(win.hwnd, self._w32)
+                    win.make_transparent()
+        self._setup_acrylic()
         if self._want_tray:
             self._tray = Tray(self._tray_callbacks(), language=self._config.ui.language)
             self._tray.start()
@@ -201,9 +216,39 @@ class UiHost:
             except Exception:
                 log.exception("on_ready failed")
 
+    def _want_acrylic(self) -> bool:
+        if self._acrylic_pref is not None:
+            return self._acrylic_pref
+        env = os.environ.get(ENV_ACRYLIC, "").strip().lower()
+        if env in ("0", "false", "no", "off"):
+            return False
+        return winapi.acrylic_supported(self._w32)
+
+    def _setup_acrylic(self) -> None:
+        """Cristal real (DWM) detras de popup y pastilla; si no, queda el cristal de la pagina."""
+        self._acrylic = False
+        if not self._want_acrylic():
+            return
+        applied = []
+        for win, dark in ((self._popup, self._theme() == "dark"), (self._pillwin, True)):
+            if win is not None and win.hwnd:
+                applied.append(winapi.set_backdrop(win.hwnd, "acrylic", dark=dark, api=self._w32))
+        self._acrylic = bool(applied) and all(applied)
+        if self._acrylic:
+            for win in (self._popup, self._pillwin):
+                if win is not None:
+                    win.run_js("window.mic && mic.setBackdrop('acrylic')")
+        else:
+            log.info("acrylic backdrop unavailable; using the in-page glass")
+
+    @property
+    def acrylic(self) -> bool:
+        return self._acrylic
+
     def _create_overlays(self) -> None:
+        popup_w, popup_h = winapi.POPUP_SIZE
         self._popup = self._factory.create(
-            self._overlay_spec("popup", "popup.html", "Micnaga", 400, 232, PopupApi(self))
+            self._overlay_spec("popup", "popup.html", "Micnaga", popup_w, popup_h, PopupApi(self))
         )
         self._pillwin = self._factory.create(
             self._overlay_spec("pill", "pill.html", "Micnaga ", 200, 40, PillApi(self))
@@ -255,6 +300,8 @@ class UiHost:
         self._pushed_theme = theme
         motion = "true" if winapi.animations_enabled(self._w32) else "false"
         script = f"window.mic && (mic.setTheme({json.dumps(theme)}), mic.setMotion({motion}))"
+        if self._acrylic and self._popup is not None and self._popup.hwnd:
+            winapi.set_backdrop(self._popup.hwnd, "acrylic", dark=theme == "dark", api=self._w32)
         with self._lock:
             wins = [
                 *self._windows.values(),
@@ -288,6 +335,36 @@ class UiHost:
     def set_levels_provider(self, provider: LevelsProvider) -> None:
         self._levels = provider
 
+    def set_popup_state_provider(
+        self, provider: Callable[[], tuple[float, bool] | None] | None
+    ) -> None:
+        """``provider() -> (segundos restantes, congelada)`` o ``None`` sin popup.
+
+        La cuenta atras del popup es UNA, la del vigilante: la UI solo la pinta (``popup_state``).
+        """
+        self._popup_state_provider = provider
+
+    def popup_state(self) -> dict[str, Any]:
+        """Lo que el JS del popup consulta para dibujar la barra (``PopupApi.popup_state``)."""
+        total = self._popup_total_s
+        provider = self._popup_state_provider
+        value = provider() if provider is not None else None
+        authoritative = provider is not None
+        if value is None:
+            return {
+                "remaining_s": total,
+                "total_s": total,
+                "paused": False,
+                "authoritative": authoritative,
+            }
+        remaining, frozen = value
+        return {
+            "remaining_s": max(0.0, float(remaining)),
+            "total_s": total,
+            "paused": bool(frozen),
+            "authoritative": authoritative,
+        }
+
     # ================================================================= popup
 
     def show_popup(
@@ -298,18 +375,24 @@ class UiHost:
         *,
         timeout_s: float | None = None,
         on_timeout: str | None = None,
+        countdown_total_s: float | None = None,
     ) -> None:
-        """Muestra «¿Estas en una reu?» en el monitor del navegador (``monitor_hint``)."""
+        """Muestra «¿Estas en una reu?» en el monitor del navegador (``monitor_hint``).
+
+        ``timeout_s`` es la cuenta atras *propia* del JS; con vigilante se pasa un valor enorme y
+        la barra se dibuja con ``popup_state()`` (``countdown_total_s`` = total real del vigilante).
+        """
         win = self._popup
         if win is None:
             raise RuntimeError("UiHost.run() has not created the windows yet")
         cfg = self._config
         mon = self._w32.monitor_info(monitor_hint)
         rect = winapi.popup_rect(mon)
+        timeout_value = timeout_s if timeout_s is not None else cfg.detection.popup_timeout_s
         payload = {
             "title": title,
             "code": code or "",
-            "timeoutS": timeout_s if timeout_s is not None else cfg.detection.popup_timeout_s,
+            "timeoutS": timeout_value,
             "onTimeout": on_timeout or cfg.detection.on_timeout,
             "remindNotice": cfg.privacy.remind_notice,
         }
@@ -318,6 +401,9 @@ class UiHost:
             self._popup_rect, self._popup_mon = rect, mon
             self._popup_shown_at = time.monotonic()
             self._popup_on_timeout = str(payload["onTimeout"])
+            self._popup_total_s = float(
+                countdown_total_s if countdown_total_s is not None else timeout_value
+            )
             self._pill_after_morph = None
         win.place(rect)
         win.run_js(f"mic.setMotion({'true' if winapi.animations_enabled(self._w32) else 'false'});")
@@ -336,6 +422,33 @@ class UiHost:
         win.run_js("micnaga.popup.end()")
         # red de seguridad: si el JS no contesta, se oculta igualmente
         threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
+
+    def expire_popup(self) -> None:
+        """El vigilante dio por agotado el tiempo: el popup se convierte en pastilla (o se va).
+
+        Pide al JS ``micnaga.popup.expire()`` (si existe); si en 0,8 s el popup sigue como
+        estaba, lo resuelve aqui (vuelo directo a la pastilla o desvanecido).
+        """
+        win = self._popup
+        with self._lock:
+            if win is None or self._popup_state != "showing":
+                return
+        provisional = self._popup_on_timeout != "discard"
+        if provisional:
+            self._pill.provisional = True
+        win.run_js(
+            "window.micnaga && micnaga.popup && micnaga.popup.expire && micnaga.popup.expire()"
+        )
+        threading.Timer(0.8, lambda: self._force_expire(provisional)).start()
+
+    def _force_expire(self, provisional: bool) -> None:
+        with self._lock:
+            if self._popup_state != "showing":
+                return
+        if provisional:
+            self.handle_popup_morph(True)
+        else:
+            self.handle_popup_closed("leaving")
 
     def accept_popup(self) -> None:
         """Como pulsar «Grabar» (para atajos globales)."""
@@ -382,6 +495,12 @@ class UiHost:
         with self._lock:
             self._popup_state = "morphing"
             self._pill.provisional = provisional
+            pill_up = self._pill.visible
+        if pill_up:
+            # Ruta generica: la pastilla ya estaba; no hay nada a donde volar.
+            self.set_pill_provisional(provisional)
+            self._spawn(lambda: self.handle_popup_closed("morphed"))
+            return
         self._spawn(self._fly_to_pill)
 
     def handle_popup_closed(self, kind: str) -> None:
@@ -404,8 +523,13 @@ class UiHost:
         if win is None or start is None or mon is None:
             return
         target = self._pill_target(mon)
-        # la tarjeta se encoge hacia arriba-centro de la ventana (CSS): se alinea con la pastilla
-        end = (target[0] - (start[2] - target[2]) // 2, target[1], start[2], start[3])
+        if self._acrylic:
+            # el cristal es la ventana: hay que animar tambien el TAMANO (el CSS solo funde el
+            # contenido) hasta el rectangulo exacto de la pastilla
+            end = target
+        else:
+            # la tarjeta se encoge hacia arriba-centro de la ventana (CSS): se alinea con ella
+            end = (target[0] - (start[2] - target[2]) // 2, target[1], start[2], start[3])
         duration = FLY_SECONDS if winapi.animations_enabled(self._w32) else 0.0
         if win.hwnd:
             winapi.animate_rect(win.hwnd, start, end, duration, self._w32)
@@ -427,15 +551,42 @@ class UiHost:
     ) -> None:
         """Muestra la pastilla «Grabando» (si el popup vuela hacia ella, espera al aterrizaje)."""
         with self._lock:
-            if self._popup_state == "morphing":
-                self._pill_after_morph = (elapsed_s, provisional)
-                return
+            if self._pill.visible:
+                # ya esta (ruta generica, o aviso repetido): solo se actualiza, sin reiniciar
+                update = True
+            else:
+                update = False
+                if self._popup_state in ("showing", "morphing"):
+                    # el popup aterrizara en la pastilla: se espera al vuelo (con red de seguridad)
+                    self._pill_after_morph = (elapsed_s, provisional)
+                    self._arm_pill_flush()
+                    return
+        if update:
+            self.set_pill_provisional(provisional)
+            return
         mon = (
             self._w32.monitor_info(monitor_hint)
             if monitor_hint is not None or self._pill.monitor is None
             else self._pill.monitor
         )
         self._show_pill(elapsed_s, provisional, mon)
+
+    def _arm_pill_flush(self) -> None:
+        """Si el vuelo no llega (JS colgado), la pastilla sale igualmente: nunca se graba a
+        escondidas."""
+        timer = threading.Timer(PILL_FLUSH_S, self._flush_pending_pill)
+        timer.daemon = True
+        self._pill_flush_timer = timer
+        timer.start()
+
+    def _flush_pending_pill(self) -> None:
+        with self._lock:
+            pending = self._pill_after_morph
+            self._pill_after_morph = None
+            if pending is None or self._pill.visible:
+                return
+        mon = self._pill.monitor or self._popup_mon or self._w32.monitor_info(None)
+        self._show_pill(pending[0], pending[1], mon)
 
     def _pill_target(self, mon: winapi.MonitorInfo) -> Rect:
         pill = self._pill
@@ -706,11 +857,15 @@ class UiHost:
                 on_levels_monitor=self._cb.on_levels_monitor,
                 on_first_run_done=self._wizard_done,
             ),
+            auto_finish=True,
         )
         spec = self._normal_spec(
             "wizard", "wizard.html", t, 600, 680, api, resizable=False, min_size=(520, 560)
         )
         self._open_normal(spec)
+        # Primer arranque sin decisiones: la descarga empieza sola (el asistente solo muestra el
+        # progreso) y, al terminar, el propio WizardApi cierra el asistente (auto_finish).
+        api.start_download()
 
     def _wizard_done(self) -> None:
         self._cb.on_first_run_done()

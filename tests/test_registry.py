@@ -19,13 +19,14 @@ from micnaga.types import AudioArray, Turn, Word
 
 def test_names_match_spec() -> None:
     assert set(ASR_ENGINES.names()) == {"parakeet", "whisper"}
-    assert set(DIARIZERS.names()) == {"diarize", "pyannote"}
+    assert set(DIARIZERS.names()) == {"onnx", "diarize", "pyannote"}
     assert set(AEC_ENGINES.names()) == {"webrtc", "speex"}
 
 
 def test_targets_follow_the_convention() -> None:
     assert ASR_ENGINES.target("parakeet") == "micnaga.pipeline.engines.asr.parakeet:create"
     assert ASR_ENGINES.target("whisper") == "micnaga.pipeline.engines.asr.whisper:create"
+    assert DIARIZERS.target("onnx") == "micnaga.pipeline.engines.diar.onnx:create"
     assert DIARIZERS.target("diarize") == "micnaga.pipeline.engines.diar.diarize:create"
     assert DIARIZERS.target("pyannote") == "micnaga.pipeline.engines.diar.pyannote:create"
     assert AEC_ENGINES.target("webrtc") == "micnaga.pipeline.aec.webrtc:create"

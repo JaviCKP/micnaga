@@ -1,186 +1,130 @@
 /*
  * Micnaga — design tokens + base components (shared by every surface).
+ * Direction: docs/design/direction.md («glass over night»).
  *
- * Language (spec §10): Segoe UI Variable, 12 px corners, ONE soft shadow layer,
- * one accent (coral red = «grabar») over neutrals, light/dark following the system,
- * 180–240 ms motion on cubic-bezier(0.2, 0.8, 0.2, 1).
+ *  - Bitnaga identity: night ground, white ink, condensed uppercase display, violet for
+ *    focus / selection / brand. Coral red is reserved for «grabar», amber for private pause.
+ *  - Glass: layered translucency over a static ambient ground (normal windows) or a
+ *    near-opaque tinted shell (popup, pill: nothing in-page sits behind them to blur).
+ *  - Spec §10 motion: 180–240 ms on cubic-bezier(0.2, 0.8, 0.2, 1); off with Windows
+ *    «Efectos de animación» (data-motion="off") or prefers-reduced-motion.
  *
- * Theme resolution:  <html data-theme="light|dark">  wins (set from Windows'
- * AppsUseLightTheme or config ui.theme); otherwise prefers-color-scheme.
- * Motion:            <html data-motion="off"> (Windows «Animation effects» off) or
- * prefers-reduced-motion both zero every duration.
+ * Theme: <html data-theme="light|dark"> wins, otherwise the system. Colours are written once
+ * with light-dark(); an element can force a scheme with `color-scheme` (the pill is always dark).
  */
 
+@font-face {
+  font-family: "Barlow Semi Condensed";
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+  src: url("assets/fonts/barlow-semi-condensed-700.woff2") format("woff2");
+}
+
 :root {
-  color-scheme: light;
+  color-scheme: light dark;
 
-  /* neutrals — light */
-  --bg: #f4f3f1;
-  --surface: #ffffff;
-  --surface-2: #f8f7f5;
-  --surface-3: #efeeeb;
-  --hover: rgb(0 0 0 / 0.045);
-  --press: rgb(0 0 0 / 0.08);
-  --text: #1b1b1d;
-  --text-2: #55555d; /* 7.1:1 on surface */
-  --text-3: #6c6c76; /* 5.0:1 on surface, 4.6:1 on bg */
-  --line: rgb(0 0 0 / 0.09);
-  --line-strong: rgb(0 0 0 / 0.16);
-  --ring: rgb(0 0 0 / 0.1);
+  /* ---- ground ---------------------------------------------------------------------- */
+  --bg: light-dark(#eceef3, #050507);
+  --bg-2: light-dark(#e3e5ec, #0b0b10);
 
-  /* accent: coral red, reserved for «grabar» */
-  --accent: #d4363c; /* white text 4.8:1 */
-  --accent-hover: #bf2e34;
-  --accent-press: #a82930;
+  /* ---- ink (Bitnaga greys; AA on every glass level, see direction.md) --------------- */
+  --text: light-dark(#0b0b0f, #f4f4f7);
+  --text-2: light-dark(#454552, #b9b9c4);
+  --text-3: light-dark(#5f5f6d, #8c8c99);
+  --text-inv: light-dark(#f4f4f7, #0b0b0f);
+
+  /* ---- glass ----------------------------------------------------------------------- */
+  --glass: light-dark(rgb(255 255 255 / 0.58), rgb(255 255 255 / 0.045));
+  --glass-2: light-dark(rgb(255 255 255 / 0.78), rgb(255 255 255 / 0.075));
+  --glass-3: light-dark(rgb(255 255 255 / 0.92), rgb(255 255 255 / 0.11));
+  --glass-ring: light-dark(rgb(16 16 40 / 0.07), rgb(255 255 255 / 0.085));
+  --glass-ring-hi: light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.13));
+  --glass-blur: blur(28px) saturate(150%);
+  --hover: light-dark(rgb(16 16 40 / 0.05), rgb(255 255 255 / 0.065));
+  --press: light-dark(rgb(16 16 40 / 0.09), rgb(255 255 255 / 0.11));
+  --line: light-dark(rgb(16 16 40 / 0.08), rgb(255 255 255 / 0.08));
+  --line-strong: light-dark(rgb(16 16 40 / 0.16), rgb(255 255 255 / 0.16));
+  --ring: var(--glass-ring);
+  /* one soft drop + the inner top highlight + a hairline ring */
+  --shadow: light-dark(0 18px 40px -16px rgb(40 40 90 / 0.22), 0 24px 48px -20px rgb(0 0 0 / 0.7));
+  --shadow-sm: light-dark(0 1px 2px rgb(30 30 60 / 0.10), 0 1px 2px rgb(0 0 0 / 0.5));
+  --inner-hi: inset 0 1px 0 var(--glass-ring-hi);
+  --glass-edge: inset 0 0 0 1px var(--glass-ring), var(--inner-hi);
+
+  /* ---- brand + states -------------------------------------------------------------- */
+  --accent: light-dark(#6d34e0, #a78bfa);            /* focus, selection, progress, brand */
+  --accent-strong: light-dark(#5b21b6, #8b5cf6);
+  --accent-soft: light-dark(rgb(124 58 237 / 0.10), rgb(167 139 250 / 0.16));
   --accent-ink: #ffffff;
-  --accent-soft: rgb(212 54 60 / 0.1);
-  --rec-dot: #e5484d;
+  --brand-violet: #9d5cb5;                            /* the Bitnaga mark's own violet */
 
-  /* states */
-  --amber: #b25e00; /* text on surface: 4.7:1 */
-  --amber-dot: #f2a100;
-  --amber-soft: rgb(242 161 0 / 0.16);
-  --blue: #1b63d1;
-  --blue-soft: rgb(27 99 209 / 0.1);
-  --ok: #17803d;
-  --ok-soft: rgb(23 128 61 / 0.1);
-  --warn-soft: rgb(242 161 0 / 0.14);
+  --rec: light-dark(#d42f37, #ff5a60);                /* «grabar»: dot, stop, primary */
+  --rec-top: #e8464d;
+  --rec-bottom: #c42a31;                              /* white text >= 4.8:1 on the mid tone */
+  --rec-soft: light-dark(rgb(212 47 55 / 0.10), rgb(255 90 96 / 0.16));
+  --rec-dot: #ff4d55;
 
-  --mark: rgb(255 214 10 / 0.5);
+  --amber: light-dark(#a35600, #ffc560);
+  --amber-dot: #f5a524;
+  --amber-soft: light-dark(rgb(245 165 36 / 0.16), rgb(245 165 36 / 0.16));
+  --blue: light-dark(#1d5fd1, #7cb0ff);
+  --ok: light-dark(#13803d, #5ad893);
+  --ok-soft: light-dark(rgb(19 128 61 / 0.10), rgb(90 216 147 / 0.14));
+  --mark: light-dark(rgb(124 58 237 / 0.16), rgb(167 139 250 / 0.28));
   --mark-ink: inherit;
 
   /* meters */
-  --meter-track: rgb(0 0 0 / 0.07);
-  --meter-lo: #7a7a86;
+  --meter-track: light-dark(rgb(16 16 40 / 0.08), rgb(255 255 255 / 0.10));
+  --meter-lo: light-dark(#52525e, #d6d6de);
 
-  /* the single shadow layer */
-  --shadow: 0 8px 28px rgb(0 0 0 / 0.14);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.08);
-  --inner-hi: inset 0 1px 0 rgb(255 255 255 / 0.7);
-
-  /* shape */
-  --r: 12px;
-  --r-sm: 8px;
+  /* ---- shape ----------------------------------------------------------------------- */
+  --r-xl: 24px;   /* panels */
+  --r-lg: 18px;   /* cards */
+  --r: 12px;      /* controls */
+  --r-sm: 9px;
   --r-xs: 6px;
   --r-full: 999px;
 
-  /* type */
+  /* ---- type ------------------------------------------------------------------------ */
   --font: "Segoe UI Variable Text", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
-  --font-display: "Segoe UI Variable Display", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-ui: "Segoe UI Variable Small", "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --display: "Barlow Semi Condensed", "Bahnschrift SemiCondensed", "Bahnschrift", "Arial Narrow", sans-serif;
   --mono: "Cascadia Mono", "Cascadia Code", ui-monospace, Consolas, monospace;
+  --fs-micro: 11px;
+  --fs-meta: 12.5px;
+  --fs-body: 13.5px;
+  --fs-em: 15px;
+  --fs-d1: 20px;
+  --fs-d2: 28px;
+  --fs-d3: 40px;
+  --fs-d4: 60px;
 
-  /* motion */
-  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* ---- motion ---------------------------------------------------------------------- */
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);            /* spec §10 */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);          /* Bitnaga entrance curve */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
   --dur-fast: 180ms;
   --dur: 220ms;
   --dur-slow: 240ms;
   --dur-morph: 400ms;
+  --dur-enter: 520ms;
 }
-
-/* ---- dark -------------------------------------------------------------------------- */
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --bg: #1b1b1d;
-  --surface: #28282b;
-  --surface-2: #232326;
-  --surface-3: #323236;
-  --hover: rgb(255 255 255 / 0.06);
-  --press: rgb(255 255 255 / 0.1);
-  --text: #f3f3f4;
-  --text-2: #bcbcc4;
-  --text-3: #9b9ba5; /* 5.1:1 on surface */
-  --line: rgb(255 255 255 / 0.09);
-  --line-strong: rgb(255 255 255 / 0.18);
-  --ring: rgb(255 255 255 / 0.1);
-
-  --accent: #d4363c;
-  --accent-hover: #e0464b;
-  --accent-press: #bf2e34;
-  --accent-soft: rgb(255 90 95 / 0.16);
-  --rec-dot: #ff5a5f;
-
-  --amber: #f5b53d;
-  --amber-dot: #f5a524;
-  --amber-soft: rgb(245 165 36 / 0.18);
-  --blue: #6ea8ff;
-  --blue-soft: rgb(110 168 255 / 0.16);
-  --ok: #55d08a;
-  --ok-soft: rgb(85 208 138 / 0.14);
-  --warn-soft: rgb(245 165 36 / 0.16);
-
-  --mark: rgb(255 214 10 / 0.3);
-
-  --meter-track: rgb(255 255 255 / 0.1);
-  --meter-lo: #8e8e9a;
-
-  --shadow: 0 10px 32px rgb(0 0 0 / 0.5);
-  --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-  --inner-hi: inset 0 1px 0 rgb(255 255 255 / 0.06);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    color-scheme: dark;
-    --bg: #1b1b1d;
-    --surface: #28282b;
-    --surface-2: #232326;
-    --surface-3: #323236;
-    --hover: rgb(255 255 255 / 0.06);
-    --press: rgb(255 255 255 / 0.1);
-    --text: #f3f3f4;
-    --text-2: #bcbcc4;
-    --text-3: #9b9ba5;
-    --line: rgb(255 255 255 / 0.09);
-    --line-strong: rgb(255 255 255 / 0.18);
-    --ring: rgb(255 255 255 / 0.1);
-    --accent: #d4363c;
-    --accent-hover: #e0464b;
-    --accent-press: #bf2e34;
-    --accent-soft: rgb(255 90 95 / 0.16);
-    --rec-dot: #ff5a5f;
-    --amber: #f5b53d;
-    --amber-dot: #f5a524;
-    --amber-soft: rgb(245 165 36 / 0.18);
-    --blue: #6ea8ff;
-    --blue-soft: rgb(110 168 255 / 0.16);
-    --ok: #55d08a;
-    --ok-soft: rgb(85 208 138 / 0.14);
-    --warn-soft: rgb(245 165 36 / 0.16);
-    --mark: rgb(255 214 10 / 0.3);
-    --meter-track: rgb(255 255 255 / 0.1);
-    --meter-lo: #8e8e9a;
-    --shadow: 0 10px 32px rgb(0 0 0 / 0.5);
-    --shadow-sm: 0 1px 2px rgb(0 0 0 / 0.4);
-    --inner-hi: inset 0 1px 0 rgb(255 255 255 / 0.06);
-  }
-}
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
 
 /* ---- motion off -------------------------------------------------------------------- */
 :root[data-motion="off"] {
-  --dur-fast: 0.01ms;
-  --dur: 0.01ms;
-  --dur-slow: 0.01ms;
-  --dur-morph: 0.01ms;
+  --dur-fast: 0.01ms; --dur: 0.01ms; --dur-slow: 0.01ms; --dur-morph: 0.01ms; --dur-enter: 0.01ms;
 }
 @media (prefers-reduced-motion: reduce) {
-  :root {
-    --dur-fast: 0.01ms;
-    --dur: 0.01ms;
-    --dur-slow: 0.01ms;
-    --dur-morph: 0.01ms;
-  }
+  :root { --dur-fast: 0.01ms; --dur: 0.01ms; --dur-slow: 0.01ms; --dur-morph: 0.01ms; --dur-enter: 0.01ms; }
 }
-:root[data-motion="off"] *,
-:root[data-motion="off"] *::before,
-:root[data-motion="off"] *::after {
-  animation-duration: 0.01ms !important;
-  animation-iteration-count: 1 !important;
+:root[data-motion="off"] *, :root[data-motion="off"] *::before, :root[data-motion="off"] *::after {
+  animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-  }
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
 
 /* ---- base -------------------------------------------------------------------------- */
@@ -188,8 +132,8 @@
 html, body { margin: 0; height: 100%; }
 body {
   font-family: var(--font);
-  font-size: 14px;
-  line-height: 1.4;
+  font-size: var(--fs-body);
+  line-height: 1.45;
   color: var(--text);
   background: var(--bg);
   -webkit-font-smoothing: antialiased;
@@ -199,10 +143,9 @@ body {
   -webkit-user-select: none;
   overflow: hidden;
 }
-/* transparent surfaces (popup, pill) */
 body.transparent { background: transparent; }
 
-h1, h2, h3 { font-family: var(--font-display); margin: 0; font-weight: 600; text-wrap: balance; }
+h1, h2, h3 { margin: 0; font-weight: 600; text-wrap: balance; }
 p { margin: 0; text-wrap: pretty; }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: default; }
@@ -213,22 +156,61 @@ button { cursor: default; }
 }
 [hidden] { display: none !important; }
 .selectable, .selectable * { user-select: text; -webkit-user-select: text; }
+::selection { background: var(--accent-soft); color: inherit; }
+
+/* Bitnaga display: condensed, uppercase, tight */
+.display {
+  font-family: var(--display); font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.005em; line-height: 0.94;
+}
+.caps {
+  font-size: var(--fs-micro); font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-3);
+}
 
 :focus { outline: none; }
-:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-  border-radius: inherit;
-}
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* thin, quiet scrollbars */
 * { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
-  background: var(--line-strong); border-radius: 8px; border: 3px solid transparent;
-  background-clip: content-box;
+  background: var(--line-strong); border-radius: 8px; border: 3px solid transparent; background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; border: 3px solid transparent; }
+
+/* ---- ambient ground + glass ------------------------------------------------------------
+   The ground is painted once (static gradients + a grain tile): nothing animates behind the
+   glass, so backdrop-filter is composited once and never repaints. */
+.ambient {
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(60% 70% at 8% 0%, light-dark(rgb(167 139 250 / 0.42), rgb(124 58 237 / 0.34)), transparent 70%),
+    radial-gradient(50% 60% at 100% 18%, light-dark(rgb(147 197 253 / 0.36), rgb(30 27 75 / 0.85)), transparent 72%),
+    radial-gradient(55% 55% at 92% 100%, light-dark(rgb(254 202 202 / 0.55), rgb(255 90 96 / 0.13)), transparent 70%),
+    radial-gradient(40% 50% at 30% 100%, light-dark(rgb(196 181 253 / 0.30), rgb(76 29 149 / 0.28)), transparent 70%),
+    var(--bg);
+}
+.ambient::after {
+  content: ""; position: absolute; inset: 0; opacity: 0.42; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .55 0'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+/* Mica/Acrylic at the window level (Python sets data-backdrop): the ground turns into a tint */
+:root[data-backdrop="mica"] body { background: transparent; }
+:root[data-backdrop="mica"] .ambient { opacity: 0.45; background-color: transparent; }
+
+.glass {
+  background:
+    linear-gradient(180deg, var(--glass-2), var(--glass) 60%);
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-edge), var(--shadow);
+  border-radius: var(--r-xl);
+}
+.glass-flat {
+  background: var(--glass);
+  box-shadow: var(--glass-edge);
+  border-radius: var(--r-lg);
+}
 
 /* ---- icons ------------------------------------------------------------------------- */
 .ico {
@@ -236,140 +218,180 @@ button { cursor: default; }
   stroke: currentColor; fill: none; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round;
 }
 .ico.lg { width: 20px; height: 20px; }
+.ico.xl { width: 26px; height: 26px; stroke-width: 1.5; }
 .ico.fill { fill: currentColor; stroke: none; }
 
-/* ---- buttons ----------------------------------------------------------------------- */
+/* ---- keycaps ------------------------------------------------------------------------ */
+kbd, .keycap {
+  display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px;
+  font: 600 10.5px/1 var(--font-ui); letter-spacing: 0.02em;
+  border-radius: 6px; color: inherit;
+  background: light-dark(rgb(16 16 40 / 0.06), rgb(255 255 255 / 0.09));
+  box-shadow: inset 0 -1px 0 light-dark(rgb(16 16 40 / 0.10), rgb(0 0 0 / 0.35)), inset 0 0 0 1px var(--line);
+}
+
+/* ---- buttons ------------------------------------------------------------------------
+   Pills everywhere (Bitnaga). Primary = ink on night (white pill / black pill in light).
+   .btn-rec is the only red control: «grabar». Press = scale(.96). */
 .btn {
   position: relative;
   display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  min-height: 36px; padding: 0 16px;
-  border: 0; border-radius: var(--r-sm);
-  background: var(--surface-3); color: var(--text);
-  font-weight: 600; font-size: 13.5px; white-space: nowrap;
-  box-shadow: 0 0 0 1px var(--line);
-  transition: background-color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease),
-    box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  min-height: 38px; padding: 0 18px;
+  border: 0; border-radius: var(--r-full);
+  background: var(--glass-2); color: var(--text);
+  font-family: var(--font-ui); font-weight: 600; font-size: 13px; white-space: nowrap;
+  box-shadow: var(--glass-edge);
+  transition: background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease),
+    box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), opacity var(--dur-fast) var(--ease);
 }
-.btn:hover { background: color-mix(in srgb, var(--surface-3) 86%, var(--text)); }
-.btn:active { scale: 0.96; }
-.btn:disabled { opacity: 0.45; pointer-events: none; }
+.btn:hover { background: var(--glass-3); }
+.btn:active { transform: scale(0.96); }
+.btn:disabled { opacity: 0.4; pointer-events: none; }
+.btn .ico { width: 15px; height: 15px; }
 .btn-primary {
-  background: var(--accent); color: var(--accent-ink);
-  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.18), 0 1px 2px rgb(0 0 0 / 0.2);
+  background: var(--text); color: var(--text-inv);
+  box-shadow: inset 0 1px 0 light-dark(rgb(255 255 255 / 0.18), rgb(255 255 255 / 0.9)), var(--shadow-sm);
 }
-.btn-primary:hover { background: var(--accent-hover); }
-.btn-primary:active { background: var(--accent-press); }
+.btn-primary:hover { background: light-dark(#000, #fff); box-shadow: 0 6px 20px -6px light-dark(rgb(0 0 0 / 0.35), rgb(255 255 255 / 0.35)); }
+.btn-primary:focus-visible { outline-color: var(--accent); }
+.btn-rec {
+  color: #fff;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgb(255 255 255 / 0.22), transparent 55%),
+    linear-gradient(180deg, var(--rec-top), var(--rec-bottom));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.32), inset 0 -1px 0 rgb(0 0 0 / 0.18),
+    0 6px 18px -6px rgb(212 47 55 / 0.65);
+}
+.btn-rec:hover {
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgb(255 255 255 / 0.3), transparent 55%),
+    linear-gradient(180deg, #ef5057, #cc2f36);
+}
+.btn-rec kbd { background: rgb(255 255 255 / 0.2); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.18); color: #fff; }
 .btn-ghost { background: transparent; box-shadow: none; color: var(--text-2); }
 .btn-ghost:hover { background: var(--hover); color: var(--text); }
-.btn-danger { color: var(--accent); background: transparent; box-shadow: 0 0 0 1px var(--accent-soft); }
-.btn-danger:hover { background: var(--accent-soft); }
-.btn-sm { min-height: 30px; padding: 0 12px; font-size: 12.5px; }
-.btn kbd {
-  font: 600 10.5px/1 var(--font); letter-spacing: 0.02em;
-  padding: 4px 7px; border-radius: 5px;
-  background: rgb(0 0 0 / 0.08); color: inherit; opacity: 0.8;
-}
-.btn-primary kbd { background: rgb(255 255 255 / 0.2); }
-:root[data-theme="dark"] .btn:not(.btn-primary) kbd { background: rgb(255 255 255 / 0.1); }
+.btn-danger { color: var(--rec); background: transparent; box-shadow: inset 0 0 0 1px var(--rec-soft); }
+.btn-danger:hover { background: var(--rec-soft); }
+.btn-sm { min-height: 30px; padding: 0 13px; font-size: 12.5px; }
 
 .icon-btn {
   position: relative;
-  width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-sm);
+  width: 32px; height: 32px; padding: 0; border: 0; border-radius: var(--r-full);
   display: inline-grid; place-items: center;
   background: transparent; color: var(--text-2);
   transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease),
-    scale var(--dur-fast) var(--ease);
+    transform var(--dur-fast) var(--ease);
 }
-.icon-btn::after { content: ""; position: absolute; inset: -4px; } /* 40 px hit area */
+.icon-btn::after { content: ""; position: absolute; inset: -4px; border-radius: inherit; } /* 40 px hit area */
 .icon-btn:hover { background: var(--hover); color: var(--text); }
-.icon-btn:active { scale: 0.96; background: var(--press); }
+.icon-btn:active { transform: scale(0.94); background: var(--press); }
 .icon-btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
+
+/* ---- tooltips: [data-tip] shows on hover / keyboard focus (no title-attribute delay) ---- */
+[data-tip] { position: relative; }
+[data-tip]::before {
+  content: attr(data-tip);
+  position: absolute; z-index: 20; left: 50%; bottom: calc(100% + 8px);
+  width: max-content; max-width: 260px; padding: 6px 10px; border-radius: 9px;
+  font: 500 12px/1.35 var(--font); letter-spacing: 0; text-transform: none; text-align: left; white-space: normal;
+  color: var(--text); background: light-dark(rgb(255 255 255 / 0.97), rgb(30 30 38 / 0.97));
+  box-shadow: inset 0 0 0 1px var(--glass-ring), var(--shadow);
+  opacity: 0; transform: translate(-50%, 4px); pointer-events: none;
+  transition: opacity 120ms var(--ease), transform 120ms var(--ease);
+}
+[data-tip]:hover::before, [data-tip]:focus-visible::before {
+  opacity: 1; transform: translate(-50%, 0); transition-delay: 350ms;
+}
+[data-tip][data-tip-pos="below"]::before { bottom: auto; top: calc(100% + 8px); }
+[data-tip][data-tip-pos="left"]::before { left: auto; right: 0; transform: translate(0, 4px); }
+[data-tip][data-tip-pos="left"]:hover::before, [data-tip][data-tip-pos="left"]:focus-visible::before { transform: none; }
 
 /* ---- fields ------------------------------------------------------------------------ */
 .field-input, .field-select {
-  height: 34px; padding: 0 10px; min-width: 0;
-  background: var(--surface); color: var(--text);
-  border: 0; border-radius: var(--r-sm);
-  box-shadow: 0 0 0 1px var(--line-strong);
-  transition: box-shadow var(--dur-fast) var(--ease);
+  height: 34px; padding: 0 12px; min-width: 0;
+  background: var(--glass-2); color: var(--text);
+  border: 0; border-radius: var(--r);
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  transition: box-shadow var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease);
   user-select: text; -webkit-user-select: text;
 }
-.field-input:hover, .field-select:hover { box-shadow: 0 0 0 1px var(--text-3); }
+.field-input:hover, .field-select:hover { box-shadow: inset 0 0 0 1px var(--text-3); }
 .field-input:focus-visible, .field-select:focus-visible, textarea:focus-visible {
-  outline: none; box-shadow: 0 0 0 2px var(--accent);
+  outline: none; box-shadow: inset 0 0 0 1.5px var(--accent), 0 0 0 4px var(--accent-soft);
 }
-.field-input.num { text-align: right; width: 96px; }
-.field-select { padding-right: 28px; appearance: none;
+.field-input.num { text-align: right; width: 84px; font-variant-numeric: tabular-nums; }
+.field-select { padding-right: 30px; appearance: none;
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
-  background-repeat: no-repeat; background-position: right 10px center;
+  background-repeat: no-repeat; background-position: right 11px center;
 }
-.field-select option { background: var(--surface); color: var(--text); }
+.field-select option { background: light-dark(#fff, #16161c); color: var(--text); }
+textarea.field-input { height: auto; padding: 9px 12px; resize: vertical; font-family: var(--mono); font-size: 12.5px; line-height: 1.55; }
 
-/* toggle switch */
+/* toggle switch: violet when on (it is a setting, not a recording) */
 .switch { position: relative; width: 40px; height: 24px; flex: none; display: inline-block; }
 .switch input { position: absolute; inset: 0; opacity: 0; margin: 0; width: 100%; height: 100%; cursor: default; z-index: 1; }
 .switch .track {
   position: absolute; inset: 0; border-radius: var(--r-full);
-  background: var(--surface-3); box-shadow: inset 0 0 0 1px var(--line-strong);
+  background: var(--meter-track); box-shadow: inset 0 0 0 1px var(--line);
   transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
 }
 .switch .thumb {
-  position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 50%;
-  background: var(--text-2); box-shadow: 0 1px 2px rgb(0 0 0 / 0.25);
+  position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; border-radius: 9px;
+  background: light-dark(#fff, #d8d8e0); box-shadow: 0 1px 3px rgb(0 0 0 / 0.3);
   transition: translate var(--dur) var(--ease), background-color var(--dur) var(--ease), width var(--dur-fast) var(--ease);
 }
-.switch input:checked ~ .track { background: var(--accent); box-shadow: none; }
+.switch input:checked ~ .track { background: var(--accent-strong); box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.2); }
 .switch input:checked ~ .thumb { translate: 16px 0; background: #fff; }
-.switch input:active ~ .thumb { width: 21px; }
-.switch input:checked:active ~ .thumb { translate: 13px 0; }
+.switch input:active ~ .thumb { width: 22px; }
+.switch input:checked:active ~ .thumb { translate: 12px 0; }
 .switch input:focus-visible ~ .track { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 /* segmented control */
-.seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: var(--surface-3); }
+.seg { display: inline-flex; padding: 3px; gap: 2px; border-radius: var(--r-full); background: var(--meter-track); }
 .seg button {
-  border: 0; background: transparent; padding: 5px 12px; border-radius: 8px; color: var(--text-2);
-  font-weight: 600; font-size: 12.5px;
+  border: 0; background: transparent; padding: 4px 11px; border-radius: var(--r-full); color: var(--text-2);
+  font: 600 12px/1.4 var(--font-ui); font-variant-numeric: tabular-nums;
   transition: background-color var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
 }
+.seg button:hover { color: var(--text); }
 .seg button[aria-checked="true"], .seg button[aria-pressed="true"] {
-  background: var(--surface); color: var(--text); box-shadow: var(--shadow-sm), 0 0 0 1px var(--line);
+  background: var(--glass-3); color: var(--text); box-shadow: var(--shadow-sm), inset 0 0 0 1px var(--glass-ring);
 }
 
 /* chips + tags */
 .chip {
-  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 12px;
+  display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 11px;
   border-radius: var(--r-full); font-size: 12px; font-weight: 600;
-  background: var(--surface-3); color: var(--text-2);
+  background: var(--glass-2); color: var(--text-2); box-shadow: var(--glass-edge);
 }
 .tag-mono {
   font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.01em;
-  padding: 3px 10px; border-radius: 6px; background: var(--surface-3); color: var(--text-2);
+  padding: 2px 8px; border-radius: 6px; background: var(--meter-track); color: var(--text-2);
 }
 
 /* progress */
-.progress { height: 6px; border-radius: var(--r-full); background: var(--meter-track); overflow: hidden; }
+.progress { height: 4px; border-radius: var(--r-full); background: var(--meter-track); overflow: hidden; }
 .progress > i {
   display: block; height: 100%; width: 100%; transform-origin: left center;
   transform: scaleX(var(--p, 0)); background: var(--accent); border-radius: inherit;
   transition: transform 260ms var(--ease);
 }
 
-/* level meter: a segmented bar, fill is clipped (cheap) rather than rescaled */
+/* level meter (bar): fill is clipped (cheap) rather than rescaled */
 .meter {
   --lv: 0;
-  position: relative; height: 6px; border-radius: 3px; overflow: hidden;
-  background: var(--meter-track);
-  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 5px);
-  mask-image: repeating-linear-gradient(90deg, #000 0 3px, transparent 3px 5px);
+  position: relative; height: 6px; border-radius: 3px; overflow: hidden; background: var(--meter-track);
 }
 .meter > i {
-  position: absolute; inset: 0;
-  background: linear-gradient(90deg, var(--meter-lo) 0 72%, var(--accent) 92%);
+  position: absolute; inset: 0; border-radius: inherit;
+  background: linear-gradient(90deg, var(--meter-lo) 0 78%, var(--rec-dot) 96%);
   clip-path: inset(0 calc((1 - var(--lv)) * 100%) 0 0);
 }
-.meter.idle > i { opacity: 0.5; }
 
-/* the dot: pulses every 1.2 s */
+/* live waveform (mic.wave): a canvas painted at 20 fps in currentColor */
+.wave { display: block; width: 100%; height: 24px; color: var(--meter-lo); }
+
+/* the dot: pulses every 1.2 s (spec §6) */
 .rec-dot {
   width: 10px; height: 10px; border-radius: 50%; background: var(--rec-dot); flex: none;
   position: relative;
@@ -383,23 +405,16 @@ button { cursor: default; }
   70%, 100% { transform: scale(2.6); opacity: 0; }
 }
 
-/* layered backdrop opt-in (Mica/acrylic: Python sets data-backdrop="mica") */
-:root[data-backdrop="mica"] body { background: transparent; }
+/* the brand lockup (Bitnaga logo files, one per ground) */
+.brand { display: inline-block; line-height: 0; }
+.brand img { height: 100%; width: auto; }
+.brand .on-light { display: none; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) .brand .on-light { display: inline; } :root:not([data-theme="dark"]) .brand .on-dark { display: none; } }
+:root[data-theme="light"] .brand .on-light { display: inline; }
+:root[data-theme="light"] .brand .on-dark { display: none; }
 
-/* demo/screenshot stage: fake page behind transparent popups */
-body.stage-demo {
-  background:
-    radial-gradient(1200px 600px at 20% 0%, rgb(255 255 255 / 0.06), transparent 60%),
-    linear-gradient(180deg, #e9e8ea, #d8d7da);
-}
-:root[data-theme="dark"] body.stage-demo {
-  background:
-    radial-gradient(1200px 600px at 20% 0%, rgb(255 255 255 / 0.04), transparent 60%),
-    linear-gradient(180deg, #2a2b30, #202126);
-}
-
-/* the primary button sits on the accent colour: its focus ring must contrast with it */
-.btn-primary:focus-visible { outline-color: var(--text); }
+/* demo/screenshot stage: a fake page behind the transparent overlays */
+body.stage-demo { background: light-dark(#f1f3f4, #202124); }
 
 /* headings that receive programmatic focus (screen readers) get no ring */
-h1[tabindex="-1"]:focus, h1[tabindex="-1"]:focus-visible { outline: none; }
+h1[tabindex="-1"]:focus, h1[tabindex="-1"]:focus-visible, h2[tabindex="-1"]:focus-visible { outline: none; }

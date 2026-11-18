@@ -132,6 +132,21 @@ def get_run_command(
     return (backend or default_backend()).get(name)
 
 
+def ensure_run_at_login(
+    *, backend: RegistryBackend | None = None, command: str | None = None, name: str = VALUE_NAME
+) -> bool:
+    """Garantiza que el valor ``Run`` existe y apunta al ejecutable actual (p. ej. tras mover o
+    actualizar la instalacion). ``True`` si hubo que escribirlo. NO decide si debe estar activo:
+    quien llama comprueba antes ``startup.run_at_login`` (la config manda; el instalador escribe
+    el mismo valor ``Micnaga`` con el mismo comando)."""
+    be = backend or default_backend()
+    wanted = command or default_command()
+    if be.get(name) == wanted:
+        return False
+    be.set(name, wanted)
+    return True
+
+
 def set_run_at_login(
     enabled: bool,
     *,

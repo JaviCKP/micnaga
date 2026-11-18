@@ -76,6 +76,11 @@ class UiWindow(Protocol):
 
     def pick_folder(self, current: str) -> str | None: ...
 
+    def make_transparent(self) -> bool:
+        """Transparencia real de una ventana sin marco (popup/pastilla): formulario negro +
+        marco DWM extendido al cliente. ``False`` si no se pudo."""
+        ...
+
 
 class WindowFactory(Protocol):
     def create(self, spec: WindowSpec) -> UiWindow: ...
@@ -146,6 +151,32 @@ class PywebviewWindow:
     def set_title(self, title: str) -> None:
         with contextlib.suppress(Exception):
             self._win.set_title(title)
+
+    def make_transparent(self) -> bool:  # pragma: no cover - necesita una ventana real
+        """``BackColor = Black`` en el formulario WinForms + ``DwmExtendFrameIntoClientArea``.
+
+        Sin esto pywebview deja el recuadro gris del formulario detras del WebView2 transparente.
+        """
+        ok = False
+        try:
+            native = self._win.native
+            from System import Action  # type: ignore[import-not-found,unused-ignore]
+            from System.Drawing import Color  # type: ignore[import-not-found,unused-ignore]
+
+            def set_back() -> None:
+                native.BackColor = Color.Black
+
+            if getattr(native, "InvokeRequired", False):
+                native.Invoke(Action(set_back))
+            else:
+                set_back()
+            ok = True
+        except Exception:
+            log.debug("BackColor not set on %s", self.key, exc_info=True)
+        hwnd = self.hwnd
+        if hwnd:
+            ok = winapi.make_overlay_transparent(hwnd, self._w32) and ok
+        return ok
 
     def pick_folder(self, current: str) -> str | None:  # pragma: no cover - dialogo nativo
         import webview
@@ -260,6 +291,10 @@ class FakeWindow:
 
     def set_title(self, title: str) -> None:
         self.log.append(("title", title))
+
+    def make_transparent(self) -> bool:
+        self.log.append(("make_transparent", None))
+        return True
 
     def pick_folder(self, current: str) -> str | None:
         self.log.append(("pick_folder", current))

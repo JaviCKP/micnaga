@@ -319,8 +319,7 @@ class PipelineRunner:
 
     def _set_job_dir(self, job_id: int, path: Path) -> None:
         assert self.db is not None
-        with self.db.transaction() as conn:
-            conn.execute("UPDATE jobs SET session_dir = ? WHERE id = ?", (str(path), job_id))
+        self.db.set_session_dir(job_id, path)
 
     def _rename(self, src: Path, dst: Path) -> None:
         last: OSError | None = None

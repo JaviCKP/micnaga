@@ -1,15 +1,20 @@
 """Iconos generados en tiempo de ejecucion con Pillow (bandeja) y el ``.ico`` de la aplicacion.
 
-Color por estado (spec §10) *y* un glifo distinto, para que no dependa solo del color:
+Identidad Bitnaga reinterpretada para 16 px: un disco por estado (color *y* glifo distintos,
+para que no dependa solo del color) y, como marca, los anillos de «escucha» del logotipo de
+Bitnaga alrededor del punto de grabar.
 
-=========== ========= ===============================
-estado      color     glifo
-=========== ========= ===============================
-watching    gris      microfono
-recording   rojo      punto central
-paused      ambar     dos barras de pausa
-processing  azul      ondas (tres barras)
-=========== ========= ===============================
+=========== ======================== ===============================
+estado      color                    glifo
+=========== ======================== ===============================
+watching    grafito (gris violaceo)  anillo + punto (escuchando)
+recording   rojo coral               punto central
+paused      ambar                    dos barras de pausa
+processing  violeta Bitnaga          ondas (tres barras)
+=========== ======================== ===============================
+
+El estado «procesando» es violeta (el acento de la marca) en vez del azul de la spec §10: sigue
+siendo frio y distinto de los otros tres a 16 px.
 
 ``python -m micnaga.ui.icons`` regenera ``web/assets/micnaga.ico`` (icono del instalador).
 """
@@ -25,71 +30,75 @@ if TYPE_CHECKING:
     from PIL import Image
 
 STATE_COLORS: dict[str, tuple[int, int, int]] = {
-    "watching": (122, 122, 134),
-    "recording": (212, 54, 60),
-    "paused": (232, 148, 12),
-    "processing": (46, 116, 224),
+    "watching": (88, 86, 104),
+    "recording": (229, 62, 70),
+    "paused": (240, 158, 22),
+    "processing": (124, 77, 232),
 }
-APP_COLOR = STATE_COLORS["recording"]
+NIGHT = (11, 11, 16)
+BRAND_VIOLET = (167, 139, 250)
+REC_DOT = (255, 77, 85)
+APP_COLOR = NIGHT
 ICO_SIZES = (16, 20, 24, 32, 40, 48, 64, 128, 256)
 ASSETS_DIR = Path(__file__).resolve().parent / "web" / "assets"
 ICO_PATH = ASSETS_DIR / "micnaga.ico"
 _SS = 4  # supersampling
+
+_WHITE = (255, 255, 255, 255)
 
 
 def _draw_glyph(d: object, glyph: str, s: int) -> None:
     from PIL import ImageDraw
 
     assert isinstance(d, ImageDraw.ImageDraw)
-    white = (255, 255, 255, 255)
     c = s / 2
-    if glyph == "mic":
-        w, h = s * 0.20, s * 0.34
-        d.rounded_rectangle(
-            (c - w / 2, s * 0.22, c + w / 2, s * 0.22 + h), radius=w / 2, fill=white
-        )
-        t = max(2, round(s * 0.05))
-        d.arc(
-            (c - s * 0.20, s * 0.34, c + s * 0.20, s * 0.34 + s * 0.30), 0, 180, fill=white, width=t
-        )
-        d.line((c, s * 0.64, c, s * 0.76), fill=white, width=t)
-        d.line((c - s * 0.10, s * 0.77, c + s * 0.10, s * 0.77), fill=white, width=t)
+    if glyph == "ring":
+        ring = max(2, round(s * 0.075))
+        r = s * 0.25
+        d.ellipse((c - r, c - r, c + r, c + r), outline=_WHITE, width=ring)
+        r = s * 0.095
+        d.ellipse((c - r, c - r, c + r, c + r), fill=_WHITE)
     elif glyph == "dot":
-        r = s * 0.17
-        d.ellipse((c - r, c - r, c + r, c + r), fill=white)
+        r = s * 0.18
+        d.ellipse((c - r, c - r, c + r, c + r), fill=_WHITE)
     elif glyph == "bars":
-        w, h = s * 0.085, s * 0.34
-        for dx in (-s * 0.105, s * 0.105):
+        w, h = s * 0.1, s * 0.36
+        for dx in (-s * 0.11, s * 0.11):
             d.rounded_rectangle(
-                (c + dx - w / 2, c - h / 2, c + dx + w / 2, c + h / 2), radius=w / 2, fill=white
+                (c + dx - w / 2, c - h / 2, c + dx + w / 2, c + h / 2), radius=w / 2, fill=_WHITE
             )
     elif glyph == "wave":
-        w = s * 0.075
-        for dx, hh in ((-s * 0.17, 0.16), (0, 0.34), (s * 0.17, 0.22)):
+        w = s * 0.085
+        for dx, hh in ((-s * 0.18, 0.18), (0, 0.38), (s * 0.18, 0.25)):
             h = s * hh
             d.rounded_rectangle(
-                (c + dx - w / 2, c - h / 2, c + dx + w / 2, c + h / 2), radius=w / 2, fill=white
+                (c + dx - w / 2, c - h / 2, c + dx + w / 2, c + h / 2), radius=w / 2, fill=_WHITE
             )
 
 
-_GLYPH = {"watching": "mic", "recording": "dot", "paused": "bars", "processing": "wave"}
+_GLYPH = {"watching": "ring", "recording": "dot", "paused": "bars", "processing": "wave"}
+
+
+def _disc(color: tuple[int, int, int], s: int) -> Image.Image:
+    """Disco de ``color`` con un brillo superior muy sutil (una sola capa) y borde nitido."""
+    from PIL import Image, ImageDraw
+
+    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    pad = s * 0.04
+    ImageDraw.Draw(img).ellipse((pad, pad, s - pad, s - pad), fill=(*color, 255))
+    hi = Image.new("RGBA", (s, s), (0, 0, 0, 0))
+    ImageDraw.Draw(hi).ellipse((pad, pad, s - pad, s * 0.6), fill=(255, 255, 255, 20))
+    mask = Image.new("L", (s, s), 0)
+    ImageDraw.Draw(mask).ellipse((pad, pad, s - pad, s - pad), fill=255)
+    return Image.composite(Image.alpha_composite(img, hi), img, mask)
 
 
 def render(color: tuple[int, int, int], glyph: str, size: int) -> Image.Image:
-    """Circulo de ``color`` con un glifo blanco, antialiasing por supermuestreo."""
+    """Disco de ``color`` con un glifo blanco, antialiasing por supermuestreo."""
     from PIL import Image, ImageDraw
 
     s = size * _SS
-    img = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    d = ImageDraw.Draw(img)
-    pad = s * 0.04
-    d.ellipse((pad, pad, s - pad, s - pad), fill=(*color, 255))
-    # brillo superior muy sutil (una sola capa)
-    hi = Image.new("RGBA", (s, s), (0, 0, 0, 0))
-    ImageDraw.Draw(hi).ellipse((pad, pad, s - pad, s * 0.62), fill=(255, 255, 255, 22))
-    mask = Image.new("L", (s, s), 0)
-    ImageDraw.Draw(mask).ellipse((pad, pad, s - pad, s - pad), fill=255)
-    img = Image.composite(Image.alpha_composite(img, hi), img, mask)
+    img = _disc(color, s)
     _draw_glyph(ImageDraw.Draw(img), glyph, s)
     return img.resize((size, size), Image.Resampling.LANCZOS)
 
@@ -102,8 +111,30 @@ def tray_icon(state: TrayState | str, size: int = 64) -> Image.Image:
 
 
 def app_icon(size: int = 256) -> Image.Image:
-    """Icono de la aplicacion (marca: coral con microfono)."""
-    return render(APP_COLOR, "mic", size)
+    """Icono de la aplicacion: disco nocturno, anillos violeta de Bitnaga y el punto de grabar.
+
+    Por debajo de 32 px se queda con un solo anillo (los finos desaparecerian).
+    """
+    from PIL import Image, ImageDraw
+
+    s = size * _SS
+    img = _disc(NIGHT, s)
+    d = ImageDraw.Draw(img)
+    c = s / 2
+    pad = s * 0.04
+    d.ellipse(
+        (pad, pad, s - pad, s - pad), outline=(255, 255, 255, 34), width=max(1, round(s * 0.012))
+    )
+    rings = ((0.34, 0.45), (0.25, 0.75)) if size >= 32 else ((0.27, 0.95),)
+    w = max(_SS, round(s * (0.03 if size >= 32 else 0.07)))
+    for r_frac, alpha in rings:
+        r = s * r_frac
+        d.ellipse(
+            (c - r, c - r, c + r, c + r), outline=(*BRAND_VIOLET, round(255 * alpha)), width=w
+        )
+    r = s * (0.13 if size >= 32 else 0.15)
+    d.ellipse((c - r, c - r, c + r, c + r), fill=(*REC_DOT, 255))
+    return img.resize((size, size), Image.Resampling.LANCZOS)
 
 
 def write_ico(path: Path = ICO_PATH, sizes: tuple[int, ...] = ICO_SIZES) -> Path:

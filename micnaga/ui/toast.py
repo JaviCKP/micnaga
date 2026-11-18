@@ -11,6 +11,7 @@ Inicio con ``System.AppUserModel.ID`` y pasar ese AUMID aqui (``aumid=``).
 from __future__ import annotations
 
 import logging
+import sys
 from collections.abc import Callable
 from typing import Any, Protocol
 
@@ -19,6 +20,39 @@ from micnaga.ui import i18n
 log = logging.getLogger(__name__)
 
 ARG_PREFIX = "open:"
+
+# AppUserModelID de Micnaga. DEBE coincidir con el del acceso directo del menu Inicio que crea el
+# instalador (packaging/micnaga.iss, ``AppUserModelID``): Windows solo atribuye y activa los toasts
+# de una app sin paquete si existe ese acceso directo.
+AUMID = "es.micnaga.Micnaga"
+
+
+def is_frozen() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
+def default_aumid() -> str | None:
+    """``AUMID`` solo en la app instalada (congelada): en desarrollo no hay acceso directo y un
+    AUMID sin registrar haria que los toasts no salieran; ahi se usa el de ``cmd.exe``."""
+    return AUMID if is_frozen() else None
+
+
+def set_process_aumid(aumid: str | None = None) -> bool:
+    """``SetCurrentProcessExplicitAppUserModelID`` (solo si se pasa un AUMID o la app esta
+    congelada). Debe llamarse antes de crear ventanas. ``True`` si se aplico."""
+    value = aumid or default_aumid()
+    if not value:
+        return False
+    try:
+        import ctypes
+
+        result = ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(
+            ctypes.c_wchar_p(value)
+        )
+    except (AttributeError, OSError):
+        log.exception("could not set the process AppUserModelID")
+        return False
+    return int(result) == 0
 
 
 class ToasterLike(Protocol):

@@ -114,6 +114,12 @@ class Watcher:
         with self._lock:
             return self._machine.popup_remaining_s
 
+    @property
+    def popup_frozen(self) -> bool:
+        """La cuenta atras esta congelada (raton encima, pausa privada o senal caida)."""
+        with self._lock:
+            return self._machine.popup_frozen
+
     def diagnostics(self) -> dict[str, Any]:
         """Datos para la vista «diagnostico» de ajustes (estado + lectura de cada senal)."""
         with self._lock:

@@ -8,6 +8,7 @@ propio, asi que convive con pywebview (que ocupa el hilo principal). El menu y l
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -134,12 +135,16 @@ class Tray:
                     self._state, watching_paused=self._watching_paused, language=self._language
                 )[i]
 
+            def action(i: int = idx) -> Callable[[Any, Any], None]:
+                # pystray exige exactamente 0, 1 o 2 parametros (sin valores por defecto)
+                return lambda _icon, _item: self.dispatch(entry(i).key)
+
             if entry().separator_before:
                 items.append(pystray.Menu.SEPARATOR)
             items.append(
                 pystray.MenuItem(
                     lambda _item, i=idx: entry(i).label,
-                    lambda _icon, _item, i=idx: self.dispatch(entry(i).key),
+                    action(),
                     enabled=lambda _item, i=idx: entry(i).enabled,
                     default=entry().default,
                 )

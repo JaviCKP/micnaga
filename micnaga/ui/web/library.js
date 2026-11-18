@@ -157,16 +157,18 @@
     const side = $("side");
     side.replaceChildren();
     $("count").textContent = S.meetings.length ? mic.t("library.count", { n: S.meetings.length }) : "";
+    $("count").setAttribute("aria-label", S.meetings.length ? mic.t("library.count_label", { n: S.meetings.length }) : "");
     if (!S.meetings.length) {
       const d = el("div", "nores");
-      d.append(el("div", "t", mic.t("library.none_title")), el("div", "", mic.t("library.none_text")));
+      d.innerHTML = mic.icon("library");
+      d.append(el("div", "t", mic.t("library.none_title")));
       side.append(d);
       return;
     }
     let last = "";
     for (const m of S.meetings) {
       const g = groupKey(m.start);
-      if (g !== last) { side.append(el("div", "group-h", mic.t("library.group." + g))); last = g; }
+      if (g !== last) { side.append(el("div", "group-h caps", mic.t("library.group." + g))); last = g; }
       const b = el("button", "row");
       b.type = "button";
       b.dataset.folder = m.folder;
@@ -175,7 +177,14 @@
       const sub = el("div", "row-sub tnum");
       sub.append(el("span", "", mic.fmtDate(m.start)), el("span", "dot", "·"), el("span", "", mic.fmtDuration(m.duration_s)));
       const n = m.speakers.length;
-      if (n) sub.append(el("span", "dot", "·"), el("span", "", mic.t(n === 1 ? "library.speakers_one" : "library.speakers_other", { n })));
+      if (n) {
+        const dots = el("span", "who-dots");
+        dots.setAttribute("role", "img");
+        dots.setAttribute("aria-label", mic.t(n === 1 ? "library.speakers_one" : "library.speakers_other", { n }));
+        dots.title = m.speakers.map((x) => x.name).join(" · ");
+        for (const sp of m.speakers.slice(0, 6)) { const i = el("i"); i.style.setProperty("--c", colorOf(sp.id)); dots.append(i); }
+        sub.append(dots);
+      }
       b.append(sub);
       b.addEventListener("click", () => openMeeting(m.folder));
       side.append(b);
@@ -188,11 +197,12 @@
     $("count").textContent = "";
     if (!res.hits.length) {
       const d = el("div", "nores");
-      d.append(el("div", "t", mic.t("library.nores_title")), el("div", "", mic.t("library.nores_text", { q: res.query })));
+      d.innerHTML = mic.icon("search");
+      d.append(el("div", "t", mic.t("library.nores_title")));
       side.append(d);
       return;
     }
-    side.append(el("div", "res-info tnum", mic.t("library.results", { n: res.hits.length, ms: res.ms })));
+    side.append(el("div", "res-info caps tnum", mic.t("library.results", { n: res.hits.length, ms: res.ms })));
     for (const h of res.hits) {
       const b = el("button", "row hit");
       b.type = "button";
@@ -231,7 +241,7 @@
     S.data = r;
     S.highlightQuery = query || "";
     renderViewer(sameMeeting);
-    document.querySelectorAll(".row[data-folder]").forEach((b) => b.toggleAttribute("aria-current", b.dataset.folder === folder));
+    document.querySelectorAll(".row[data-folder]").forEach((b) => { if (b.dataset.folder === folder) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current"); });
     if (typeof seekT === "number" && !isNaN(seekT)) {
       if (player.available) player.seek(seekT);
       focusPhraseAt(seekT, true);
@@ -246,7 +256,7 @@
     $("m-title").textContent = tr.meeting.title;
     const meta = $("m-meta");
     meta.replaceChildren();
-    meta.append(el("span", "", mic.fmtDate(tr.meeting.start)), el("span", "", "·"), el("span", "", mic.fmtDuration(tr.meeting.duration_s)));
+    meta.append(el("span", "", mic.fmtDate(tr.meeting.start)), el("span", "sep", "·"), el("span", "", mic.fmtDuration(tr.meeting.duration_s)));
     if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
     renderSpeakers();
     renderMarkers();
@@ -278,9 +288,9 @@
       const b = el("button", "tr-btn");
       b.type = "button";
       b.innerHTML = mic.icon(icon);
-      b.append(el("span", "", mic.t(key)));
+      b.setAttribute("aria-label", mic.t(key));
       b.setAttribute("aria-pressed", String(!player.isMuted(k)));
-      b.title = mic.t("library.track_toggle");
+      b.title = mic.t(key) + " · " + mic.t("library.track_toggle");
       b.addEventListener("click", () => {
         player.setMuted(k, !player.isMuted(k));
         b.setAttribute("aria-pressed", String(!player.isMuted(k)));

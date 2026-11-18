@@ -8,11 +8,12 @@
 <link rel="stylesheet" href="library.css">
 </head>
 <body>
+<div class="ambient" aria-hidden="true"></div>
 <div class="app">
-  <aside class="side" aria-label="Reuniones" data-i18n-aria-label="library.side_label">
+  <aside class="side glass" aria-label="Reuniones" data-i18n-aria-label="library.side_label">
     <header class="side-head">
-      <h1 data-i18n="library.title">Biblioteca</h1>
-      <span class="count tnum" id="count"></span>
+      <h1 class="display" data-i18n="library.title">Biblioteca</h1>
+      <span class="count display tnum" id="count"></span>
     </header>
     <div class="search">
       <span data-icon="search" aria-hidden="true"></span>
@@ -24,29 +25,28 @@
     <div class="side-scroll" id="side" tabindex="-1"></div>
   </aside>
 
-  <main class="main" id="main">
+  <main class="main glass" id="main">
     <div class="empty" id="empty">
-      <div class="empty-art" aria-hidden="true" data-icon="library" data-icon-class="lg"></div>
-      <h2 data-i18n="library.empty_title">Elige una reunión</h2>
-      <p data-i18n="library.empty_text">Verás la transcripción aquí y podrás pulsar cualquier frase para escucharla.</p>
+      <div class="empty-art" aria-hidden="true"><span></span><span></span><span></span><i data-icon="library" data-icon-class="xl"></i></div>
+      <h2 class="display" data-i18n="library.empty_title">Elige una reunión</h2>
     </div>
 
     <section class="viewer" id="viewer" hidden>
       <header class="mh">
         <div class="mh-top">
           <div class="mh-titles">
-            <h2 id="m-title"></h2>
+            <h2 class="display" id="m-title"></h2>
             <p class="m-meta tnum" id="m-meta"></p>
           </div>
-          <button class="btn btn-sm" id="open-folder" type="button" data-icon="folder"><span data-i18n="library.open_folder">Abrir carpeta</span></button>
+          <button class="icon-btn" id="open-folder" type="button" data-icon="folder" data-i18n-aria-label="library.open_folder" data-i18n-data-tip="library.open_folder"></button>
         </div>
         <div class="speakers" id="speakers" role="list" data-i18n-aria-label="library.speakers_label"></div>
+        <section class="markers" id="markers" hidden aria-labelledby="markers-h">
+          <h3 class="sr-only" id="markers-h" data-i18n="library.markers">Marcadores</h3>
+          <span class="markers-ico" aria-hidden="true" data-icon="flag"></span>
+          <div class="marker-list" id="marker-list"></div>
+        </section>
       </header>
-
-      <section class="markers" id="markers" hidden aria-labelledby="markers-h">
-        <h3 id="markers-h"><span data-icon="flag"></span><span data-i18n="library.markers">Marcadores</span></h3>
-        <div class="marker-list" id="marker-list"></div>
-      </section>
 
       <div class="transcript selectable" id="tr" role="group" data-i18n-aria-label="library.transcript_label" tabindex="-1"></div>
 
@@ -79,10 +79,9 @@
 <dialog id="dlg-consent" aria-labelledby="dc-title">
   <form method="dialog" class="dlg">
     <div class="dlg-ico" data-icon="shield" data-icon-class="lg" aria-hidden="true"></div>
-    <h3 id="dc-title" data-i18n="library.consent.title">Guardar la huella de voz</h3>
+    <h3 id="dc-title" class="display" data-i18n="library.consent.title">Guardar la huella de voz</h3>
     <p id="dc-person" class="dlg-person"></p>
-    <p data-i18n="library.consent.body">La huella de voz es un dato biométrico y el RGPD lo trata como categoría especial. Se guarda cifrada en este equipo, ligada a tu cuenta de Windows, y puedes borrarla cuando quieras.</p>
-    <p data-i18n="library.consent.ask">Antes de guardarla, pide permiso a la persona.</p>
+    <p class="dlg-text" data-i18n="library.consent.body">Es un dato biométrico (RGPD). Se guarda cifrado en este equipo y puedes borrarlo cuando quieras.</p>
     <label class="check"><input type="checkbox" id="dc-check"><span data-i18n="library.consent.checkbox">Tengo su consentimiento</span></label>
     <div class="dlg-actions">
       <button class="btn btn-ghost" value="cancel" data-i18n="common.cancel">Cancelar</button>
@@ -93,8 +92,9 @@
 
 <dialog id="dlg-merge" aria-labelledby="dm-title">
   <form method="dialog" class="dlg">
-    <h3 id="dm-title" data-i18n="library.merge.title">Fusionar hablantes</h3>
-    <p id="dm-text"></p>
+    <div class="dlg-ico" data-icon="merge" data-icon-class="lg" aria-hidden="true"></div>
+    <h3 id="dm-title" class="display" data-i18n="library.merge.title">Fusionar hablantes</h3>
+    <p class="dlg-text" id="dm-text"></p>
     <div class="dlg-actions">
       <button class="btn btn-ghost" value="cancel" data-i18n="common.cancel">Cancelar</button>
       <button class="btn btn-primary" value="ok" data-i18n="library.merge.confirm">Fusionar</button>

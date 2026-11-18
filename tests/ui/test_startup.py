@@ -70,3 +70,13 @@ def test_winregistry_roundtrip_on_a_scratch_key(scratch_key: str) -> None:
     startup.set_run_at_login(False, backend=reg)
     assert reg.get(startup.VALUE_NAME) is None
     reg.delete(startup.VALUE_NAME)  # ausente: sin error
+
+
+def test_ensure_run_at_login_writes_only_when_missing_or_different() -> None:
+    reg = startup.MemoryRegistry()
+    cmd = "C:/x/micnaga.exe app"
+    assert startup.ensure_run_at_login(backend=reg, command=cmd) is True
+    assert reg.get("Micnaga") == cmd
+    assert startup.ensure_run_at_login(backend=reg, command=cmd) is False
+    reg.set("Micnaga", "stale")
+    assert startup.ensure_run_at_login(backend=reg, command=cmd) is True

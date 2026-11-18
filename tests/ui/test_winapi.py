@@ -47,7 +47,7 @@ def test_place_never_activates() -> None:
 def test_popup_and_pill_geometry_scale_with_dpi() -> None:
     mon = winapi.MonitorInfo((0, 0, 1920, 1040), 1.25)
     px, py, pw, ph = winapi.popup_rect(mon)
-    assert (pw, ph) == (500, 290)  # 400x232 CSS px at 125 %
+    assert (pw, ph) == (465, 140)  # 372x112 CSS px at 125 %
     assert px + pw + 30 == 1920 and py == 30  # 24 px margin, top-right
     x, y, w, h = winapi.pill_rect(mon)
     assert (w, h) == (250, 50)
@@ -56,7 +56,7 @@ def test_popup_and_pill_geometry_scale_with_dpi() -> None:
 
 def test_geometry_on_secondary_monitor_with_offset() -> None:
     mon = winapi.MonitorInfo((-1920, 0, 0, 1040), 1.0)
-    assert winapi.popup_rect(mon)[0] == -1920 + 1920 - 400 - 24
+    assert winapi.popup_rect(mon)[0] == -1920 + 1920 - 372 - 24
     assert winapi.pill_rect(mon)[0] == -1920 + (1920 - 200) // 2
 
 

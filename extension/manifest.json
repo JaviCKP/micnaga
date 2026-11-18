@@ -1,0 +1,20 @@
+{
+  "manifest_version": 3,
+  "name": "Micnaga - senal de llamada de Meet",
+  "short_name": "Micnaga",
+  "version": "0.1.0",
+  "description": "Avisa a la app local Micnaga de que estas en una llamada de Google Meet. Sin red, sin analitica.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAshKzr75MG4HLvgnrT9srloCTPMyf4Wx5tQmxDJIZPAHIfweq0qBUjHyzVvkaW4+oOZNRFan28WspND9Z1GrStUebj9g/IZekEPPxTXJwxLcYsXhqIcMdunWCAQBuyUXgtnm1ykvCIdM6+bPRWUxFg824vM4H0yhUmVl+vH9VNPdvS098tObvOnXhqxKLMJAgmuOIm264+Y2aBGyAXvlDyzodJbyKLXw7ZZFX+gZjKItIUD6XR8zhjVi1LXwhYRpI3hAiJOJ5gphUhiYAo3kVSMHqaRRVbjSFBrpyzMJ+DfYBIonRAet6Thne6X+RSkzC1EUqxiqZH4gAS/b9J/1btQIDAQAB",
+  "minimum_chrome_version": "105",
+  "permissions": ["nativeMessaging"],
+  "host_permissions": ["https://meet.google.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://meet.google.com/*"],
+      "js": ["detect.js", "content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

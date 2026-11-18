@@ -154,6 +154,22 @@ class Win32:
         )
         return bool(hr == 0)
 
+    def extend_frame(self, hwnd: int) -> bool:
+        """``DwmExtendFrameIntoClientArea`` con margenes -1: todo el cliente es «cristal»
+        (sin esto pywebview pinta un recuadro gris detras de una ventana transparente)."""
+
+        class MARGINS(ctypes.Structure):
+            _fields_ = (
+                ("left", ctypes.c_int),
+                ("right", ctypes.c_int),
+                ("top", ctypes.c_int),
+                ("bottom", ctypes.c_int),
+            )
+
+        m = MARGINS(-1, -1, -1, -1)
+        hr = ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(m))
+        return bool(hr == 0)
+
     def client_area_animation(self) -> bool:
         flag = ctypes.c_int(1)
         ok = ctypes.windll.user32.SystemParametersInfoW(
@@ -237,7 +253,7 @@ def is_topmost(hwnd: int, api: Win32 | None = None) -> bool:
 
 # ------------------------------------------------------------------------------ geometria
 
-POPUP_SIZE = (400, 232)
+POPUP_SIZE = (372, 112)
 PILL_SIZE = (200, 40)
 PILL_HOVER_WIDTH = 296
 POPUP_MARGIN = 24
@@ -419,6 +435,16 @@ def set_backdrop(
         DWMWA_SYSTEMBACKDROP_TYPE,
         DWMSBT_MAINWINDOW if kind == "mica" else DWMSBT_TRANSIENTWINDOW,
     )
+
+
+def acrylic_supported(api: Win32 | None = None) -> bool:
+    """Acrilico real de DWM (``DWMSBT_TRANSIENTWINDOW``): Windows 11 22H2 (22621) o posterior."""
+    return (api or default_api()).windows_build() >= MICA_MIN_BUILD
+
+
+def make_overlay_transparent(hwnd: int, api: Win32 | None = None) -> bool:
+    """Marco extendido al cliente (junto con ``BackColor = Black`` del formulario)."""
+    return (api or default_api()).extend_frame(hwnd)
 
 
 def ensure_dpi_aware() -> None:

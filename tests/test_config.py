@@ -26,7 +26,7 @@ def test_defaults_match_spec_section_10() -> None:
     assert c.capture.chunk_flush_s == 2
     assert c.processing.asr_engine == "parakeet"
     assert c.processing.whisper_model == "small"
-    assert c.processing.diarization == "diarize"
+    assert c.processing.diarization == "onnx"
     assert c.processing.threads == 6
     assert c.storage.root == "~/Documents/Micnaga"
     assert c.hotkeys.marker == "ctrl+alt+m"

@@ -44,7 +44,7 @@ MIC_CONSENT_SUBKEY = (
 NON_PACKAGED = "NonPackaged"
 FILETIME_EPOCH_OFFSET_S = 11_644_473_600  # 1601-01-01 -> 1970-01-01
 START_TOLERANCE_S = 10.0
-OWN_EXE_NAMES = frozenset({"micnaga.exe"})
+OWN_EXE_NAMES = frozenset({"micnaga.exe", "micnaga-cli.exe", "micnaga-host.exe"})
 
 _FRIENDLY = (  # (subcadena en minusculas, nombre amigable); el primero que case gana
     ("teams", "Teams"),

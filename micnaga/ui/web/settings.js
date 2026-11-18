@@ -159,6 +159,16 @@
     return btn;
   }
 
+  /** A small mark beside a label: its words show on hover / keyboard focus (and to readers). */
+  function mark(icon, text) {
+    const b = el("button", "fmark " + icon);
+    b.type = "button";
+    b.innerHTML = mic.icon(icon);
+    b.dataset.tip = text;
+    b.setAttribute("aria-label", text);
+    return b;
+  }
+
   function fieldRow(f) {
     const stacked = f.kind === "list" || f.kind === "path";
     const row = el("div", "frow" + (stacked ? " col" : ""));
@@ -166,67 +176,77 @@
     const info = el("div", "finfo");
     info.append(el("div", "flabel", mic.t("settings.f." + f.path)));
     const help = mic.t("settings.f." + f.path + ".help");
-    if (help) info.append(el("div", "fhelp", help));
-    if (f.restart) {
-      const n = el("div", "fnote");
-      n.innerHTML = mic.icon("info");
-      n.append(mic.t("settings.restart_note"));
-      info.append(n);
-    }
+    if (help) info.append(mark("help", help));                     // the why, on demand
+    if (f.restart) info.append(mark("restart", mic.t("settings.restart_note")));
     row.append(info, control(f));
     return row;
   }
 
   // ------------------------------------------------------------------ panes
+  /** A titled group: caption above, rows on one glass card (no card-in-card). */
+  function group(title) {
+    const wrap = el("section", "group");
+    if (title) wrap.append(el("h3", "caps", title));
+    const c = el("div", "card");
+    wrap.append(c);
+    return c;
+  }
+
   function buildGroup(g) {
     const pane = el("section", "pane");
     pane.id = "pane-" + g.id;
     pane.setAttribute("role", "tabpanel");
     pane.setAttribute("aria-labelledby", "tab-" + g.id);
     pane.hidden = true;
-    pane.append(el("h2", "", mic.t("settings.groups." + g.id)), el("p", "lead", mic.t("settings.groups." + g.id + ".lead")));
+    pane.append(el("h2", "display", mic.t("settings.groups." + g.id)));
     const cards = new Map();
     const adv = [];
     for (const f of g.fields) {
       if (f.advanced) { adv.push(f); continue; }
       const sec = CARD_OF[f.path.split(".")[0]] || f.path.split(".")[0];
-      if (!cards.has(sec)) { const c = el("div", "card"); c.append(el("h3", "", mic.t("settings.cards." + sec))); cards.set(sec, c); pane.append(c); }
+      if (!cards.has(sec)) {
+        const title = mic.t("settings.cards." + sec);
+        const c = group(title === mic.t("settings.groups." + g.id) ? "" : title);   // no echo of the pane title
+        cards.set(sec, c);
+        pane.append(c.parentElement);
+      }
       cards.get(sec).append(fieldRow(f));
     }
     if (g.id === "privacy" && S.hasVp) pane.append(voiceprintCard());
     if (g.id === "privacy") pane.append(legalCard());
     if (adv.length) {
-      const c = el("div", "card");
+      const c = group("");
       const t = el("button", "adv-toggle");
       t.type = "button";
       t.setAttribute("aria-expanded", "false");
       t.innerHTML = mic.icon("chevron");
       t.append(mic.t("settings.advanced"));
       const box = el("div", "adv");
-      adv.forEach((f) => box.append(fieldRow(f)));
+      const body = el("div", "adv-body");
+      body.id = "adv-" + g.id;
+      t.setAttribute("aria-controls", body.id);
+      adv.forEach((f) => body.append(fieldRow(f)));
+      box.append(body);
       t.addEventListener("click", () => {
         const open = !box.classList.contains("open");
         box.classList.toggle("open", open);
         t.setAttribute("aria-expanded", String(open));
       });
       c.append(t, box);
-      pane.append(c);
+      pane.append(c.parentElement);
     }
     return pane;
   }
 
   function legalCard() {
-    const c = el("div", "card");
-    const d = el("div", "legal");
-    d.innerHTML = mic.icon("info");
+    const d = el("p", "legal");
+    d.innerHTML = mic.icon("shield");
     d.append(el("span", "", mic.t("settings.legal")));
-    c.append(d);
-    return c;
+    return d;
   }
 
   function voiceprintCard() {
-    const c = el("div", "card");
-    c.append(el("h3", "", mic.t("settings.cards.voiceprints")));
+    const c = group(mic.t("settings.cards.voiceprints"));
     const list = el("div");
     c.append(list);
     async function load() {
@@ -258,7 +278,7 @@
       }
     }
     load();
-    return c;
+    return c.parentElement;
   }
 
   function diagnosticsPane() {
@@ -267,14 +287,13 @@
     pane.setAttribute("role", "tabpanel");
     pane.setAttribute("aria-labelledby", "tab-diagnostics");
     pane.hidden = true;
-    pane.append(el("h2", "", mic.t("settings.groups.diagnostics")), el("p", "lead", mic.t("settings.groups.diagnostics.lead")));
-    const c = el("div", "card");
-    c.append(el("h3", "", mic.t("settings.cards.signals")));
+    pane.append(el("h2", "display", mic.t("settings.groups.diagnostics")));
+    const c = group(mic.t("settings.cards.signals"));
     const ul = el("ul", "diag");
     ul.id = "diag-list";
     ul.setAttribute("aria-live", "off");
     c.append(ul);
-    pane.append(c);
+    pane.append(c.parentElement);
     return pane;
   }
   async function pollDiag() {
@@ -300,11 +319,25 @@
     pane.setAttribute("role", "tabpanel");
     pane.setAttribute("aria-labelledby", "tab-about");
     pane.hidden = true;
-    pane.append(el("h2", "", mic.t("settings.groups.about")), el("p", "lead", mic.t("settings.groups.about.lead")));
-    const c = el("div", "card about");
-    c.append(el("h3", "", mic.t("settings.cards.licenses")));
-    for (const k of ["settings.about.license", "settings.about.models", "settings.about.privacy"]) c.append(el("p", "", mic.t(k)));
-    pane.append(c);
+    pane.append(el("h2", "display", mic.t("settings.groups.about")));
+    const hero = el("div", "card about-hero");
+    hero.append(el("div", "word display", "Micnaga"));
+    const by = el("div", "by");
+    const brand = el("span", "brand");
+    brand.innerHTML = '<img class="on-dark" src="assets/bitnaga-on-dark.svg" alt="Bitnaga"><img class="on-light" src="assets/bitnaga-on-light.svg" alt="Bitnaga">';
+    by.append(el("span", "", mic.t("settings.about.by")), brand);
+    hero.append(by);
+    pane.append(hero);
+    const c = group(mic.t("settings.cards.licenses"));
+    c.classList.add("about");
+    const ICON = { "settings.about.license": "feather", "settings.about.models": "cpu", "settings.about.privacy": "lock" };
+    for (const k of ["settings.about.license", "settings.about.models", "settings.about.privacy"]) {
+      const line = el("p", "line");
+      line.innerHTML = mic.icon(ICON[k]);
+      line.append(el("span", "", mic.t(k)));
+      c.append(line);
+    }
+    pane.append(c.parentElement);
     return pane;
   }
 
@@ -353,7 +386,7 @@
       b.setAttribute("role", "tab");
       b.setAttribute("aria-controls", "pane-" + id);
       b.innerHTML = mic.icon(ICONS[id] || "sliders");
-      b.append(mic.t("settings.groups." + id + ".nav"));
+      b.append(el("span", "", mic.t("settings.groups." + id + ".nav")));
       b.addEventListener("click", () => select(id));
       b.addEventListener("keydown", (e) => {
         const i = ids.indexOf(id);

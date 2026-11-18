@@ -12,45 +12,36 @@
 <div class="stage">
   <div class="lift" id="lift" data-phase="hidden">
     <section class="card" id="card" role="alertdialog" aria-modal="false"
-             aria-labelledby="p-title" aria-describedby="p-meta">
+             aria-labelledby="p-title" aria-describedby="p-meta" data-kind="meet">
       <div class="body" id="body">
-        <header class="head">
-          <div class="badge" aria-hidden="true"><span class="ring"></span><span data-icon="mic" data-icon-class="lg"></span></div>
-          <div class="head-text">
-            <h1 id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
-            <p class="meta" id="p-meta"><span class="meet-title" id="p-meet"></span><span class="tag-mono" id="p-code" hidden></span></p>
-          </div>
-        </header>
-
-        <div class="meters" role="group" data-i18n-aria-label="popup.levels">
-          <div class="meter-row">
-            <span class="meter-label" id="lbl-mic" data-icon="mic"><span data-i18n="popup.me">Yo</span></span>
-            <div class="meter" id="m-mic" role="meter" aria-labelledby="lbl-mic" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
-          </div>
-          <div class="meter-row">
-            <span class="meter-label" id="lbl-sys" data-icon="speaker"><span data-i18n="popup.them">Ellos</span></span>
-            <div class="meter" id="m-sys" role="meter" aria-labelledby="lbl-sys" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+        <div class="info">
+          <p class="src" id="p-meta">
+            <span class="src-ico" id="p-ico" aria-hidden="true"></span><span class="meet-title" id="p-meet"></span><span class="sr-only" id="p-code" hidden></span>
+            <span class="notice" id="notice">
+              <span class="notice-ico" data-icon="megaphone" aria-hidden="true"></span>
+              <span class="notice-text" data-i18n="popup.notice">Avisa de que grabas</span>
+              <button class="notice-x" id="notice-x" type="button" data-i18n-aria-label="popup.notice_dismiss" data-icon="x"></button>
+            </span>
+          </p>
+          <h1 class="question display" id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
+          <div class="levels" role="group" data-i18n-aria-label="popup.levels">
+            <span class="lvl"><span data-icon="mic" aria-hidden="true"></span><canvas class="wave" id="m-mic" role="meter" data-i18n-aria-label="popup.me" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+            <span class="lvl"><span data-icon="speaker" aria-hidden="true"></span><canvas class="wave" id="m-sys" role="meter" data-i18n-aria-label="popup.them" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
           </div>
         </div>
 
-        <div class="notice" id="notice">
-          <span data-icon="info"></span>
-          <span class="notice-text" data-i18n="popup.notice">Recuerda avisar de que grabas</span>
-          <button class="notice-x" id="notice-x" type="button" data-i18n-aria-label="popup.notice_dismiss" data-i18n-title="popup.notice_dismiss" data-icon="x"></button>
+        <div class="actions">
+          <button class="btn-round no" id="b-no" type="button" aria-keyshortcuts="Escape" data-i18n-aria-label="popup.no" data-i18n-title="popup.no_tip" data-icon="x"></button>
+          <span class="rec-wrap">
+            <span class="countdown" id="countdown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" data-i18n-aria-label="popup.countdown"><i></i></span>
+            <button class="btn-round rec" id="b-rec" type="button" aria-keyshortcuts="Enter" data-i18n-aria-label="popup.record" data-i18n-title="popup.record_tip">
+              <span class="swap" aria-hidden="true"><span class="swap-a"></span><span class="swap-b"></span></span>
+            </button>
+          </span>
         </div>
-
-        <footer class="actions">
-          <button class="btn btn-ghost" id="b-no" type="button"><span data-i18n="popup.no">Ahora no</span> <kbd aria-hidden="true">Esc</kbd></button>
-          <button class="btn btn-primary" id="b-rec" type="button">
-            <span class="swap" aria-hidden="true"><span class="swap-a"></span><span class="swap-b"></span></span>
-            <span data-i18n="popup.record">Grabar</span> <kbd aria-hidden="true">↵</kbd>
-          </button>
-        </footer>
-
-        <div class="countdown" id="countdown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" data-i18n-aria-label="popup.countdown"><i></i></div>
       </div>
 
-      <!-- what the card turns into: same markup as the real pill -->
+      <!-- what the card turns into: the same capsule as the real pill -->
       <div class="echo" id="echo" aria-hidden="true">
         <span class="rec-dot"></span>
         <span class="pill-time" id="echo-time">00:00</span>

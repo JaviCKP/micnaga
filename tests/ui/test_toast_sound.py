@@ -6,6 +6,8 @@ import io
 import wave
 from typing import Any
 
+import pytest
+
 from micnaga.ui import sound, toast
 
 
@@ -89,3 +91,16 @@ def test_chime_is_silent_when_disabled_or_dnd() -> None:
     assert played == []
     assert sound.play_chime(enabled=True, dnd=lambda: False, player=played.append)
     assert len(played) == 1
+
+
+def test_aumid_only_when_frozen(monkeypatch: pytest.MonkeyPatch) -> None:
+    import sys
+
+    from micnaga.ui import toast
+
+    assert toast.AUMID == "es.micnaga.Micnaga"
+    monkeypatch.delattr(sys, "frozen", raising=False)
+    assert toast.default_aumid() is None
+    assert toast.set_process_aumid() is False  # sin AUMID y sin congelar: no hace nada
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    assert toast.default_aumid() == toast.AUMID

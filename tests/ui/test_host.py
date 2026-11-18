@@ -93,7 +93,7 @@ def test_run_creates_hidden_overlays_applies_noactivate_and_calls_on_ready() -> 
         assert spec.min_size[1] <= 40, "min_size por defecto (200x100) deformaria la pastilla"
         style = r.w32.styles[r.fac.windows[key].hwnd]
         assert style & winapi.WS_EX_NOACTIVATE and style & winapi.WS_EX_TOOLWINDOW
-    assert (r.fac.windows["popup"].spec.width, r.fac.windows["popup"].spec.height) == (400, 232)
+    assert (r.fac.windows["popup"].spec.width, r.fac.windows["popup"].spec.height) == (372, 112)
     assert (r.fac.windows["pill"].spec.width, r.fac.windows["pill"].spec.height) == (200, 40)
     r.host._stopping.set()
 
@@ -102,7 +102,7 @@ def test_show_popup_places_top_right_in_physical_pixels_and_shows_without_activa
     r = Rig()
     r.host.show_popup("Revisión semanal", "abc-defg-hij", monitor_hint=(10, 10, 900, 700))
     assert ("monitor_info", ((10, 10, 900, 700),)) in r.w32.calls
-    assert r.popup.current_rect == (1920 - 500 - 30, 30, 500, 290)  # 400x232 a 125 %
+    assert r.popup.current_rect == (1920 - 465 - 30, 30, 465, 140)  # 372x112 a 125 %
     p = payload(r.popup, "micnaga.popup.show")
     assert p == {
         "title": "Revisión semanal",
@@ -162,7 +162,7 @@ def test_record_flies_to_pill_then_shows_it_and_hides_popup() -> None:
     popup_rect = r.w32.places(r.popup.hwnd)[-1]  # el vuelo mueve el hwnd por Win32
     # el popup acaba con su tarjeta (centrada arriba) sobre el hueco de la pastilla
     pill_x = (1920 - 250) // 2
-    assert popup_rect == (pill_x - (500 - 250) // 2, 15, 500, 290)
+    assert popup_rect == (pill_x - (465 - 250) // 2, 15, 465, 140)
     assert r.pill.current_rect == (pill_x, 15, 250, 50)
     p = payload(r.pill, "micnaga.pill.show")
     assert p["provisional"] is False and p["paused"] is False
@@ -411,7 +411,7 @@ def test_system_theme_param_follows_the_registry_value() -> None:
     r.w32.hkcu[(winapi.PERSONALIZE_KEY, "AppsUseLightTheme")] = 0
     r.host.open_settings()
     assert r.fac.windows["settings"].spec.params["theme"] == "dark"
-    assert r.fac.windows["settings"].spec.background == "#1b1b1d"
+    assert r.fac.windows["settings"].spec.background == "#050507"
 
 
 def test_motion_param_when_windows_animations_off() -> None:

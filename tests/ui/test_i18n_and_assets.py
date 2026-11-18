@@ -35,25 +35,17 @@ def _dynamic_keys() -> set[str]:
         keys |= {f"settings.opt.{path}.{c}" for c in f.choices}
     groups = [g for g, _ in settings_schema.GROUPS] + ["diagnostics", "about"]
     for g in groups:
-        keys |= {f"settings.groups.{g}", f"settings.groups.{g}.nav", f"settings.groups.{g}.lead"}
+        keys |= {f"settings.groups.{g}", f"settings.groups.{g}.nav"}
     sections = {f.section for f in settings_schema.FIELDS.values()} - {"startup"}
     keys |= {f"settings.cards.{s}" for s in sections}
     keys |= {"settings.cards.voiceprints", "settings.cards.signals", "settings.cards.licenses"}
     keys |= {f"library.group.{g}" for g in ("today", "yesterday", "week", "earlier")}
-    keys |= {f"wizard.step{n}.title" for n in (1, 2, 3)}
-    keys |= {f"wizard.m.{s}" for s in ("pending", "downloading", "verifying", "verified", "failed")}
-    keys |= {f"wizard.step3.{k}_{s}" for k in ("mic", "sys") for s in ("hint", "ok")}
+    keys |= {f"wizard.{k}_ok" for k in ("mic", "sys")}
     keys |= {f"settings.diag_state.{s}" for s in ("ok", "warn", "off", "fail")}
     keys |= {f"tray.state.{s}" for s in ("watching", "recording", "paused", "processing")}
     keys |= set(ERR_KEY.findall(_read(UI / "bridge.py")))
     keys |= {"settings.err.save_failed", "settings.err.invalid", "settings.err.startup_failed"}
-    keys |= {
-        "wizard.err.no_downloader",
-        "wizard.err.generic",
-        "wizard.next",
-        "wizard.download",
-        "wizard.finish",
-    }
+    keys |= {"wizard.err.no_downloader", "wizard.err.generic"}
     return keys
 
 
@@ -101,7 +93,6 @@ def test_no_orphan_keys() -> None:
         "pill.resumed_notice",
         "pill.paused_notice",
         "pill.resume",
-        "wizard.retry",
         "tray.state.watching",
         "settings.window_title",
         "settings.about.license",

@@ -1,100 +1,145 @@
 /*
- * Recording pill (MIC-10/12/13) — 200 x 40 capsule, shared with the popup's morph target.
- * Always-dark "ink" capsule on purpose: it floats over arbitrary content (Meet, light or dark)
- * and must stay legible at the 60 % resting opacity.
+ * Recording pill (MIC-10/12/13) — 200 x 40 capsule, 296 wide on hover; also the popup's
+ * morph target. Always night glass (color-scheme: dark): it floats over arbitrary content
+ * (Meet light or dark) and must stay legible — yet quiet — at the 60 % resting opacity.
+ * Nothing paints outside the capsule (the window is cut to it).
  */
+@property --tint { syntax: "<color>"; inherits: true; initial-value: transparent; }
+
 .pill {
   --w: 200px;
-  --pill-bg: #1e1e21;
-  --pill-text: #f5f5f6;
-  --pill-dim: #a9a9b3;
-  --pill-line: rgb(255 255 255 / 0.12);
+  --pill-text: #f4f4f7;
+  --pill-dim: #a9a9b6;
+  --pill-ring: rgb(255 255 255 / 0.11);
+  --tint: rgb(255 77 85 / 0.16);
+  color-scheme: dark;
   position: relative;
   display: flex; align-items: center; gap: 10px;
-  width: var(--w); height: 40px; margin: 0 auto; padding: 0 14px;
+  width: var(--w); height: 40px; margin: 0 auto; padding: 0 8px 0 15px;
   border-radius: 20px;
-  background: var(--pill-bg); color: var(--pill-text);
-  box-shadow: inset 0 0 0 1px var(--pill-line), inset 0 1px 0 rgb(255 255 255 / 0.07);
+  color: var(--pill-text);
+  background:
+    radial-gradient(60px 40px at 18px 50%, var(--tint), transparent 70%),
+    linear-gradient(180deg, #201e2a, #0d0d12);
+  box-shadow: inset 0 0 0 1px var(--pill-ring), inset 0 1px 0 rgb(255 255 255 / 0.12);
   opacity: 0.6;
   overflow: hidden;
   transition: width var(--dur) var(--ease), opacity var(--dur) var(--ease),
-    background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+    box-shadow var(--dur) var(--ease), --tint var(--dur) var(--ease);
   user-select: none; -webkit-user-select: none;
 }
 .pill[data-hover="true"], .pill:focus-within { --w: 296px; opacity: 1; }
-.pill .rec-dot { background: var(--rec-dot); margin-left: 1px; }
-.pill .rec-dot::after { background: var(--rec-dot); }
+
+/* state glyph: red dot (recording), hollow ring (provisional), amber bars (private pause) */
+.state-ico { position: relative; width: 12px; height: 12px; flex: none; display: grid; place-items: center; }
+.state-ico .rec-dot { transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease); }
+.pause-glyph {
+  position: absolute; inset: 1px 2px; opacity: 0; transform: scale(0.4);
+  background: linear-gradient(90deg, var(--amber-dot) 0 3px, transparent 3px 5px, var(--amber-dot) 5px 8px);
+  border-radius: 1px;
+  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
 
 .pill-time {
-  font: 600 14px/1 var(--font); letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
-  min-width: 41px;
+  font: 700 18px/1 var(--display); letter-spacing: 0.02em; font-variant-numeric: tabular-nums;
+  min-width: 44px; color: var(--pill-text);
+  transition: color var(--dur) var(--ease);
 }
 .pill-tag {
-  font: 600 10.5px/1 var(--font); letter-spacing: 0.06em; text-transform: uppercase;
-  padding: 4px 7px; border-radius: 999px;
-  color: var(--pill-dim); box-shadow: inset 0 0 0 1px var(--pill-line);
+  display: inline-flex; align-items: center; height: 20px; padding: 0 8px;
+  font: 700 11px/1 var(--display); letter-spacing: 0.1em; text-transform: uppercase;
+  border-radius: 999px; color: var(--pill-dim); box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.16);
   white-space: nowrap;
 }
-.pill-meters { display: grid; gap: 4px; width: 38px; margin-left: auto; flex: none; }
-.pill-meters .meter {
-  height: 4px; border-radius: 2px; --meter-track: rgb(255 255 255 / 0.14); --meter-lo: #b9b9c3;
-  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
-  mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
-}
-.pill-meters .meter > i { background: linear-gradient(90deg, var(--meter-lo) 0 72%, var(--rec-dot) 94%); }
+
+/* two stacked live waves: me (top), them (bottom) */
+.pill-meters { display: grid; gap: 3px; width: 52px; margin-left: auto; margin-right: 7px; flex: none; }
+.pill-meters .wave { height: 8px; color: #c9c9d3; }
+.pill-meters #m-sys { color: #8f8f9c; }
 
 .pill-actions {
-  display: flex; gap: 2px; margin-left: 0;
+  display: flex; gap: 2px; align-items: center; margin-left: 0;
   max-width: 0; opacity: 0; overflow: hidden;
-  transition: max-width var(--dur) var(--ease), opacity var(--dur) var(--ease), margin var(--dur) var(--ease);
+  transition: max-width var(--dur) var(--ease), opacity var(--dur-fast) var(--ease), margin var(--dur) var(--ease);
 }
-.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 116px; opacity: 1; margin-left: 4px; }
+.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 104px; opacity: 1; margin-left: 2px; }
 .pb {
-  position: relative; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  position: relative; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%; flex: none;
   display: grid; place-items: center; background: transparent; color: var(--pill-text);
-  transition: background-color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+  transition: background-color var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
 }
-.pb:hover { background: rgb(255 255 255 / 0.14); }
-.pb:active { scale: 0.96; background: rgb(255 255 255 / 0.22); }
-.pb:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
-.pb.stop:hover { background: var(--accent); }
+.pb:hover { background: rgb(255 255 255 / 0.12); }
+.pb:active { transform: scale(0.92); background: rgb(255 255 255 / 0.2); }
+.pb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pb .ico { width: 16px; height: 16px; }
-.pb[aria-pressed="true"] { background: rgb(245 165 36 / 0.22); color: #ffc65a; }
+/* stop: the glossy red disc from the references */
+.pb.stop {
+  width: 30px; height: 30px; margin-left: 2px;
+  background:
+    radial-gradient(120% 90% at 50% 0%, rgb(255 255 255 / 0.28), transparent 55%),
+    linear-gradient(180deg, var(--rec-top), var(--rec-bottom));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.35), inset 0 -1px 0 rgb(0 0 0 / 0.2);
+}
+.pb.stop:hover { background: radial-gradient(120% 90% at 50% 0%, rgb(255 255 255 / 0.36), transparent 55%), linear-gradient(180deg, #f0545b, #cc2f36); }
+.stop-sq { width: 10px; height: 10px; border-radius: 3px; background: rgb(255 255 255 / 0.95); }
+.pb[aria-pressed="true"] { background: rgb(245 165 36 / 0.2); color: #ffc560; }
 .pb .swap { position: relative; width: 16px; height: 16px; display: block; }
 .pb .swap > svg {
   position: absolute; inset: 0;
-  transition: opacity var(--dur-fast) cubic-bezier(0.2, 0, 0, 1), scale var(--dur-fast) cubic-bezier(0.2, 0, 0, 1),
+  transition: opacity var(--dur-fast) cubic-bezier(0.2, 0, 0, 1), transform var(--dur-fast) cubic-bezier(0.2, 0, 0, 1),
     filter var(--dur-fast) cubic-bezier(0.2, 0, 0, 1);
 }
-.pb .swap > svg.b { opacity: 0; scale: 0.25; filter: blur(4px); }
-.pb[aria-pressed="true"] .swap > svg.a { opacity: 0; scale: 0.25; filter: blur(4px); }
-.pb[aria-pressed="true"] .swap > svg.b { opacity: 1; scale: 1; filter: blur(0); }
+.pb .swap > svg.b { opacity: 0; transform: scale(0.25); filter: blur(4px); }
+.pb[aria-pressed="true"] .swap > svg.a { opacity: 0; transform: scale(0.25); filter: blur(4px); }
+.pb[aria-pressed="true"] .swap > svg.b { opacity: 1; transform: none; filter: none; }
 
-/* marker feedback: a short flash */
-.pb.flash { animation: pb-flash 420ms var(--ease); }
-@keyframes pb-flash { 0% { background: rgb(255 255 255 / 0.4); } 100% { background: transparent; } }
+/* marker feedback: the flag pops and a violet ring blooms (inside the button) */
+.pb.flash { animation: pb-flash 520ms var(--ease-out); }
+.pb.flash .ico { animation: pb-flag 520ms var(--ease-out); }
+@keyframes pb-flash {
+  0% { box-shadow: inset 0 0 0 0 rgb(167 139 250 / 0.0); background: rgb(167 139 250 / 0.35); }
+  40% { box-shadow: inset 0 0 0 2px rgb(167 139 250 / 0.9); }
+  100% { box-shadow: inset 0 0 0 0 rgb(167 139 250 / 0); background: transparent; }
+}
+@keyframes pb-flag { 0% { transform: scale(1); } 30% { transform: scale(1.25) rotate(-8deg); } 100% { transform: none; } }
 
-/* private pause: amber, timer frozen (by JS), dot static */
+/* ---- private pause: amber, timer frozen (by JS), the dot becomes pause bars ------------ */
 .pill[data-state="paused"] {
-  --pill-bg: #2b2112;
-  --pill-line: rgb(245 165 36 / 0.45);
-  --pill-text: #ffe2ab;
-  --pill-dim: #d6b273;
-  opacity: 0.85;
+  --pill-text: #ffd590;
+  --pill-ring: rgb(245 165 36 / 0.42);
+  --tint: rgb(245 165 36 / 0.22);
+  background:
+    radial-gradient(70px 40px at 18px 50%, var(--tint), transparent 70%),
+    linear-gradient(180deg, #2b2213, #120e08);
+  opacity: 0.9;
 }
 .pill[data-state="paused"][data-hover="true"] { opacity: 1; }
-.pill[data-state="paused"] .rec-dot { background: var(--amber-dot); }
-.pill[data-state="paused"] .rec-dot::after { animation: none; opacity: 0; }
-.pill[data-state="paused"] .pill-meters { opacity: 0.35; }
+.pill[data-state="paused"] .rec-dot { opacity: 0; transform: scale(0.4); }
+.pill[data-state="paused"] .rec-dot::after { animation: none; }
+.pill[data-state="paused"] .pause-glyph { opacity: 1; transform: none; }
+.pill[data-state="paused"] .pill-meters { opacity: 0.3; }
 
-/* provisional: label instead of the meters (no room for both in 200 px) */
+/* ---- provisional: hollow dot + label instead of the meters (no room for both) ---------- */
+.pill[data-provisional="true"] .rec-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--rec-dot); }
+.pill[data-provisional="true"] .rec-dot::after { background: transparent; box-shadow: inset 0 0 0 1.5px var(--rec-dot); }
 .pill:not([data-provisional="true"]) .pill-tag { display: none; }
 .pill[data-provisional="true"] .pill-meters { display: none; }
-.pill[data-provisional="true"] .pill-tag { margin-left: auto; }
+.pill[data-provisional="true"] .pill-tag { margin-left: auto; margin-right: 6px; }
 .pill[data-provisional="true"][data-hover="true"] .pill-tag,
 .pill[data-provisional="true"]:focus-within .pill-tag { display: none; }
 .pill[data-provisional="true"][data-hover="true"] .pill-actions,
 .pill[data-provisional="true"]:focus-within .pill-actions { margin-left: auto; }
+
+/* ---- real Acrylic behind the window (Python: DWM transient backdrop + 8 px window corners).
+   The glass is the desktop itself, so the capsule is only a tint; the «60 % at rest» quieting
+   moves to the content (DWM keeps painting the glass at full strength). */
+:root[data-backdrop="acrylic"] .pill {
+  width: 100vw; height: 100vh; border-radius: 8px; opacity: 1;
+  background: radial-gradient(60px 40px at 18px 50%, var(--tint), transparent 70%), rgb(14 13 20 / 0.55);
+}
+:root[data-backdrop="acrylic"] .pill[data-state="paused"] { background: radial-gradient(70px 40px at 18px 50%, var(--tint), transparent 70%), rgb(30 22 8 / 0.6); }
+:root[data-backdrop="acrylic"] .pill > :not(.pill-actions) { opacity: 0.7; transition: opacity var(--dur) var(--ease); }
+:root[data-backdrop="acrylic"] .pill[data-hover="true"] > *, :root[data-backdrop="acrylic"] .pill:focus-within > * { opacity: 1; }
 
 /* standalone page */
 body.pill-page { background: transparent; }

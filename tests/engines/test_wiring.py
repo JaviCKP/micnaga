@@ -17,7 +17,7 @@ def test_asr_factories_resolve(name: str) -> None:
     assert callable(ASR_ENGINES.resolve(name))
 
 
-@pytest.mark.parametrize("name", ["diarize", "pyannote"])
+@pytest.mark.parametrize("name", ["onnx", "diarize", "pyannote"])
 def test_diarizer_factories_resolve(name: str) -> None:
     assert callable(DIARIZERS.resolve(name))
 
@@ -76,6 +76,7 @@ def test_importing_engine_modules_is_light() -> None:
         "import sys\n"
         "import micnaga.pipeline.engines.asr.parakeet, micnaga.pipeline.engines.asr.whisper\n"
         "import micnaga.pipeline.engines.diar.diarize, micnaga.pipeline.engines.diar.pyannote\n"
+        "import micnaga.pipeline.engines.diar.onnx\n"
         "import micnaga.pipeline.aec.webrtc, micnaga.pipeline.aec.speex\n"
         "import micnaga.pipeline.vad, micnaga.models\n"
         "bad = [m for m in ('torch', 'torchaudio', 'diarize', 'wespeakerruntime',\n"

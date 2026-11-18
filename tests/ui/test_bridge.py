@@ -515,3 +515,31 @@ def test_normalize_levels_accepts_the_shapes_a_recorder_may_return() -> None:
     assert normalize_levels(SimpleNamespace(mic=0.5, system=0.6)) == (0.5, 0.6)
     assert normalize_levels(None) == (0.0, 0.0)
     assert normalize_levels((float("nan"), "x")) == (0.0, 0.0)
+
+
+def test_wizard_auto_finish_runs_first_run_done_after_a_successful_download() -> None:
+    seen: list[str] = []
+
+    def dl(cb: Any) -> None:
+        cb(ModelProgress("Parakeet", "verified", 100, 100))
+
+    cbs = UiCallbacks(on_first_run_done=lambda: seen.append("done"))
+    w = WizardApi(download_models=dl, levels=lambda: (0, 0), callbacks=cbs, auto_finish=True)
+    assert w.start_download()["ok"]
+    for _ in range(100):
+        if seen:
+            break
+        time.sleep(0.02)
+    assert seen == ["done"]
+
+    def bad(cb: Any) -> None:
+        cb(ModelProgress("Parakeet", "failed", 0, 100, message="red"))
+
+    seen.clear()
+    w2 = WizardApi(download_models=bad, levels=lambda: (0, 0), callbacks=cbs, auto_finish=True)
+    w2.start_download()
+    for _ in range(100):
+        if w2.download_status()["state"] == "failed":
+            break
+        time.sleep(0.02)
+    assert seen == []  # un fallo no cierra el asistente: se queda para reintentar

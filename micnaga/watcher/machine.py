@@ -262,6 +262,13 @@ class WatcherStateMachine:
         return max(0.0, self._popup_timeout_s - self._popup_elapsed)
 
     @property
+    def popup_frozen(self) -> bool:
+        """``True`` si la cuenta atras del popup esta congelada (raton, pausa o senal caida)."""
+        return self._phase is Phase.PROMPTING and (
+            self._hover or self._paused or self._lost_since is not None
+        )
+
+    @property
     def state(self) -> WatcherState:
         if self._phase is Phase.SUSPENDED:
             return WatcherState.SUSPENDED

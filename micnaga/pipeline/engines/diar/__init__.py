@@ -1,4 +1,4 @@
-"""Diarizadores. Implementaciones: ``diarize.py`` (por defecto) y ``pyannote.py``.
+"""Diarizadores: ``onnx.py`` (por defecto, sin torch), ``diarize.py`` (torch) y ``pyannote.py``.
 
 Cada modulo expone ``create(config: Config) -> Diarizer``. Dentro de ``diarize.py`` el
 ``import diarize`` (la libreria) es absoluto y no choca con el modulo del mismo nombre.
@@ -13,6 +13,7 @@ from micnaga.registry import LazyRegistry
 DIARIZERS: LazyRegistry[Diarizer] = LazyRegistry(
     "diarizer",
     {
+        "onnx": "micnaga.pipeline.engines.diar.onnx:create",
         "diarize": "micnaga.pipeline.engines.diar.diarize:create",
         "pyannote": "micnaga.pipeline.engines.diar.pyannote:create",
     },

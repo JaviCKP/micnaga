@@ -5,6 +5,7 @@ Las paginas hablan con los puentes Python reales mediante ``dev_api`` (solo prue
 
 from __future__ import annotations
 
+import functools
 import time
 from collections.abc import Iterator
 from typing import Any
@@ -14,7 +15,7 @@ import pytest
 from micnaga.config import Config
 from micnaga.store.db import Database
 from micnaga.ui import fake, startup
-from micnaga.ui.bridge import LibraryApi, PillApi, PopupApi, SettingsApi
+from micnaga.ui.bridge import LibraryApi, PillApi, PopupApi, SettingsApi, WizardApi
 from micnaga.ui.contracts import UiCallbacks
 from micnaga.ui.media import LocalServer
 from tests.ui.cdp import Browser, Page, find_browser
@@ -41,6 +42,17 @@ class Spy:
         return [n for n, _ in self.calls]
 
 
+class AuthoritativeSpy(Spy):
+    """Un controlador con la cuenta atras del vigilante (``popup_state``) ya agotada."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.remaining = 0.0
+
+    def popup_state(self) -> dict[str, Any]:
+        return {"remaining_s": self.remaining, "total_s": 15.0, "paused": False}
+
+
 class MemStore:
     def __init__(self) -> None:
         self.cfg = Config()
@@ -57,18 +69,27 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
     root = tmp_path_factory.mktemp("dom") / "m"
     folders = fake.build_demo_library(root, audio=False)
     spy = Spy()
+    auth = AuthoritativeSpy()
     cfg = Config()
     ops = fake.FakeLibraryOps(lambda: root)
     store = MemStore()
+    finished: list[bool] = []
     api: dict[str, object] = {
-        "popup": PopupApi(spy),  # type: ignore[arg-type]
-        "pill": PillApi(spy),  # type: ignore[arg-type]
+        "popup": PopupApi(spy),
+        "popup_auth": PopupApi(auth),
+        "pill": PillApi(spy),
         "library": LibraryApi(
             db_factory=lambda: Database(root / "micnaga.db"),
             meetings_root=lambda: root,
             audio_url=lambda f, t: "",
             config=lambda: cfg,
             ops=ops,
+        ),
+        "wizard": WizardApi(
+            download_models=functools.partial(fake.fake_download_models, speed=4.0),
+            levels=lambda: (0.5, 0.01),
+            callbacks=UiCallbacks(on_first_run_done=lambda: finished.append(True)),
+            play_test=lambda: None,
         ),
         "settings": SettingsApi(
             store=store,
@@ -78,7 +99,15 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
         ),
     }
     with LocalServer(meetings_root=lambda: root, dev_api=api) as srv, Browser() as b:
-        yield {"srv": srv, "b": b, "spy": spy, "folders": folders, "store": store}
+        yield {
+            "srv": srv,
+            "b": b,
+            "spy": spy,
+            "auth": auth,
+            "folders": folders,
+            "store": store,
+            "finished": finished,
+        }
 
 
 def page(
@@ -93,7 +122,7 @@ def page(
 def test_popup_is_an_alertdialog_with_accessible_name_and_visible_default_focus(
     world: dict[str, Any],
 ) -> None:
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     assert p.eval("document.querySelector('[role=alertdialog]') !== null")
     assert p.eval("document.getElementById('p-title').textContent") == "¿Estás en una reu?"
     assert (
@@ -104,14 +133,18 @@ def test_popup_is_an_alertdialog_with_accessible_name_and_visible_default_focus(
     assert p.eval("getComputedStyle(document.getElementById('lift')).opacity") == "1"
     assert p.eval(
         "[document.querySelector('.card').offsetWidth, document.querySelector('.card').offsetHeight]"  # noqa: E501
-    ) == [400, 232]
-    assert p.eval("getComputedStyle(document.querySelector('.card')).borderRadius") == "12px"
+    ) == [372, 112]  # compact glass card (spec: 400 x 232; resized at the user's request)
+    # 16 px (spec: 12): the in-page glass card follows the references
+    assert p.eval("getComputedStyle(document.querySelector('.card')).borderRadius") == "16px"
+    # both answers keep their keyboard shortcut, also for assistive tech
+    assert p.eval("document.getElementById('b-rec').getAttribute('aria-keyshortcuts')") == "Enter"
+    assert p.eval("document.getElementById('b-no').getAttribute('aria-keyshortcuts')") == "Escape"
 
 
 def test_popup_enter_means_grabar(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     p.key("Enter", "Enter", 13)
     assert p.wait_for("micnaga.popup.phase === 'confirming' || micnaga.popup.phase === 'morphing'")
     assert p.wait_for("micnaga.popup.phase === 'done'", 3)
@@ -121,10 +154,22 @@ def test_popup_enter_means_grabar(world: dict[str, Any]) -> None:
     assert p.eval("document.getElementById('card').dataset.morph") == "true"
 
 
+def test_popup_reshown_after_a_morph_is_whole_again(world: dict[str, Any]) -> None:
+    p = page(world, "popup.html", "popup", 372, 112)
+    p.key("Enter", "Enter", 13)
+    assert p.wait_for("micnaga.popup.phase === 'done'", 3)
+    p.eval("micnaga.popup.show({title: 'Otra', code: 'abc-defg-hij', timeoutS: 30})")
+    assert p.wait_for("micnaga.popup.phase === 'shown'", 2)
+    assert p.eval(
+        "[document.getElementById('card').offsetWidth, document.getElementById('card').offsetHeight]"  # noqa: E501
+    ) == [372, 112]
+    assert p.eval("getComputedStyle(document.getElementById('card'), '::after').opacity") == "0"
+
+
 def test_popup_escape_means_ahora_no(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     p.key("Escape", "Escape", 27)
     assert p.wait_for("micnaga.popup.phase === 'leaving' || micnaga.popup.phase === 'done'")
     assert p.wait_for("micnaga.popup.phase === 'done'", 2)
@@ -136,7 +181,7 @@ def test_popup_escape_means_ahora_no(world: dict[str, Any]) -> None:
 def test_popup_buttons_work_with_the_mouse(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     p.click(*p.center("#b-no"))
     assert p.wait_for("micnaga.popup.phase === 'done'", 2)
     assert ("handle_popup_decide", ("dismiss",)) in spy.calls
@@ -145,9 +190,9 @@ def test_popup_buttons_work_with_the_mouse(world: dict[str, Any]) -> None:
 def test_popup_countdown_pauses_on_hover_and_resumes(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232, timeout=40)
+    p = page(world, "popup.html", "popup", 372, 112, timeout=40)
     time.sleep(0.5)
-    p.mouse_move(200, 100)
+    p.mouse_move(150, 60)
     assert p.wait_for("document.getElementById('card').dataset.hover === 'true'")
     a = float(
         p.eval("getComputedStyle(document.querySelector('#countdown > i')).getPropertyValue('--p')")
@@ -170,17 +215,39 @@ def test_popup_countdown_pauses_on_hover_and_resumes(world: dict[str, Any]) -> N
 def test_popup_timeout_becomes_provisional_pill(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232, timeout=1)
+    p = page(world, "popup.html", "popup", 372, 112, timeout=1)
     assert p.wait_for("micnaga.popup.phase === 'done'", 4)
     assert ("handle_popup_decide", ("timeout",)) in spy.calls
     assert ("handle_popup_morph", (True,)) in spy.calls
     assert p.eval("getComputedStyle(document.getElementById('echo-tag')).display") != "none"
 
 
+def test_popup_never_decides_the_timeout_when_python_owns_the_countdown(
+    world: dict[str, Any],
+) -> None:
+    auth: AuthoritativeSpy = world["auth"]
+    auth.calls.clear()
+    auth.remaining = 6.0
+    p = page(world, "popup.html", "popup_auth", 372, 112, timeout=1)  # local 1 s would expire
+    assert p.wait_for("micnaga.popup.authority === 'python'", 3)
+    frac = float(
+        p.eval("getComputedStyle(document.querySelector('#countdown > i')).getPropertyValue('--p')")
+    )
+    assert 0.3 < frac < 0.45, frac  # the bar draws Python's 6 s of 15 s, not the local 1 s
+    auth.remaining = 0.0
+    time.sleep(1.6)
+    assert p.eval("micnaga.popup.phase") == "shown", "the JS must wait for expire()"
+    assert not any(n == "handle_popup_decide" for n in auth.names())
+    p.eval("micnaga.popup.expire()")
+    assert p.wait_for("micnaga.popup.phase === 'done'", 3)
+    assert ("handle_popup_morph", (True,)) in auth.calls
+    assert not any(n == "handle_popup_decide" for n in auth.names())
+
+
 def test_popup_discard_policy_leaves_instead_of_morphing(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232, timeout=1, on_timeout="discard")
+    p = page(world, "popup.html", "popup", 372, 112, timeout=1, on_timeout="discard")
     assert p.wait_for("micnaga.popup.phase === 'done'", 4)
     assert ("handle_popup_closed", ("leaving",)) in spy.calls
     assert not any(n == "handle_popup_morph" for n, _ in spy.calls)
@@ -189,7 +256,7 @@ def test_popup_discard_policy_leaves_instead_of_morphing(world: dict[str, Any]) 
 def test_popup_end_before_answer_fades(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
-    p = page(world, "popup.html", "popup", 400, 232, timeout=40)
+    p = page(world, "popup.html", "popup", 372, 112, timeout=40)
     p.eval("micnaga.popup.end()")
     assert p.wait_for("micnaga.popup.phase === 'done'", 2)
     assert ("handle_popup_closed", ("fading",)) in spy.calls
@@ -197,17 +264,21 @@ def test_popup_end_before_answer_fades(world: dict[str, Any]) -> None:
 
 
 def test_popup_reminder_can_be_dismissed_and_is_optional(world: dict[str, Any]) -> None:
-    p = page(world, "popup.html", "popup", 400, 232, notice=0)
+    p = page(world, "popup.html", "popup", 372, 112, notice=0)
     assert p.eval("document.getElementById('notice').classList.contains('gone')")
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     assert not p.eval("document.getElementById('notice').classList.contains('gone')")
+    # a tiny mark; hovering it reveals the words and the × that hides it for good
+    p.mouse_move(*p.center("#notice"))
+    assert p.wait_for("getComputedStyle(document.getElementById('notice-x')).opacity === '1'", 2)
+    time.sleep(0.3)
     p.click(*p.center("#notice-x"))
     assert p.wait_for("document.getElementById('notice').classList.contains('gone')")
     assert ("handle_notice_dismissed", ()) in world["spy"].calls
 
 
 def test_popup_respects_reduced_motion(world: dict[str, Any]) -> None:
-    p = world["b"].new_page(400, 232)
+    p = world["b"].new_page(372, 112)
     p.emulate(dark=False, reduced_motion=True)
     p.goto(world["srv"].page_url("popup.html", bridge="http", surface="popup"), wait=0.6)
     assert p.eval("mic.motion") is False
@@ -215,12 +286,12 @@ def test_popup_respects_reduced_motion(world: dict[str, Any]) -> None:
         p.eval("getComputedStyle(document.documentElement).getPropertyValue('--dur').trim()")
         == "0.01ms"
     )
-    p2 = page(world, "popup.html", "popup", 400, 232, motion="off")
+    p2 = page(world, "popup.html", "popup", 372, 112, motion="off")
     assert p2.eval("mic.motion") is False and p2.eval("mic.dur(220)") == 0
 
 
 def test_popup_and_pill_use_the_spec_easing(world: dict[str, Any]) -> None:
-    p = page(world, "popup.html", "popup", 400, 232)
+    p = page(world, "popup.html", "popup", 372, 112)
     assert (
         p.eval("getComputedStyle(document.documentElement).getPropertyValue('--ease').trim()")
         == "cubic-bezier(0.2, 0.8, 0.2, 1)"
@@ -246,6 +317,11 @@ def test_pill_hover_expands_and_buttons_route(world: dict[str, Any]) -> None:
     assert ("handle_pill_hover", (True,)) in spy.calls
     p.click(*p.center("#b-marker"))
     p.click(*p.center("#b-stop"))
+    deadline = time.time() + 2  # the bridge calls are async HTTP posts in this harness
+    while time.time() < deadline and not {"handle_pill_marker", "handle_pill_stop"} <= set(
+        spy.names()
+    ):
+        time.sleep(0.05)
     assert {"handle_pill_marker", "handle_pill_stop"} <= set(spy.names())
     time.sleep(0.3)
     p.click(*p.center("#b-pause"))
@@ -366,11 +442,18 @@ def test_settings_tabs_are_keyboard_navigable(world: dict[str, Any]) -> None:
     assert p.eval("document.getElementById('pane-detection').hidden") is False
 
 
-def test_wizard_three_steps_with_download_and_audio_check(world: dict[str, Any]) -> None:
+def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any]) -> None:
+    finished: list[bool] = world["finished"]
+    finished.clear()
     p = page(world, "wizard.html", "wizard", 600, 680)
-    assert p.eval("document.querySelector('.step[data-state=current]').dataset.n") == "1"
-    p.click(*p.center("#next"))
-    assert p.eval("document.querySelector('.step[data-state=current]').dataset.n") == "2"
-    assert p.eval("document.getElementById('next').textContent") == "Descargar"
-    p.click(*p.center("#back"))
-    assert p.eval("document.querySelector('.step[data-state=current]').dataset.n") == "1"
+    # no «Descargar» / «Continuar»: the download starts on its own
+    assert p.eval("document.querySelectorAll('button:not([hidden])').length") == 1  # retry only
+    assert p.eval("document.getElementById('fail').hidden") is True
+    assert p.wait_for(
+        "+document.getElementById('overall-bar').getAttribute('aria-valuenow') > 0", 4
+    )
+    assert p.wait_for("micnaga.wizard.state === 'done'", 8)
+    deadline = time.time() + 4  # «Listo» for a breath, then finish() closes the window
+    while time.time() < deadline and not finished:
+        time.sleep(0.05)
+    assert finished == [True]

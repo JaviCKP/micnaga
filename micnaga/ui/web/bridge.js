@@ -5,7 +5,8 @@
  *   mic.t(key, vars)          -> localised string from i18n/es.json
  *   mic.applyI18n(root)       -> fills data-i18n / data-i18n-<attr> nodes
  *   mic.icon(name, cls)       -> inline SVG markup (one icon set, currentColor)
- *   mic.meter(el)             -> smoothed level meter controller
+ *   mic.meter(el)             -> smoothed level meter controller (bar)
+ *   mic.wave(canvas)          -> scrolling waveform meter painted on a canvas
  *   mic.motion                -> false when animations are off (Windows setting / reduced motion)
  *   mic.dur(ms)               -> ms, or 0 when motion is off
  *
@@ -66,7 +67,11 @@
   };
 
   // Python -> JS: window.mic.setTheme('dark'), setMotion(false)
-  mic.setTheme = (t) => { if (t === "light" || t === "dark") root.dataset.theme = t; else delete root.dataset.theme; };
+  mic.setTheme = (t) => {
+    if (t === "light" || t === "dark") root.dataset.theme = t; else delete root.dataset.theme;
+    document.dispatchEvent(new Event("mic:theme"));
+  };
+  if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => document.dispatchEvent(new Event("mic:theme")));
   mic.setMotion = (on) => { if (on) delete root.dataset.motion; else root.dataset.motion = "off"; };
   mic.setBackdrop = (b) => { if (b) root.dataset.backdrop = b; else delete root.dataset.backdrop; };
 
@@ -78,7 +83,7 @@
     if (vars) s = s.replace(/\{(\w+)\}/g, (m, k) => (k in vars ? vars[k] : m));
     return s;
   };
-  const ATTRS = ["title", "aria-label", "placeholder", "alt", "aria-description"];
+  const ATTRS = ["title", "aria-label", "placeholder", "alt", "aria-description", "data-tip"];
   mic.applyI18n = function (scope) {
     scope = scope || document;
     scope.querySelectorAll("[data-i18n]").forEach((el) => { if (el.dataset.i18n in strings) el.textContent = mic.t(el.dataset.i18n); });
@@ -161,6 +166,17 @@
     mute: '<path d="M4 9.5v5h3.5L12 18.5v-13L7.5 9.5zM16 9.5l5 5M21 9.5l-5 5"/>',
     sliders: '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
     wave: '<path d="M4 12v0M8 8v8M12 4v16M16 8v8M20 12v0"/>',
+    megaphone: '<path d="M4 9.5v5l12.5 4.5v-14zM7.5 15.8 9 20h2.5l-1-3.2M19.5 10v4"/>',
+    video: '<rect x="3.5" y="6.5" width="12" height="11" rx="2.5"/><path d="m15.5 10.5 5-3v9l-5-3"/>',
+    app: '<rect x="3.5" y="5" width="17" height="14" rx="3"/><path d="M3.5 9.5h17M6.5 7.2h.01M9 7.2h.01"/>',
+    restart: '<path d="M4.5 12a7.5 7.5 0 1 0 2.2-5.3L4.5 9M4.5 4.5V9H9"/>',
+    help: '<circle cx="12" cy="12" r="8.5"/><path d="M9.8 9.6a2.3 2.3 0 0 1 4.4.9c0 1.6-2.2 2-2.2 3.4M12 16.8v.2"/>',
+    lock: '<rect x="5" y="10.5" width="14" height="9.5" rx="2.5"/><path d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5"/>',
+    feather: '<path d="M5 19 15.5 8.5M7 17h6.5A6.5 6.5 0 0 0 20 10.5V4h-6.5A6.5 6.5 0 0 0 7 10.5z"/>',
+    cpu: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/>',
+    eye: '<path d="M2.8 12S6 5.5 12 5.5 21.2 12 21.2 12 18 18.5 12 18.5 2.8 12 2.8 12z"/><circle cx="12" cy="12" r="3"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    dots: '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
   };
   mic.icon = function (name, cls) {
     return '<svg class="ico ' + (cls || "") + '" viewBox="0 0 24 24" aria-hidden="true" focusable="false">' + (P[name] || "") + "</svg>";
@@ -203,6 +219,63 @@
       stop() { alive = false; if (raf) cancelAnimationFrame(raf); },
       start() { alive = true; },
       get value() { return shown; },
+    };
+  };
+
+  /**
+   * Live waveform: a scrolling history of levels painted on a <canvas> (one 2D draw per push,
+   * ~20 fps; no layout, no per-bar DOM). Bars grow from the centre, older bars fade out, colour
+   * is the canvas' CSS `color` (so themes and states restyle it for free).
+   *   const w = mic.wave(canvasEl, { bar: 3, gap: 2, min: 2 });  w.push(uiLevel0to1); w.reset();
+   */
+  mic.wave = function (canvas, opts) {
+    const o = Object.assign({ bar: 3, gap: 2, min: 2, fade: 0.28, round: true, curve: 2.2 }, opts || {});
+    const ctx = canvas.getContext("2d");
+    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0;
+    function size() {
+      dpr = window.devicePixelRatio || 1;
+      const r = canvas.getBoundingClientRect();
+      W = Math.max(1, Math.round(r.width)); H = Math.max(1, Math.round(r.height));
+      canvas.width = Math.round(W * dpr); canvas.height = Math.round(H * dpr);
+      const nn = Math.max(1, Math.floor((W + o.gap) / (o.bar + o.gap)));
+      if (nn !== n) { const old = hist; n = nn; hist = new Float32Array(n); head = 0; if (old.length) hist.fill(0); }
+      draw();
+    }
+    function readColor() { color = getComputedStyle(canvas).color || color; }
+    function draw() {
+      if (!n) return;
+      if (frame++ % 20 === 0) readColor();
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = color;
+      const used = n * (o.bar + o.gap) - o.gap, x0 = W - used;
+      for (let i = 0; i < n; i++) {
+        const v = hist[(head + i) % n];                     // i = 0 oldest .. n-1 newest
+        const h = Math.max(o.min, Math.min(H, Math.pow(v, o.curve) * H));   // curve: speech reads as speech
+        const x = x0 + i * (o.bar + o.gap), y = (H - h) / 2;
+        ctx.globalAlpha = o.fade + (1 - o.fade) * (i / Math.max(1, n - 1));
+        if (o.round && ctx.roundRect) { ctx.beginPath(); ctx.roundRect(x, y, o.bar, h, o.bar / 2); ctx.fill(); }
+        else ctx.fillRect(x, y, o.bar, h);
+      }
+      ctx.globalAlpha = 1;
+    }
+    if (window.ResizeObserver) new ResizeObserver(size).observe(canvas);
+    document.addEventListener("mic:theme", () => requestAnimationFrame(() => { readColor(); draw(); }));
+    size();
+    return {
+      /** v: 0..1 UI level. A light attack/release keeps the bars organic, not jittery. */
+      push(v) {
+        v = Math.max(0, Math.min(1, Number(v) || 0));
+        const s = v > last ? v : last * 0.55 + v * 0.45;
+        last = s;
+        if (!n) return;
+        hist[head] = s; head = (head + 1) % n;
+        draw();
+      },
+      fill(v) { hist.fill(Math.max(0, Math.min(1, v))); last = v; draw(); },
+      reset() { hist.fill(0); last = 0; draw(); },
+      redraw() { readColor(); draw(); },
+      get level() { return last; },
     };
   };
 

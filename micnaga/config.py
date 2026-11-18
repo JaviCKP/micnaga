@@ -68,7 +68,7 @@ class VadConfig:
 class ProcessingConfig:
     asr_engine: str = "parakeet"  # parakeet | whisper
     whisper_model: str = "small"
-    diarization: str = "diarize"  # diarize | pyannote
+    diarization: str = "onnx"  # onnx | diarize | pyannote
     aec: str = "auto"  # auto | webrtc | speex | off
     threads: int = 6
     low_priority: bool = True  # BELOW_NORMAL_PRIORITY_CLASS en el worker
@@ -129,7 +129,7 @@ class Config:
         _check_choice("detection.on_timeout", self.detection.on_timeout, ("provisional", "discard"))
         _check_choice("processing.asr_engine", self.processing.asr_engine, ("parakeet", "whisper"))
         _check_choice(
-            "processing.diarization", self.processing.diarization, ("diarize", "pyannote")
+            "processing.diarization", self.processing.diarization, ("onnx", "diarize", "pyannote")
         )
         _check_choice("processing.aec", self.processing.aec, ("auto", "webrtc", "speex", "off"))
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
