@@ -93,6 +93,7 @@ def build_default_sampler(
     config: DetectionConfig, extension: ExtensionSignalSource | None = None
 ) -> SignalSampler:
     """Fuentes reales de Windows para ``config.browsers``."""
+    from micnaga.watcher.capture_sessions import CaptureSessionMicSource, CombinedMicSource
     from micnaga.watcher.winapi import (
         UiaTabNameReader,
         Win32BrowserWindows,
@@ -100,8 +101,14 @@ def build_default_sampler(
     )
 
     browsers = [b.lower() for b in config.browsers]
+    # El registro de privacidad no siempre refleja el uso (p. ej. Escritorio remoto): se une
+    # con las sesiones de captura WASAPI activas.
+    mic = CombinedMicSource(
+        RegistryMicSource(browsers, generic=config.generic_apps, exclude=config.exclude_apps),
+        CaptureSessionMicSource(browsers, generic=config.generic_apps, exclude=config.exclude_apps),
+    )
     return SignalSampler(
-        mic=RegistryMicSource(browsers, generic=config.generic_apps, exclude=config.exclude_apps),
+        mic=mic,
         tabs=MeetTabScanner(Win32BrowserWindows(), UiaTabNameReader(), monitor_hint_for_window),
         audio_out=PycawAudioOutSource(browsers),
         extension=extension,
