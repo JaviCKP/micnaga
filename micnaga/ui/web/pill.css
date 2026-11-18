@@ -1,0 +1,100 @@
+/*
+ * Recording pill (MIC-10/12/13) — 200 x 40 capsule, shared with the popup's morph target.
+ * Always-dark "ink" capsule on purpose: it floats over arbitrary content (Meet, light or dark)
+ * and must stay legible at the 60 % resting opacity.
+ */
+.pill {
+  --w: 200px;
+  --pill-bg: #1e1e21;
+  --pill-text: #f5f5f6;
+  --pill-dim: #a9a9b3;
+  --pill-line: rgb(255 255 255 / 0.12);
+  position: relative;
+  display: flex; align-items: center; gap: 10px;
+  width: var(--w); height: 40px; margin: 0 auto; padding: 0 14px;
+  border-radius: 20px;
+  background: var(--pill-bg); color: var(--pill-text);
+  box-shadow: inset 0 0 0 1px var(--pill-line), inset 0 1px 0 rgb(255 255 255 / 0.07);
+  opacity: 0.6;
+  overflow: hidden;
+  transition: width var(--dur) var(--ease), opacity var(--dur) var(--ease),
+    background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  user-select: none; -webkit-user-select: none;
+}
+.pill[data-hover="true"], .pill:focus-within { --w: 296px; opacity: 1; }
+.pill .rec-dot { background: var(--rec-dot); margin-left: 1px; }
+.pill .rec-dot::after { background: var(--rec-dot); }
+
+.pill-time {
+  font: 600 14px/1 var(--font); letter-spacing: 0.01em; font-variant-numeric: tabular-nums;
+  min-width: 41px;
+}
+.pill-tag {
+  font: 600 10.5px/1 var(--font); letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 4px 7px; border-radius: 999px;
+  color: var(--pill-dim); box-shadow: inset 0 0 0 1px var(--pill-line);
+  white-space: nowrap;
+}
+.pill-meters { display: grid; gap: 4px; width: 38px; margin-left: auto; flex: none; }
+.pill-meters .meter {
+  height: 4px; border-radius: 2px; --meter-track: rgb(255 255 255 / 0.14); --meter-lo: #b9b9c3;
+  -webkit-mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
+  mask-image: repeating-linear-gradient(90deg, #000 0 2px, transparent 2px 4px);
+}
+.pill-meters .meter > i { background: linear-gradient(90deg, var(--meter-lo) 0 72%, var(--rec-dot) 94%); }
+
+.pill-actions {
+  display: flex; gap: 2px; margin-left: 0;
+  max-width: 0; opacity: 0; overflow: hidden;
+  transition: max-width var(--dur) var(--ease), opacity var(--dur) var(--ease), margin var(--dur) var(--ease);
+}
+.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 116px; opacity: 1; margin-left: 4px; }
+.pb {
+  position: relative; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
+  display: grid; place-items: center; background: transparent; color: var(--pill-text);
+  transition: background-color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.pb:hover { background: rgb(255 255 255 / 0.14); }
+.pb:active { scale: 0.96; background: rgb(255 255 255 / 0.22); }
+.pb:focus-visible { outline: 2px solid #fff; outline-offset: -2px; }
+.pb.stop:hover { background: var(--accent); }
+.pb .ico { width: 16px; height: 16px; }
+.pb[aria-pressed="true"] { background: rgb(245 165 36 / 0.22); color: #ffc65a; }
+.pb .swap { position: relative; width: 16px; height: 16px; display: block; }
+.pb .swap > svg {
+  position: absolute; inset: 0;
+  transition: opacity var(--dur-fast) cubic-bezier(0.2, 0, 0, 1), scale var(--dur-fast) cubic-bezier(0.2, 0, 0, 1),
+    filter var(--dur-fast) cubic-bezier(0.2, 0, 0, 1);
+}
+.pb .swap > svg.b { opacity: 0; scale: 0.25; filter: blur(4px); }
+.pb[aria-pressed="true"] .swap > svg.a { opacity: 0; scale: 0.25; filter: blur(4px); }
+.pb[aria-pressed="true"] .swap > svg.b { opacity: 1; scale: 1; filter: blur(0); }
+
+/* marker feedback: a short flash */
+.pb.flash { animation: pb-flash 420ms var(--ease); }
+@keyframes pb-flash { 0% { background: rgb(255 255 255 / 0.4); } 100% { background: transparent; } }
+
+/* private pause: amber, timer frozen (by JS), dot static */
+.pill[data-state="paused"] {
+  --pill-bg: #2b2112;
+  --pill-line: rgb(245 165 36 / 0.45);
+  --pill-text: #ffe2ab;
+  --pill-dim: #d6b273;
+  opacity: 0.85;
+}
+.pill[data-state="paused"][data-hover="true"] { opacity: 1; }
+.pill[data-state="paused"] .rec-dot { background: var(--amber-dot); }
+.pill[data-state="paused"] .rec-dot::after { animation: none; opacity: 0; }
+.pill[data-state="paused"] .pill-meters { opacity: 0.35; }
+
+/* provisional: label instead of the meters (no room for both in 200 px) */
+.pill:not([data-provisional="true"]) .pill-tag { display: none; }
+.pill[data-provisional="true"] .pill-meters { display: none; }
+.pill[data-provisional="true"] .pill-tag { margin-left: auto; }
+.pill[data-provisional="true"][data-hover="true"] .pill-tag,
+.pill[data-provisional="true"]:focus-within .pill-tag { display: none; }
+.pill[data-provisional="true"][data-hover="true"] .pill-actions,
+.pill[data-provisional="true"]:focus-within .pill-actions { margin-left: auto; }
+
+/* standalone page */
+body.pill-page { background: transparent; }

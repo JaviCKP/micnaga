@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Micnaga</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="pill.css">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body class="transparent popup-page">
+<div class="stage">
+  <div class="lift" id="lift" data-phase="hidden">
+    <section class="card" id="card" role="alertdialog" aria-modal="false"
+             aria-labelledby="p-title" aria-describedby="p-meta">
+      <div class="body" id="body">
+        <header class="head">
+          <div class="badge" aria-hidden="true"><span class="ring"></span><span data-icon="mic" data-icon-class="lg"></span></div>
+          <div class="head-text">
+            <h1 id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
+            <p class="meta" id="p-meta"><span class="meet-title" id="p-meet"></span><span class="tag-mono" id="p-code" hidden></span></p>
+          </div>
+        </header>
+
+        <div class="meters" role="group" data-i18n-aria-label="popup.levels">
+          <div class="meter-row">
+            <span class="meter-label" id="lbl-mic" data-icon="mic"><span data-i18n="popup.me">Yo</span></span>
+            <div class="meter" id="m-mic" role="meter" aria-labelledby="lbl-mic" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+          </div>
+          <div class="meter-row">
+            <span class="meter-label" id="lbl-sys" data-icon="speaker"><span data-i18n="popup.them">Ellos</span></span>
+            <div class="meter" id="m-sys" role="meter" aria-labelledby="lbl-sys" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i></i></div>
+          </div>
+        </div>
+
+        <div class="notice" id="notice">
+          <span data-icon="info"></span>
+          <span class="notice-text" data-i18n="popup.notice">Recuerda avisar de que grabas</span>
+          <button class="notice-x" id="notice-x" type="button" data-i18n-aria-label="popup.notice_dismiss" data-i18n-title="popup.notice_dismiss" data-icon="x"></button>
+        </div>
+
+        <footer class="actions">
+          <button class="btn btn-ghost" id="b-no" type="button"><span data-i18n="popup.no">Ahora no</span> <kbd aria-hidden="true">Esc</kbd></button>
+          <button class="btn btn-primary" id="b-rec" type="button">
+            <span class="swap" aria-hidden="true"><span class="swap-a"></span><span class="swap-b"></span></span>
+            <span data-i18n="popup.record">Grabar</span> <kbd aria-hidden="true">↵</kbd>
+          </button>
+        </footer>
+
+        <div class="countdown" id="countdown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" data-i18n-aria-label="popup.countdown"><i></i></div>
+      </div>
+
+      <!-- what the card turns into: same markup as the real pill -->
+      <div class="echo" id="echo" aria-hidden="true">
+        <span class="rec-dot"></span>
+        <span class="pill-time" id="echo-time">00:00</span>
+        <span class="pill-tag" id="echo-tag" data-i18n="pill.provisional">provisional</span>
+      </div>
+    </section>
+  </div>
+  <span class="sr-only" id="live" role="status" aria-live="polite"></span>
+</div>
+<script src="bridge.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -131,7 +131,7 @@ def test_auto_picks_first_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         AEC_ENGINES, "_entries", {"webrtc": "nonexistent.mod:create", "speex": "fake_speex:create"}
     )
-    assert AUTO_ORDER == ("webrtc", "speex")
+    assert AUTO_ORDER == ("speex", "webrtc")
     engine = create_echo_canceller(Config(), "auto")
     assert engine is not None
     assert engine.name == "speex"

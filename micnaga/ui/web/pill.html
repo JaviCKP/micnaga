@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Micnaga</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="pill.css">
+</head>
+<body class="transparent pill-page">
+<div class="pill pywebview-drag-region" id="pill" role="group" data-i18n-aria-label="pill.label"
+     data-state="recording" data-hover="false" data-provisional="false">
+  <span class="rec-dot" aria-hidden="true"></span>
+  <time class="pill-time" id="time" role="timer" aria-live="off">00:00</time>
+  <span class="pill-tag" id="tag" data-i18n="pill.provisional">provisional</span>
+  <span class="pill-meters" aria-hidden="true">
+    <span class="meter" id="m-mic"><i></i></span>
+    <span class="meter" id="m-sys"><i></i></span>
+  </span>
+  <span class="pill-actions">
+    <button class="pb" id="b-marker" type="button" data-i18n-aria-label="pill.marker" data-i18n-title="pill.marker" data-icon="flag"></button>
+    <button class="pb" id="b-pause" type="button" aria-pressed="false" data-i18n-aria-label="pill.pause" data-i18n-title="pill.pause">
+      <span class="swap" id="pause-swap"></span>
+    </button>
+    <button class="pb stop" id="b-stop" type="button" data-i18n-aria-label="pill.stop" data-i18n-title="pill.stop" data-icon="stop"></button>
+  </span>
+  <span class="sr-only" id="live" role="status" aria-live="polite"></span>
+</div>
+<script src="bridge.js"></script>
+<script src="pill.js"></script>
+</body>
+</html>

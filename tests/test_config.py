@@ -156,3 +156,41 @@ def test_every_float_field_has_a_float_default() -> None:
         for f in dataclasses.fields(obj):
             if f.type in ("float", float):
                 assert isinstance(getattr(obj, f.name), float), f"{section.name}.{f.name}"
+
+
+def test_detection_generic_path_defaults_and_roundtrip(tmp_path: Path) -> None:
+    c = Config()
+    d = c.detection
+    assert d.generic_apps is True
+    assert (d.mic_grace_s, d.popup_after_recording_s) == (20.0, 20.0)
+    assert d.exclude_apps == []
+    f = tmp_path / "c.toml"
+    f.write_text(
+        "[detection]\ngeneric_apps = false\nmic_grace_s = 12.5\n"
+        "popup_after_recording_s = 8\nexclude_apps = ['handy.exe', 'Foo_abc123']\n",
+        encoding="utf-8",
+    )
+    loaded = load_config(f).detection
+    assert loaded.generic_apps is False
+    assert loaded.mic_grace_s == 12.5 and loaded.popup_after_recording_s == 8.0
+    assert loaded.exclude_apps == ["handy.exe", "Foo_abc123"]
+
+
+@pytest.mark.parametrize(
+    "toml",
+    [
+        "[detection]\nmic_grace_s = -1\n",
+        "[detection]\npopup_after_recording_s = -0.5\n",
+        "[detection]\nconfirm_after_s = -2\n",
+        "[detection]\npopup_timeout_s = -1\n",
+        "[detection]\nend_after_s = 0\n",
+        "[detection]\npoll_interval_s = 0\n",
+        "[detection]\nexclude_apps = 'handy.exe'\n",
+        "[detection]\ngeneric_apps = 'yes'\n",
+    ],
+)
+def test_detection_invalid_values_are_rejected(tmp_path: Path, toml: str) -> None:
+    f = tmp_path / "c.toml"
+    f.write_text(toml, encoding="utf-8")
+    with pytest.raises(ConfigError):
+        load_config(f)

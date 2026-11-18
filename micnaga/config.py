@@ -34,6 +34,11 @@ class DetectionConfig:
     end_after_s: float = 15.0  # una senal obligatoria caida este tiempo = fin
     popup_timeout_s: float = 15.0
     on_timeout: str = "provisional"  # provisional | discard
+    # Ruta generica: cualquier app que use el micro (no solo Meet en un navegador).
+    generic_apps: bool = True
+    mic_grace_s: float = 20.0  # uso continuo del micro antes de grabar provisionalmente
+    popup_after_recording_s: float = 20.0  # grabando provisional, cuando sale el popup
+    exclude_apps: list[str] = field(default_factory=list)  # exe o PackageFamilyName a ignorar
 
 
 @dataclass
@@ -128,6 +133,19 @@ class Config:
         )
         _check_choice("processing.aec", self.processing.aec, ("auto", "webrtc", "speex", "off"))
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
+        d = self.detection
+        for key in (
+            "confirm_after_s",
+            "popup_timeout_s",
+            "mic_grace_s",
+            "popup_after_recording_s",
+        ):
+            if getattr(d, key) < 0:
+                raise ConfigError(f"detection.{key} must be >= 0")
+        if d.poll_interval_s <= 0:
+            raise ConfigError("detection.poll_interval_s must be > 0")
+        if d.end_after_s <= 0:
+            raise ConfigError("detection.end_after_s must be > 0")
         if self.processing.threads < 1:
             raise ConfigError("processing.threads must be >= 1")
         if self.capture.sample_rate <= 0:

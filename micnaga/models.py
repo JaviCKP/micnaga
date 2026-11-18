@@ -1,0 +1,495 @@
+"""Manifiesto de modelos y descarga del primer arranque (spec seccion 11, principio 1).
+
+Es **la unica** parte de Micnaga que toca la red. Reglas:
+
+* Cada fichero tiene una URL fija (con el *commit* de Hugging Face fijado, nunca ``main``), un
+  tamano y un SHA-256 **calculados sobre lo realmente descargado** (los ``lfs.oid`` publicados por
+  Hugging Face coinciden con los hashes de abajo para los ficheros grandes).
+* Solo se permiten URL ``https`` hacia ``huggingface.co`` y sus CDN (``*.hf.co``); una redireccion
+  a cualquier otro host aborta la descarga.
+* La descarga va a ``<fichero>.part`` (se reanuda con ``Range``), se verifica el SHA-256 y solo
+  entonces se hace ``os.replace`` atomico al nombre final. Un fichero final corrupto nunca existe.
+* Los modelos viven en ``paths.models_dir()`` (``MICNAGA_MODELS`` > ``[storage] models_dir`` >
+  ``<datos de app>/models``), un subdirectorio por grupo (``ModelGroup.id``).
+
+Grupos:
+
+``parakeet-tdt-0.6b-v3-int8``  ASR por defecto (onnx-asr), CC-BY-4.0.
+``silero-vad``                 VAD (ONNX directo con onnxruntime), MIT.
+``wespeaker``                  Embeddings de hablante que usa la libreria ``diarize`` (y las huellas
+                               de voz). ``diarize`` los descarga solo de un servidor chino
+                               (``wespeaker-...cos.ap-shanghai.myqcloud.com``) a ``~/.wespeaker``;
+                               el adaptador ``diar/diarize.py`` lo parchea para leer de aqui
+                               (fichero verificado byte a byte identico), asi no hay red oculta.
+``faster-whisper-small``       ASR alternativo (opcional; no se descarga salvo que se pida).
+
+``faster-whisper-medium`` NO esta en el manifiesto: pesa ~1,5 GB y no estaba autorizado
+descargarlo, y esta prohibido inventar hashes. Anadirlo = descargar, calcular SHA-256 y una entrada.
+"""
+
+from __future__ import annotations
+
+import contextlib
+import hashlib
+import logging
+import os
+import urllib.error
+import urllib.request
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+from urllib.parse import urlparse
+
+from micnaga import paths
+from micnaga.config import Config
+
+log = logging.getLogger(__name__)
+
+CHUNK = 1 << 20
+USER_AGENT = "micnaga-model-downloader"
+ALLOWED_HOSTS: tuple[str, ...] = ("huggingface.co", "hf.co")
+"""Hosts permitidos y sus subdominios (incluida cualquier redireccion). Nada mas."""
+
+PARAKEET_GROUP = "parakeet-tdt-0.6b-v3-int8"
+SILERO_GROUP = "silero-vad"
+WESPEAKER_GROUP = "wespeaker"
+WHISPER_SMALL_GROUP = "faster-whisper-small"
+
+_HF = "https://huggingface.co"
+_PARAKEET_REV = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
+_SILERO_REV = "b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6"
+_WESPEAKER_REV = "f0c48c298fd835726c27956a5d617bad7115627e"
+_WHISPER_SMALL_REV = "536b0662742c02347bc0e980a01041f333bce120"
+
+
+class ModelError(RuntimeError):
+    """Error de descarga o verificacion de modelos."""
+
+
+@dataclass(frozen=True)
+class ModelFile:
+    """Un fichero del manifiesto."""
+
+    group: str
+    name: str
+    url: str
+    size: int
+    sha256: str
+
+    @property
+    def rel_path(self) -> str:
+        return f"{self.group}/{self.name}"
+
+    def path(self, config: Config | None = None) -> Path:
+        return paths.models_dir(config) / self.group / self.name
+
+
+@dataclass(frozen=True)
+class ModelGroup:
+    """Conjunto de ficheros que forman un modelo."""
+
+    id: str
+    title: str
+    license: str
+    source: str
+    files: tuple[ModelFile, ...]
+
+    @property
+    def total_size(self) -> int:
+        return sum(f.size for f in self.files)
+
+    def dir(self, config: Config | None = None) -> Path:
+        return paths.models_dir(config) / self.id
+
+
+def _files(group: str, base: str, entries: Sequence[tuple[str, int, str]]) -> tuple[ModelFile, ...]:
+    return tuple(
+        ModelFile(group=group, name=n, url=f"{base}/{n}", size=s, sha256=h) for n, s, h in entries
+    )
+
+
+MANIFEST: dict[str, ModelGroup] = {
+    PARAKEET_GROUP: ModelGroup(
+        id=PARAKEET_GROUP,
+        title="Parakeet TDT 0.6B v3 (int8, ONNX)",
+        license="CC-BY-4.0 (NVIDIA; ONNX de istupakov)",
+        source=f"{_HF}/istupakov/parakeet-tdt-0.6b-v3-onnx",
+        files=_files(
+            PARAKEET_GROUP,
+            f"{_HF}/istupakov/parakeet-tdt-0.6b-v3-onnx/resolve/{_PARAKEET_REV}",
+            [
+                (
+                    "config.json",
+                    97,
+                    "666903c76b9798caf2c210afd4f6cd60b08a8dbf9800ec8d7a3bc0d2148ac466",
+                ),
+                (
+                    "vocab.txt",
+                    93939,
+                    "d58544679ea4bc6ac563d1f545eb7d474bd6cfa467f0a6e2c1dc1c7d37e3c35d",
+                ),
+                (
+                    "decoder_joint-model.int8.onnx",
+                    18202004,
+                    "eea7483ee3d1a30375daedc8ed83e3960c91b098812127a0d99d1c8977667a70",
+                ),
+                (
+                    "encoder-model.int8.onnx",
+                    652183999,
+                    "6139d2fa7e1b086097b277c7149725edbab89cc7c7ae64b23c741be4055aff09",
+                ),
+            ],
+        ),
+    ),
+    SILERO_GROUP: ModelGroup(
+        id=SILERO_GROUP,
+        title="Silero VAD (ONNX)",
+        license="MIT (snakers4/silero-vad; ONNX de istupakov)",
+        source=f"{_HF}/istupakov/silero-vad-onnx",
+        files=_files(
+            SILERO_GROUP,
+            f"{_HF}/istupakov/silero-vad-onnx/resolve/{_SILERO_REV}",
+            [
+                (
+                    "silero_vad.onnx",
+                    2327524,
+                    "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+                ),
+            ],
+        ),
+    ),
+    WESPEAKER_GROUP: ModelGroup(
+        id=WESPEAKER_GROUP,
+        title="WeSpeaker ResNet34-LM (VoxCeleb, ONNX): embeddings de hablante",
+        license="CC-BY-4.0 segun la ficha de Hugging Face (codigo WeSpeaker: Apache-2.0)",
+        source=f"{_HF}/Wespeaker/wespeaker-voxceleb-resnet34-LM",
+        files=_files(
+            WESPEAKER_GROUP,
+            f"{_HF}/Wespeaker/wespeaker-voxceleb-resnet34-LM/resolve/{_WESPEAKER_REV}",
+            [
+                (
+                    "voxceleb_resnet34_LM.onnx",
+                    26530309,
+                    "7bb2f06e9df17cdf1ef14ee8a15ab08ed28e8d0ef5054ee135741560df2ec068",
+                ),
+            ],
+        ),
+    ),
+    WHISPER_SMALL_GROUP: ModelGroup(
+        id=WHISPER_SMALL_GROUP,
+        title="faster-whisper small (CTranslate2, fp16 -> int8 al cargar)",
+        license="MIT (OpenAI Whisper; conversion de Systran)",
+        source=f"{_HF}/Systran/faster-whisper-small",
+        files=_files(
+            WHISPER_SMALL_GROUP,
+            f"{_HF}/Systran/faster-whisper-small/resolve/{_WHISPER_SMALL_REV}",
+            [
+                (
+                    "config.json",
+                    2370,
+                    "b55496ac7940a7ae47d2c01eab40edfd8701feec1229d9cce3b40014383fb828",
+                ),
+                (
+                    "tokenizer.json",
+                    2203239,
+                    "fb7b63191e9bb045082c79fd742a3106a12c99513ab30df4a0d47fa6cb6fd0ab",
+                ),
+                (
+                    "vocabulary.txt",
+                    459861,
+                    "34ce3fe1c5041027b3f8d42912270993f986dbc4bb34cf27f951e34a1e453913",
+                ),
+                (
+                    "model.bin",
+                    483546902,
+                    "3e305921506d8872816023e4c273e75d2419fb89b24da97b4fe7bce14170d671",
+                ),
+            ],
+        ),
+    ),
+}
+
+OPTIONAL_GROUPS: tuple[str, ...] = (WHISPER_SMALL_GROUP,)
+"""Grupos que no se descargan en el asistente salvo que la configuracion los pida."""
+
+
+def whisper_group(model: str) -> str:
+    """Id de grupo para ``processing.whisper_model`` (solo ``small`` esta en el manifiesto)."""
+    group = f"faster-whisper-{model}"
+    if group not in MANIFEST:
+        raise ModelError(
+            f"whisper_model {model!r} is not in the models manifest "
+            f"(available: {[g for g in MANIFEST if g.startswith('faster-whisper-')]})"
+        )
+    return group
+
+
+def group_dir(group: str, config: Config | None = None) -> Path:
+    """Carpeta de un grupo dentro de ``paths.models_dir``."""
+    return paths.models_dir(config) / group
+
+
+def required_groups(config: Config, *, include_optional: bool = False) -> list[str]:
+    """Grupos que necesita la configuracion actual (VAD siempre)."""
+    groups = [SILERO_GROUP]
+    if config.processing.asr_engine == "parakeet":
+        groups.append(PARAKEET_GROUP)
+    elif config.processing.asr_engine == "whisper":
+        groups.append(f"faster-whisper-{config.processing.whisper_model}")
+    if config.processing.diarization == "diarize":
+        groups.append(WESPEAKER_GROUP)
+    if include_optional:
+        groups.extend(g for g in OPTIONAL_GROUPS if g not in groups)
+    return groups
+
+
+def _resolve_files(
+    config: Config,
+    groups: Iterable[str] | None,
+    include_optional: bool,
+    manifest: dict[str, ModelGroup],
+) -> list[ModelFile]:
+    wanted = list(groups) if groups is not None else required_groups(config)
+    if groups is None and include_optional:
+        wanted += [g for g in OPTIONAL_GROUPS if g not in wanted]
+    out: list[ModelFile] = []
+    for gid in wanted:
+        if gid not in manifest:
+            raise ModelError(f"unknown model group {gid!r}; known: {sorted(manifest)}")
+        out.extend(manifest[gid].files)
+    return out
+
+
+def missing_models(
+    config: Config,
+    *,
+    groups: Iterable[str] | None = None,
+    include_optional: bool = False,
+    manifest: dict[str, ModelGroup] | None = None,
+) -> list[ModelFile]:
+    """Ficheros que faltan o tienen un tamano distinto del esperado (comprobacion rapida)."""
+    base = paths.models_dir(config)
+    out: list[ModelFile] = []
+    for f in _resolve_files(config, groups, include_optional, manifest or MANIFEST):
+        p = base / f.group / f.name
+        try:
+            ok = p.is_file() and p.stat().st_size == f.size
+        except OSError:
+            ok = False
+        if not ok:
+            out.append(f)
+    return out
+
+
+def sha256_file(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(CHUNK), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def verify_models(
+    config: Config,
+    *,
+    groups: Iterable[str] | None = None,
+    include_optional: bool = False,
+    manifest: dict[str, ModelGroup] | None = None,
+) -> list[ModelFile]:
+    """Comprobacion completa (tamano + SHA-256). Devuelve los ficheros que NO pasan."""
+    base = paths.models_dir(config)
+    bad: list[ModelFile] = []
+    for f in _resolve_files(config, groups, include_optional, manifest or MANIFEST):
+        p = base / f.group / f.name
+        try:
+            ok = p.is_file() and p.stat().st_size == f.size and sha256_file(p) == f.sha256
+        except OSError:
+            ok = False
+        if not ok:
+            bad.append(f)
+    return bad
+
+
+# ------------------------------------------------------------------------------ descarga
+
+
+@dataclass(frozen=True)
+class DownloadProgress:
+    """Estado para la barra de progreso del asistente."""
+
+    file: str
+    """``grupo/nombre`` del fichero en curso."""
+    file_done: int
+    file_total: int
+    overall_done: int
+    overall_total: int
+    phase: str = "download"
+    """``download`` | ``verify`` | ``done`` | ``skip``."""
+
+
+ProgressCallback = Callable[[DownloadProgress], None]
+
+
+def _host_allowed(url: str) -> bool:
+    parsed = urlparse(url)
+    host = (parsed.hostname or "").lower()
+    if parsed.scheme != "https":
+        return False
+    return any(host == h or host.endswith("." + h) for h in ALLOWED_HOSTS)
+
+
+class _StrictRedirects(urllib.request.HTTPRedirectHandler):
+    """Sigue redirecciones (CDN de Hugging Face) solo hacia hosts permitidos."""
+
+    def __init__(self, check: Callable[[str], bool]) -> None:
+        self._check = check
+
+    def redirect_request(
+        self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
+    ) -> urllib.request.Request | None:
+        if not self._check(newurl):
+            raise ModelError(f"redirect to a disallowed host/scheme blocked: {newurl[:80]}")
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def _default_opener(check: Callable[[str], bool]) -> urllib.request.OpenerDirector:
+    return urllib.request.build_opener(_StrictRedirects(check))
+
+
+def _stream_to_part(
+    resp: Any, part: Path, have: int, total: int, on_bytes: Callable[[int, int], None]
+) -> None:
+    status = getattr(resp, "status", 200)
+    if have and status != 206:  # el servidor ignoro Range: empezar de cero
+        have = 0
+    got = have
+    on_bytes(got, total)
+    with part.open("ab" if have else "wb") as fh:
+        while block := resp.read(CHUNK):
+            fh.write(block)
+            got += len(block)
+            on_bytes(got, total)
+        fh.flush()
+        os.fsync(fh.fileno())
+
+
+def _download_one(
+    f: ModelFile,
+    dest: Path,
+    opener: urllib.request.OpenerDirector,
+    check_url: Callable[[str], bool],
+    on_bytes: Callable[[int, int], None],
+) -> None:
+    """Descarga ``f`` a ``dest`` (via ``.part``, reanudable), verifica SHA-256 y renombra."""
+    if not check_url(f.url):
+        raise ModelError(f"URL not allowed for {f.rel_path}: {f.url}")
+    part = dest.with_name(dest.name + ".part")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in (1, 2):
+        have = part.stat().st_size if part.exists() else 0
+        if have > f.size:
+            part.unlink()
+            have = 0
+        if have < f.size:
+            headers = {"User-Agent": USER_AGENT}
+            if have:
+                headers["Range"] = f"bytes={have}-"
+            req = urllib.request.Request(f.url, headers=headers)
+            try:
+                resp = opener.open(req, timeout=60)
+            except urllib.error.HTTPError as exc:
+                if exc.code == 416 and have:  # el .part ya estaba completo o es invalido
+                    part.unlink(missing_ok=True)
+                    continue
+                raise ModelError(f"HTTP {exc.code} downloading {f.rel_path}") from exc
+            except urllib.error.URLError as exc:
+                raise ModelError(f"network error downloading {f.rel_path}: {exc.reason}") from exc
+            with resp:
+                try:
+                    _stream_to_part(resp, part, have, f.size, on_bytes)
+                except OSError as exc:  # corte de red: el .part queda para reanudar
+                    raise ModelError(f"download of {f.rel_path} interrupted: {exc}") from exc
+        if part.stat().st_size == f.size and sha256_file(part) == f.sha256:
+            os.replace(part, dest)
+            return
+        part.unlink(missing_ok=True)  # corrupto: reintentar una vez desde cero
+        log.warning("model %s failed verification (attempt %d)", f.rel_path, attempt)
+    raise ModelError(f"SHA-256/size mismatch downloading {f.rel_path}; file discarded")
+
+
+def _byte_cb(
+    emit: Callable[[ModelFile, int, str], None], f: ModelFile
+) -> Callable[[int, int], None]:
+    def cb(got: int, _total: int) -> None:
+        emit(f, got, "download")
+
+    return cb
+
+
+def download_models(
+    config: Config,
+    progress_cb: ProgressCallback | None = None,
+    *,
+    groups: Iterable[str] | None = None,
+    include_optional: bool = False,
+    manifest: dict[str, ModelGroup] | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
+    allow_url: Callable[[str], bool] | None = None,
+) -> list[Path]:
+    """Descarga los modelos que faltan o estan corruptos. Devuelve las rutas descargadas.
+
+    ``manifest``, ``opener`` y ``allow_url`` existen para los tests (servidor local); en
+    produccion se usan los valores por defecto (solo ``https`` hacia Hugging Face).
+    Los ficheros ya presentes se verifican con SHA-256 antes de saltarlos.
+    """
+    check = allow_url or _host_allowed
+    op = opener or _default_opener(check)
+    base = paths.models_dir(config)
+    files = _resolve_files(config, groups, include_optional, manifest or MANIFEST)
+    overall_total = sum(f.size for f in files)
+    done_before = 0
+    downloaded: list[Path] = []
+
+    def emit(f: ModelFile, d: int, phase: str) -> None:
+        if progress_cb is not None:
+            progress_cb(
+                DownloadProgress(f.rel_path, d, f.size, done_before + d, overall_total, phase)
+            )
+
+    for f in files:
+        dest = base / f.group / f.name
+        with contextlib.suppress(OSError):
+            if dest.is_file() and dest.stat().st_size == f.size and sha256_file(dest) == f.sha256:
+                emit(f, f.size, "skip")
+                done_before += f.size
+                continue
+        if dest.exists():  # presente pero corrupto
+            log.warning("model %s is corrupt; downloading again", f.rel_path)
+            dest.unlink()
+        _download_one(f, dest, op, check, _byte_cb(emit, f))
+        emit(f, f.size, "done")
+        downloaded.append(dest)
+        done_before += f.size
+    return downloaded
+
+
+def total_size(
+    config: Config, *, groups: Iterable[str] | None = None, include_optional: bool = False
+) -> int:
+    """Bytes totales de los grupos pedidos (para el texto «~1 GB» del asistente)."""
+    return sum(f.size for f in _resolve_files(config, groups, include_optional, MANIFEST))
+
+
+def require_models(config: Config, group: str) -> Path:
+    """Carpeta de ``group`` si esta completa; si no, ``EngineUnavailableError`` con la solucion."""
+    from micnaga.registry import EngineUnavailableError
+
+    absent = missing_models(config, groups=[group])
+    if absent:
+        names = ", ".join(f.name for f in absent)
+        raise EngineUnavailableError(
+            f"model files missing or incomplete in {group_dir(group, config)}: {names}. "
+            "Run the first-start model download (micnaga.models.download_models)."
+        )
+    return group_dir(group, config)
