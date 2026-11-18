@@ -1,0 +1,7 @@
+{
+  "name": "es.micnaga.host",
+  "description": "Micnaga: senal de llamada de Google Meet para el vigilante",
+  "path": "@HOST_PATH@",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://@EXTENSION_ID@/"]
+}

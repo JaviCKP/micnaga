@@ -1,9 +1,9 @@
 """Cancelacion de eco. Implementaciones: ``webrtc.py`` (AEC3) y ``speex.py``.
 
 Cada modulo expone ``create(config: Config) -> EchoCanceller``. ``config.processing.aec``
-admite ademas ``"auto"`` (primero webrtc, luego speex, el primero que cargue) y ``"off"``
-(``None``). La eleccion definitiva entre webrtc y speex se decide en F1 con el banco de
-pruebas y se refleja cambiando el orden de ``AUTO_ORDER``.
+admite ademas ``"auto"`` (el primero de ``AUTO_ORDER`` que cargue) y ``"off"`` (``None``).
+Ganador de la comparativa de F1 (docs/aec_comparison.md): speex (``pyaec``, filtro de 256 ms,
+alineacion automatica y preprocesador) por delante de webrtc (AEC3).
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ AEC_ENGINES: LazyRegistry[EchoCanceller] = LazyRegistry(
 
 log = logging.getLogger(__name__)
 
-AUTO_ORDER: tuple[str, ...] = ("webrtc", "speex")
+AUTO_ORDER: tuple[str, ...] = ("speex", "webrtc")
 
 
 def create_echo_canceller(config: Config, name: str | None = None) -> EchoCanceller | None:

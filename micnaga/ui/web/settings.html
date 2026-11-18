@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Micnaga</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="settings.css">
+</head>
+<body>
+<div class="ambient" aria-hidden="true"></div>
+<div class="app">
+  <nav class="nav glass" aria-label="Secciones" data-i18n-aria-label="settings.nav_label">
+    <h1 class="display" data-i18n="settings.title">Ajustes</h1>
+    <div class="nav-list" id="nav" role="tablist" aria-orientation="vertical"></div>
+    <span class="brand nav-brand" aria-hidden="true"><img class="on-dark" src="assets/bitnaga-on-dark.svg" alt=""><img class="on-light" src="assets/bitnaga-on-light.svg" alt=""></span>
+  </nav>
+  <main class="content">
+    <div class="pane-wrap" id="panes"></div>
+    <footer class="savebar" id="savebar" data-dirty="false">
+      <span class="save-msg" id="save-msg" role="status" aria-live="polite"></span>
+      <button class="btn btn-ghost btn-sm" id="discard" type="button" data-i18n="settings.discard">Descartar</button>
+      <button class="btn btn-primary btn-sm" id="save" type="button" data-i18n="settings.save">Guardar</button>
+    </footer>
+  </main>
+</div>
+<script src="bridge.js"></script>
+<script src="settings.js"></script>
+</body>
+</html>

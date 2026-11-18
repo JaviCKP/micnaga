@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Micnaga</title>
+<link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="pill.css">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body class="transparent popup-page">
+<div class="stage">
+  <div class="lift" id="lift" data-phase="hidden">
+    <section class="card" id="card" role="alertdialog" aria-modal="false"
+             aria-labelledby="p-title" aria-describedby="p-meta" data-kind="meet">
+      <div class="body" id="body">
+        <div class="info">
+          <p class="src" id="p-meta">
+            <span class="src-ico" id="p-ico" aria-hidden="true"></span><span class="meet-title" id="p-meet"></span><span class="sr-only" id="p-code" hidden></span>
+            <span class="notice" id="notice">
+              <span class="notice-ico" data-icon="megaphone" aria-hidden="true"></span>
+              <span class="notice-text" data-i18n="popup.notice">Avisa de que grabas</span>
+              <button class="notice-x" id="notice-x" type="button" data-i18n-aria-label="popup.notice_dismiss" data-icon="x"></button>
+            </span>
+          </p>
+          <h1 class="question display" id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
+          <div class="levels" role="group" data-i18n-aria-label="popup.levels">
+            <span class="lvl"><span data-icon="mic" aria-hidden="true"></span><canvas class="wave" id="m-mic" role="meter" data-i18n-aria-label="popup.me" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+            <span class="lvl"><span data-icon="speaker" aria-hidden="true"></span><canvas class="wave" id="m-sys" role="meter" data-i18n-aria-label="popup.them" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button class="btn-round no" id="b-no" type="button" aria-keyshortcuts="Escape" data-i18n-aria-label="popup.no" data-i18n-title="popup.no_tip" data-icon="x"></button>
+          <span class="rec-wrap">
+            <span class="countdown" id="countdown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" data-i18n-aria-label="popup.countdown"><i></i></span>
+            <button class="btn-round rec" id="b-rec" type="button" aria-keyshortcuts="Enter" data-i18n-aria-label="popup.record" data-i18n-title="popup.record_tip">
+              <span class="swap" aria-hidden="true"><span class="swap-a"></span><span class="swap-b"></span></span>
+            </button>
+          </span>
+        </div>
+      </div>
+
+      <!-- what the card turns into: the same capsule as the real pill -->
+      <div class="echo" id="echo" aria-hidden="true">
+        <span class="rec-dot"></span>
+        <span class="pill-time" id="echo-time">00:00</span>
+        <span class="pill-tag" id="echo-tag" data-i18n="pill.provisional">provisional</span>
+      </div>
+    </section>
+  </div>
+  <span class="sr-only" id="live" role="status" aria-live="polite"></span>
+</div>
+<script src="bridge.js"></script>
+<script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+/* First run, one click: a single branded progress moment that closes itself. */
+.wiz {
+  height: 100vh; display: flex; flex-direction: column; align-items: center; text-align: center;
+  padding: 64px 40px 26px;
+}
+.wiz > * { animation: rise var(--dur-enter) var(--ease-out) both; }
+.wiz > :nth-child(2) { animation-delay: 80ms; }
+.wiz > :nth-child(3) { animation-delay: 160ms; }
+.wiz > :nth-child(4) { animation-delay: 240ms; }
+@keyframes rise { from { opacity: 0; transform: translateY(14px); filter: blur(4px); } }
+
+/* the mark: Bitnaga's listening rings around the record dot; the outer ring IS the progress */
+.mark { position: relative; width: 168px; height: 168px; display: grid; place-items: center; }
+.ring-progress { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); }
+.ring-progress circle { fill: none; stroke-width: 3; }
+.ring-progress .track { stroke: var(--meter-track); }
+.ring-progress .fill {
+  stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 100; stroke-dashoffset: calc(100 - var(--p, 0) * 100);
+  transition: stroke-dashoffset 400ms var(--ease), stroke var(--dur) var(--ease);
+}
+.wiz[data-state="done"] .ring-progress .fill { stroke: var(--ok); }
+.wiz[data-state="failed"] .ring-progress .fill { stroke: var(--rec); }
+.mark .r { position: absolute; border-radius: 50%; box-shadow: inset 0 0 0 1.5px var(--brand-violet); }
+.mark .r1 { inset: 22px; opacity: 0.3; animation: breathe 4.8s var(--ease) infinite; }
+.mark .r2 { inset: 40px; opacity: 0.55; animation: breathe 4.8s var(--ease) 0.4s infinite; }
+.mark .r3 { inset: 56px; opacity: 0.85; }
+@keyframes breathe { 50% { transform: scale(1.05); opacity: 0.12; } }
+.mark .core {
+  position: relative; width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center;
+  background: linear-gradient(180deg, var(--glass-3), var(--glass-2)); box-shadow: var(--glass-edge), var(--shadow);
+}
+.core .rec-dot { width: 14px; height: 14px; transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease); }
+.done-ico { position: absolute; display: grid; color: var(--ok); opacity: 0; transform: scale(0.4); transition: transform var(--dur-slow) var(--ease-out), opacity var(--dur) var(--ease); }
+.done-ico .ico { width: 22px; height: 22px; stroke-width: 2.6; }
+.wiz[data-state="done"] .core .rec-dot { opacity: 0; transform: scale(0.3); }
+.wiz[data-state="done"] .done-ico { opacity: 1; transform: none; }
+.wiz[data-state="done"] .mark .r { animation: none; }
+
+.hero { margin-top: 30px; font-size: 76px; line-height: 0.86; }
+
+.overall { position: relative; width: 300px; display: grid; gap: 10px; margin-top: 18px; }
+/* the ring is the one visible progress; the bar stays for assistive tech only */
+.overall .progress { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+.status { font-size: 12.5px; color: var(--text-3); min-height: 18px; }
+
+/* audio checks pass on their own: a live wave each, a tick when something is heard */
+.checks { display: flex; gap: 10px; margin-top: 28px; }
+.chk {
+  display: inline-flex; align-items: center; gap: 10px; height: 44px; padding: 0 14px; border-radius: var(--r-full);
+  background: var(--glass); box-shadow: var(--glass-edge); color: var(--text-3);
+  -webkit-backdrop-filter: var(--glass-blur); backdrop-filter: var(--glass-blur);
+  transition: box-shadow var(--dur-slow) var(--ease), color var(--dur) var(--ease);
+}
+.chk .ico { width: 15px; height: 15px; }
+.chk .wave { width: 96px; height: 20px; color: var(--meter-lo); }
+.chk .tick { display: grid; width: 22px; height: 22px; place-items: center; border-radius: 50%; color: var(--ok); opacity: 0.0; transform: scale(0.4);
+  transition: opacity var(--dur) var(--ease), transform var(--dur-slow) var(--ease-out); }
+.chk .tick .ico { width: 12px; height: 12px; stroke-width: 2.8; }
+.chk[data-ok="true"] { color: var(--text-2); box-shadow: inset 0 0 0 1px light-dark(rgb(19 128 61 / 0.35), rgb(90 216 147 / 0.4)); }
+.chk[data-ok="true"] .tick { opacity: 1; transform: none; background: var(--ok-soft); }
+.chk[data-ok="true"] .wave { color: var(--ok); }
+
+.fail { display: grid; justify-items: center; gap: 14px; margin-top: 22px; }
+.err { color: var(--rec); font-weight: 600; font-size: 13px; max-width: 420px; }
+
+.by { margin-top: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--text-3); }
+.by .brand { height: 18px; }

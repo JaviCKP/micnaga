@@ -1,0 +1,196 @@
+/*
+ * Popup «¿Estás en una reu?» — one compact glass object, 372 x 112 (transparent window).
+ *
+ *   ┌───────────────────────────────────────────┐
+ *   │ ▣ Revisión semanal  📣                  ✕ │   ✕ = «Ahora no» (Esc)
+ *   │ ¿ESTÁS EN UNA REU?                    (●) │   ● = «Grabar» (Intro); its ring is the countdown
+ *   │ 🎙 ▁▃▅▂▆▃▂▁   🔊 ▁▁▂▁▃▁▁▁                   │   both voices, live
+ *   └───────────────────────────────────────────┘
+ *
+ * Two glass modes:
+ *  - default: «in-page glass». The desktop behind a WebView window is not blurred, so the card
+ *    is an opaque smoked/frosted pane (layered fill, specular sheen, light leaks, grain,
+ *    hairline ring). Morph: the card shrinks into the 200 x 40 capsule.
+ *  - [data-backdrop="acrylic"]: Python put real DWM Acrylic behind the window (desktop blur).
+ *    The card becomes a translucent tint over it, with the window's own 8 px corners; Python
+ *    animates the window rect itself, so the card always fills the window and only cross-fades.
+ * Nothing paints outside the card: the window is cut to it.
+ */
+body.popup-page { width: 100vw; height: 100vh; background: transparent; }
+.stage { position: relative; width: 100vw; height: 100vh; overflow: hidden; }
+
+/* rise 16 px + fade (220 ms) in; down + fade (180 ms) out; plain fade when the meeting ends */
+.lift {
+  position: absolute; inset: 0;
+  transition: transform var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.lift[data-phase="hidden"] { transform: translateY(16px); opacity: 0; transition: none; }
+.lift[data-phase="shown"], .lift[data-phase="confirming"] { transform: none; opacity: 1; }
+.lift[data-phase="leaving"] { transform: translateY(16px); opacity: 0; transition-duration: var(--dur-fast); transition-timing-function: var(--ease-in); }
+.lift[data-phase="fading"] { opacity: 0; transition-duration: var(--dur-fast); }
+.lift[data-phase="morphing"] { opacity: 1; }
+
+/* ---- the glass card ------------------------------------------------------------------ */
+.card {
+  --cw: 372px; --ch: 112px;
+  --leak: light-dark(rgb(167 139 250 / 0.30), rgb(124 58 237 / 0.30));
+  --warm: light-dark(rgb(255 120 120 / 0.20), rgb(255 77 85 / 0.17));
+  position: absolute; top: 0; left: calc(50% - var(--cw) / 2);
+  width: var(--cw); height: var(--ch);
+  border-radius: 16px;
+  color: var(--text);
+  background:
+    linear-gradient(180deg, light-dark(rgb(255 255 255 / 0.9), rgb(255 255 255 / 0.07)), transparent 46%),
+    radial-gradient(90% 140% at 0% 0%, var(--leak), transparent 62%),
+    radial-gradient(42% 90% at 88% 50%, var(--warm), transparent 72%),
+    linear-gradient(160deg, light-dark(#fbfbfe, #1d1b27), light-dark(#eceef4, #0d0d13));
+  box-shadow:
+    inset 0 0 0 1px light-dark(rgb(16 16 40 / 0.11), rgb(255 255 255 / 0.10)),
+    inset 0 1px 0 light-dark(#fff, rgb(255 255 255 / 0.20)),
+    inset 0 -1px 0 light-dark(rgb(16 16 40 / 0.04), rgb(0 0 0 / 0.3));
+  overflow: hidden;
+  isolation: isolate;
+  transition: width var(--dur-morph) var(--ease), height var(--dur-morph) var(--ease),
+    left var(--dur-morph) var(--ease), border-radius var(--dur-morph) var(--ease);
+}
+/* frosted grain: the tooth that sells «glass» rather than «plastic» */
+.card::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; opacity: 0.32; mix-blend-mode: overlay;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .6 0'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E");
+  pointer-events: none;
+}
+/* the dark capsule the card becomes (fades in over the glass during the morph) */
+.card::after {
+  content: ""; position: absolute; inset: 0; z-index: -1; border-radius: inherit; opacity: 0;
+  background: radial-gradient(60px 40px at 18px 50%, rgb(255 77 85 / 0.16), transparent 70%), linear-gradient(180deg, #201e2a, #0d0d12);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 0.11), inset 0 1px 0 rgb(255 255 255 / 0.12);
+  transition: opacity 260ms var(--ease) 80ms;
+}
+/* re-show after a morph: snap back without replaying the shrink */
+.card.reset, .card.reset::after, .card.reset .body, .card.reset .echo { transition: none !important; }
+.card[data-morph="true"] { --cw: 200px; --ch: 40px; border-radius: 20px; }
+.card[data-morph="true"]::after { opacity: 1; }
+
+/* real Acrylic behind the window: tint only, window-shaped, no CSS shrink */
+:root[data-backdrop="acrylic"] .card {
+  --cw: 100vw; --ch: 100vh; border-radius: 8px;
+  background:
+    linear-gradient(180deg, light-dark(rgb(255 255 255 / 0.5), rgb(255 255 255 / 0.06)), transparent 50%),
+    radial-gradient(90% 140% at 0% 0%, light-dark(rgb(167 139 250 / 0.18), rgb(124 58 237 / 0.22)), transparent 62%),
+    light-dark(rgb(250 250 253 / 0.62), rgb(16 15 22 / 0.62));
+}
+:root[data-backdrop="acrylic"] .card[data-morph="true"] { --cw: 100vw; --ch: 100vh; border-radius: 8px; }
+:root[data-backdrop="acrylic"] .card::before { opacity: 0.18; }
+:root[data-backdrop="acrylic"] .card::after { background: rgb(16 15 22 / 0.55); box-shadow: none; }
+
+.body {
+  position: absolute; inset: 0; padding: 14px 14px 12px 18px;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; column-gap: 12px;
+  transition: opacity 140ms var(--ease), transform 220ms var(--ease);
+}
+.card[data-morph="true"] .body { opacity: 0; transform: scale(0.96); pointer-events: none; }
+
+/* ---- left: where · the question · both voices ------------------------------------------ */
+.info { display: grid; gap: 7px; min-width: 0; }
+.src {
+  display: flex; align-items: center; gap: 6px; min-width: 0; height: 20px;
+  font: 600 12px/1 var(--font-ui); color: var(--text-2);
+}
+.src-ico { display: grid; flex: none; color: var(--text-3); }
+.src-ico .ico { width: 14px; height: 14px; stroke-width: 1.9; }
+.meet-title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.meet-title:empty { display: none; }
+
+.question { font-size: 28px; line-height: 0.92; letter-spacing: 0.004em; white-space: nowrap; }
+
+.levels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.lvl { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-3); }
+.lvl .ico { width: 13px; height: 13px; stroke-width: 1.9; }
+.lvl .wave { flex: 1; min-width: 0; height: 16px; color: var(--meter-lo); }
+
+/* «Avisa de que grabas»: a tiny amber mark beside the source; hovering it reveals the words
+   and the × that hides it for good (privacy.remind_notice = false). */
+.notice {
+  display: inline-flex; align-items: center; flex: none; height: 20px; padding: 0 3px; margin-left: 2px;
+  border-radius: var(--r-full); color: var(--amber);
+  transition: background-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease), padding var(--dur) var(--ease);
+}
+.notice-ico { display: grid; }
+.notice-ico .ico { width: 13px; height: 13px; stroke-width: 1.9; }
+.notice-text, .notice-x { max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap;
+  transition: max-width var(--dur) var(--ease), opacity var(--dur-fast) var(--ease), margin var(--dur) var(--ease); }
+.notice-text { font: 600 11.5px/1 var(--font-ui); color: var(--text-2); }
+.notice:hover .notice-text, .notice:focus-within .notice-text { max-width: 140px; opacity: 1; margin-left: 6px; }
+.notice:hover .notice-x, .notice:focus-within .notice-x { max-width: 20px; opacity: 1; margin-left: 4px; }
+.notice-x {
+  position: relative; width: 18px; height: 18px; padding: 0; border: 0; border-radius: 50%; flex: none;
+  display: grid; place-items: center; background: transparent; color: var(--text-3);
+}
+.notice-x:hover { background: var(--hover); color: var(--text); }
+.notice-x .ico { width: 10px; height: 10px; stroke-width: 2.4; }
+.notice.gone { display: none; }
+
+/* ---- right: two round answers; the countdown is the ring around «grabar» ---------------- */
+.actions { display: grid; justify-items: end; align-content: start; gap: 2px; height: 100%; margin-top: -4px; margin-right: -4px; }
+.btn-round {
+  position: relative; display: grid; place-items: center; padding: 0; border: 0; border-radius: 50%;
+  transition: transform var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease);
+}
+.btn-round:active { transform: scale(0.92); }
+/* «Ahora no» is the close mark in the corner: where a dismiss always lives */
+.btn-round.no {
+  width: 24px; height: 24px; color: var(--text-3); background: transparent;
+}
+.btn-round.no::after { content: ""; position: absolute; inset: -6px; border-radius: 50%; }
+.btn-round.no:hover { color: var(--text); background: var(--hover); }
+.btn-round.no .ico { width: 13px; height: 13px; stroke-width: 2.2; }
+
+.rec-wrap { position: relative; width: 58px; height: 58px; display: grid; place-items: center; margin-right: 4px; }
+.btn-round.rec {
+  width: 44px; height: 44px; color: #fff;
+  background:
+    radial-gradient(110% 80% at 50% 0%, rgb(255 255 255 / 0.34), transparent 55%),
+    linear-gradient(180deg, var(--rec-top), var(--rec-bottom));
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / 0.4), inset 0 -2px 3px rgb(120 0 10 / 0.25), 0 3px 8px -3px rgb(60 0 6 / 0.6);
+}
+.btn-round.rec:hover { transform: scale(1.05); }
+.btn-round.rec:active { transform: scale(0.94); }
+.btn-round:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+.btn-round.rec:focus-visible { outline-offset: 9px; }
+
+.swap { position: relative; display: block; width: 18px; height: 18px; }
+.swap > span { position: absolute; inset: 0; display: grid; place-items: center;
+  transition: opacity var(--dur-fast) cubic-bezier(0.2, 0, 0, 1), transform var(--dur-fast) cubic-bezier(0.2, 0, 0, 1),
+    filter var(--dur-fast) cubic-bezier(0.2, 0, 0, 1);
+}
+.swap-a::before { content: ""; width: 14px; height: 14px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgb(120 0 10 / 0.35); }
+.swap-b { opacity: 0; transform: scale(0.25); filter: blur(4px); }
+.swap-b .ico { width: 20px; height: 20px; stroke-width: 2.6; }
+.lift[data-phase="confirming"] .swap-a { opacity: 0; transform: scale(0.25); filter: blur(4px); }
+.lift[data-phase="confirming"] .swap-b { opacity: 1; transform: none; filter: none; }
+.lift[data-phase="confirming"] .btn-round { pointer-events: none; }
+.lift[data-phase="confirming"] .btn-round.rec { transform: scale(1.08); }
+
+/* the ring drains with Python's countdown; it holds (violet) while the pointer is on the card */
+.countdown { position: absolute; inset: 0; border-radius: 50%; pointer-events: none; }
+.countdown > i {
+  position: absolute; inset: 0; border-radius: 50%;
+  background: conic-gradient(var(--cd, var(--text-3)) calc(var(--p, 1) * 1turn), var(--meter-track) 0);
+  -webkit-mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+  mask: radial-gradient(farthest-side, transparent calc(100% - 3px), #000 calc(100% - 2.5px));
+}
+.card[data-hover="true"] .countdown > i, .card[data-held="true"] .countdown > i { --cd: var(--accent); }
+.lift[data-phase="confirming"] .countdown > i { background: var(--rec); }
+
+/* ---- the pill echo, revealed during the morph ------------------------------------------ */
+.echo {
+  position: absolute; left: 0; top: 0; width: 200px; height: 40px; padding: 0 14px 0 15px;
+  display: flex; align-items: center; gap: 10px; color: #f4f4f7; color-scheme: dark;
+  opacity: 0; transition: opacity 120ms var(--ease); pointer-events: none;
+}
+:root[data-backdrop="acrylic"] .echo { width: 100%; height: 100%; }
+.card[data-morph="true"] .echo { opacity: 1; transition-delay: 220ms; }
+.echo .pill-time { min-width: 44px; }
+.echo .pill-tag { display: none; margin-left: auto; }
+.card[data-provisional="true"] .echo .pill-tag { display: inline-flex; }
+.card[data-provisional="true"] .echo .rec-dot { background: transparent; box-shadow: inset 0 0 0 2px var(--rec-dot); }

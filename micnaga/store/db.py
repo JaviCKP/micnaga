@@ -332,6 +332,14 @@ class Database:
             job = replace(job, session_dir=f"discarded:{job_id}")
         return job
 
+    def set_session_dir(self, job_id: int, session_dir: Path | str) -> None:
+        """Cambia la carpeta del trabajo (el pipeline la renombra al terminar)."""
+        with self.transaction() as conn:
+            conn.execute(
+                "UPDATE jobs SET session_dir = ?, updated_at = ? WHERE id = ?",
+                (str(session_dir), self._clock(), job_id),
+            )
+
     def retry_job(self, job_id: int) -> Job:
         """``failed`` -> ``pending`` (accion manual del usuario)."""
         return self._transition(
