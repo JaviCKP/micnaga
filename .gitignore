@@ -1,0 +1,26 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.coverage
+
+# modelos descargados (convencion de desarrollo: MICNAGA_MODELS=<repo>/.models)
+.models/
+
+# audio y salidas de pruebas: nunca se versionan grabaciones
+*.wav
+*.flac
+*.mp3
+test-output/
+test_outputs/
+.testset/
+
+# datos locales
+micnaga.db
+micnaga.db-*
+config.toml

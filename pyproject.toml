@@ -1,0 +1,158 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "micnaga"
+dynamic = ["version"]
+description = "Graba reuniones de Google Meet (micro + sistema) y las transcribe en local, en CPU."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Micnaga contributors" }]
+classifiers = [
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: Microsoft :: Windows",
+    "Typing :: Typed",
+]
+# Nucleo (proceso de captura + vigilante + almacen + utilidades del pipeline que no
+# requieren modelos). Nada de torch aqui.
+dependencies = [
+    "numpy>=1.26",
+    "scipy>=1.11",            # filtro paso alto (etapa 4); evita implementar biquads a mano
+    "soxr>=0.5",
+    "soundfile>=0.12",
+    "PyAudioWPatch>=0.2.12",
+    "pywin32>=306",
+    "pycaw>=20240210",
+    "comtypes>=1.4",
+    "psutil>=5.9",
+    "onnxruntime>=1.18",      # Silero VAD (modelo ONNX cargado a mano, sin el paquete silero-vad)
+    "rapidfuzz>=3.0",
+    "tomli-w>=1.0",           # escritor de config.toml (la lectura usa tomllib)
+]
+
+[project.optional-dependencies]
+# Motores de transcripcion. Parakeet via onnx-asr o sherpa-onnx; Whisper via faster-whisper.
+asr = [
+    "onnx-asr[cpu]>=0.12",
+    "sherpa-onnx>=2.0",
+    "faster-whisper>=1.2",
+]
+# Diarizacion por defecto. OJO: `diarize` arrastra torch + torchaudio (CPU, ~1.3 GB) y silero-vad.
+diar = ["diarize>=0.1.2"]
+# Alternativa. NO se instala por defecto (torch + lightning + ...).
+pyannote = ["pyannote.audio>=4.0"]
+# Cancelacion de eco: webrtc -> aec-audio-processing (AEC3, wheel win_amd64 cp311);
+# speex -> pyaec (DLL con SpeexDSP, licencia sin verificar). Ver DECISIONS.md.
+aec = [
+    "aec-audio-processing>=1.0",
+    "pyaec>=1.0",
+]
+ui = [
+    "pywebview>=5.0",
+    "pystray>=0.19",
+    "windows-toasts>=1.1",
+    "Pillow>=10",
+]
+# Metricas del banco de pruebas (WER, DER).
+bench = [
+    "jiwer>=3.0",
+    "pyannote.metrics>=3.2",
+]
+dev = [
+    "ruff>=0.5",
+    "mypy>=1.10",
+    "pytest>=8",
+    "pytest-timeout>=2.3",
+    "jiwer>=3.0",
+    "pyannote.metrics>=3.2",
+    "types-psutil",
+    "types-pywin32",
+    "pyinstaller>=6",
+]
+
+[project.scripts]
+micnaga = "micnaga.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "micnaga.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["micnaga*"]
+
+[tool.setuptools.package-data]
+micnaga = ["py.typed", "ui/web/**/*"]
+
+# ---------------------------------------------------------------- ruff
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = [".venv", ".models", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4", "RUF"]
+ignore = ["RUF001", "RUF002", "RUF003"]  # tildes / caracteres espanoles en cadenas y comentarios
+
+[tool.ruff.lint.isort]
+known-first-party = ["micnaga", "tests"]
+
+# ---------------------------------------------------------------- mypy
+[tool.mypy]
+python_version = "3.11"
+strict = true
+files = ["micnaga"]
+
+# Librerias de terceros sin tipos o con tipos incompletos.
+[[tool.mypy.overrides]]
+module = [
+    "onnx_asr.*",
+    "sherpa_onnx.*",
+    "faster_whisper.*",
+    "diarize.*",
+    "aec_audio_processing.*",
+    "pyaec.*",
+    "pyaudiowpatch.*",
+    "pycaw.*",
+    "comtypes.*",
+    "webview.*",
+    "pystray.*",
+    "windows_toasts.*",
+    "soxr.*",
+    "soundfile.*",
+    "scipy.*",
+    "onnxruntime.*",
+    "jiwer.*",
+    "pyannote.*",
+    "sklearn.*",
+    "wespeakerruntime.*",
+    "silero_vad.*",
+    "ctranslate2.*",
+    "torch.*",
+    "torchaudio.*",
+    "win32api",
+    "win32con",
+    "win32gui",
+    "win32process",
+    "win32event",
+    "win32file",
+    "win32pipe",
+    "win32com.*",
+    "pythoncom",
+    "pywintypes",
+    "winerror",
+]
+ignore_missing_imports = true
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra"
+timeout = 60  # por defecto; los tests con modelos suben el limite con @pytest.mark.timeout(600)
+markers = [
+    "slow: tests lentos (se saltan salvo MICNAGA_RUN_SLOW=1 o MICNAGA_RUN_MODELS=1)",
+    "models: necesitan modelos descargados (se saltan salvo MICNAGA_RUN_MODELS=1)",
+    "realdevice: necesitan micro/altavoces reales (se saltan salvo MICNAGA_RUN_REALDEVICE=1)",
+]
