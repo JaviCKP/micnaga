@@ -194,3 +194,26 @@ def test_detection_invalid_values_are_rejected(tmp_path: Path, toml: str) -> Non
     f.write_text(toml, encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(f)
+
+
+def test_secretaria_defaults_and_mcp_server_lines(tmp_home: Path) -> None:
+    c = Config()
+    assert c.secretaria.enabled is False
+    assert (c.secretaria.model_acta, c.secretaria.model_title) == ("sonnet", "haiku")
+    assert c.secretaria.mcp_servers == [] and c.secretaria.auth == "session"
+    good = '{"name": "drive", "command": "npx", "args": ["x"], "env": {}, "tools": ["search"]}'
+    c.secretaria.mcp_servers = [good]
+    save_config(c)
+    assert load_config().secretaria.mcp_servers == [good]
+    for bad in (
+        "not json",
+        '{"name": "micnaga", "command": "x", "tools": ["a"]}',
+        '{"name": "drive", "command": "x"}',
+        '{"name": "drive", "command": "x", "tools": []}',
+        '{"name": "Drive!", "command": "x", "tools": ["a"]}',
+        '{"name": "drive", "command": "x", "args": "y", "tools": ["a"]}',
+    ):
+        with pytest.raises(ConfigError):
+            config_from_dict({"secretaria": {"mcp_servers": [bad]}})
+    with pytest.raises(ConfigError):
+        config_from_dict({"secretaria": {"auth": "magic"}})

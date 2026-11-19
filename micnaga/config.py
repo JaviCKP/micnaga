@@ -109,6 +109,24 @@ class StartupConfig:
 
 
 @dataclass
+class SecretariaConfig:
+    """Capa de IA (``micnaga/brain``, ``docs/design/ai_brain.md``). Los secretos (token o clave
+    de Claude, clave de Odoo) viven en el Administrador de credenciales, nunca aqui."""
+
+    enabled: bool = False  # se activa al conectar Claude (Ajustes > Secretaria)
+    auth: str = "session"  # session | token | api_key
+    model_acta: str = "sonnet"
+    model_title: str = "haiku"
+    live_title: bool = True  # titulo provisional hacia el minuto 2 de una grabacion confirmada
+    odoo_url: str = ""
+    odoo_db: str = ""
+    odoo_login: str = ""
+    # Servidores MCP extra (solo lectura, contexto): un objeto JSON por linea, p. ej.
+    # {"name": "drive", "command": "npx", "args": ["..."], "env": {}, "tools": ["search"]}
+    mcp_servers: list[str] = field(default_factory=list)
+
+
+@dataclass
 class Config:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
     gates: GatesConfig = field(default_factory=GatesConfig)
@@ -120,6 +138,7 @@ class Config:
     ui: UiConfig = field(default_factory=UiConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
+    secretaria: SecretariaConfig = field(default_factory=SecretariaConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -154,6 +173,12 @@ class Config:
             raise ConfigError("processing.echo_similarity must be in [0, 1]")
         if not 0.0 <= self.privacy.voiceprint_threshold <= 1.0:
             raise ConfigError("privacy.voiceprint_threshold must be in [0, 1]")
+        sec = self.secretaria
+        _check_choice("secretaria.auth", sec.auth, ("session", "token", "api_key"))
+        _check_choice("secretaria.model_acta", sec.model_acta, ("sonnet", "opus", "haiku"))
+        _check_choice("secretaria.model_title", sec.model_title, ("haiku", "sonnet"))
+        for line in sec.mcp_servers:
+            _check_mcp_server(line)
 
     # Atajos utiles para el resto de modulos --------------------------------------------
 
@@ -170,6 +195,44 @@ class Config:
 def _check_choice(key: str, value: str, choices: tuple[str, ...]) -> None:
     if value not in choices:
         raise ConfigError(f"{key} must be one of {choices}, got {value!r}")
+
+
+MCP_SERVER_NAME_RE = r"^[a-z][a-z0-9_-]{0,31}$"
+
+
+def _check_mcp_server(line: str) -> None:
+    """Una linea de ``secretaria.mcp_servers``: objeto JSON con ``name``, ``command``, ``args``
+    (lista), ``env`` (objeto) y ``tools`` (las herramientas permitidas, al menos una)."""
+    import json
+    import re
+
+    where = "secretaria.mcp_servers"
+    try:
+        data = json.loads(line)
+    except ValueError as exc:
+        raise ConfigError(f"{where}: each line must be a JSON object ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: each line must be a JSON object")
+    name = data.get("name")
+    if not isinstance(name, str) or not re.match(MCP_SERVER_NAME_RE, name) or name == "micnaga":
+        raise ConfigError(f"{where}: invalid server name {name!r}")
+    if not isinstance(data.get("command"), str) or not data["command"].strip():
+        raise ConfigError(f"{where}: {name}: 'command' must be a non-empty string")
+    args = data.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ConfigError(f"{where}: {name}: 'args' must be a list of strings")
+    env = data.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        raise ConfigError(f"{where}: {name}: 'env' must map strings to strings")
+    tools = data.get("tools")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or not all(isinstance(t, str) and re.match(r"^[A-Za-z0-9_.-]+$", t) for t in tools)
+    ):
+        raise ConfigError(f"{where}: {name}: 'tools' must list the allowed tool names")
 
 
 def _coerce(section: str, key: str, value: Any, default: Any) -> Any:

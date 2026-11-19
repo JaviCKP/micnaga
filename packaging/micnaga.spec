@@ -77,6 +77,11 @@ binaries = []
 # Interfaz web (HTML/CSS/JS/i18n/iconos): ``micnaga/ui/*.py`` los busca en ``<carpeta>/web``.
 datas += [(str(ROOT / "micnaga" / "ui" / "web"), "micnaga/ui/web")]
 datas += [(str(ROOT / "micnaga" / "py.typed"), "micnaga")]
+# Secretaria: prompts versionados, contexto base y (si existe) el mapa de campos de Odoo.
+datas += [(str(ROOT / "micnaga" / "brain" / "prompts"), "micnaga/brain/prompts")]
+datas += [(str(ROOT / "micnaga" / "brain" / "context"), "micnaga/brain/context")]
+if (ROOT / "micnaga" / "brain" / "odoo_schema.json").is_file():
+    datas += [(str(ROOT / "micnaga" / "brain" / "odoo_schema.json"), "micnaga/brain")]
 # Sustituto de PyAV (ver excludes): ``faster_whisper.audio`` hace ``import av`` al importarse.
 datas += [(str(ROOT / "packaging" / "stubs" / "av"), "av")]
 if VARIANT == "torch":
