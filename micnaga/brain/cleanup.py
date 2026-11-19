@@ -54,7 +54,8 @@ MODEL = "haiku"
 WINDOW = 5
 CONTEXT = 2
 WINDOW_CHARS = 3000
-WORKERS = 24
+WORKERS = 24  # techo; el real lo limita la maquina (default_workers)
+CLAUDE_PROC_MB = 300  # memoria aproximada de cada ``claude -p`` (node) en paralelo
 BATCH_TIMEOUT_S = 60.0
 DEADLINE_S = 90.0
 MAX_RATIO = 0.35
@@ -774,6 +775,22 @@ def read_marker(folder: Path) -> dict[str, Any] | None:
     return data if isinstance(data, dict) else None
 
 
+def default_workers() -> int:
+    """Procesos ``claude -p`` simultaneos que aguanta este equipo: hilos logicos y RAM libre
+    (cada uno ~300 MB). En un portatil modesto baja de 24 a ~6-8; tarda algo mas, no se ahoga."""
+    import os
+
+    cpus = os.cpu_count() or 4
+    try:
+        import psutil
+
+        free_mb = int(psutil.virtual_memory().available / (1024 * 1024))
+    except Exception:
+        free_mb = 4096
+    by_mem = max(2, (free_mb - 1024) // CLAUDE_PROC_MB)
+    return max(2, min(WORKERS, cpus, by_mem))
+
+
 class Cleaner:
     """``Cleaner(config, runner, with_db=...).run(folder)``."""
 
@@ -858,7 +875,9 @@ class Cleaner:
                 done["ok"] += 1
             status({"fase": "corrigiendo", "hechos": done["n"], "total": len(wins)})
 
-        with ThreadPoolExecutor(max_workers=max(1, min(self.workers, len(wins)))) as pool:
+        with ThreadPoolExecutor(
+            max_workers=max(1, min(self.workers, default_workers(), len(wins)))
+        ) as pool:
             list(pool.map(work, wins))
         stats.seconds = round(time.monotonic() - started, 1)
         stats.cost_usd = round(stats.cost_usd, 4)
