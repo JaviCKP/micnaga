@@ -34,10 +34,12 @@ Decisiones
   ``_suspend``/``_resume`` desde dentro de la apertura). El callback sigue en el hilo de
   PortAudio y ``read()`` sigue siendo una lectura de cola sin bloqueos en el hilo de la pista;
   ``probe()`` (solo COM) se queda en el hilo de quien sondea.
-  Toda espera esta acotada (``OPEN_TIMEOUT_S``/``CLOSE_TIMEOUT_S``, por debajo de los 5 s con
-  que ``Recorder.stop`` espera a sus hilos): un controlador colgado da ``PortAudioTimeout`` (un
-  ``SourceError``), se registra y se sigue; mientras siga colgado, las llamadas siguientes
-  fallan en el acto. Una apertura que termina tarde cierra su propio flujo. ``close()`` pide al
+  Toda espera esta acotada (``OPEN_TIMEOUT_S`` 3 s, ``CLOSE_TIMEOUT_S`` 1,5 s: un reenganche,
+  cerrar y abrir en el hilo de la pista, cabe en los 5 s con que ``Recorder.stop`` espera a sus
+  hilos): un controlador colgado da ``PortAudioTimeout`` (un ``SourceError``), se registra y se
+  sigue; mientras siga colgado, las llamadas siguientes fallan en el acto. Una apertura que
+  termina tarde cierra su propio flujo (y si caduco en la cola ni se ejecuta); un cierre que
+  caduco en la cola se ejecuta igualmente cuando el hilo se libera. ``close()`` pide al
   hilo que cierre todo, haga ``terminate`` y salga, y lo espera como mucho ``CLOSE_TIMEOUT_S``;
   es idempotente y, si el backend se vuelve a usar, el hilo arranca de nuevo (solo cuando el
   anterior ya ha salido, para no tener dos hilos con PortAudio). **No se puede confirmar sin
@@ -68,9 +70,9 @@ from micnaga.capture.sources import (
 log = logging.getLogger(__name__)
 
 BUFFER_S = 0.1
-OPEN_TIMEOUT_S = 4.0
+OPEN_TIMEOUT_S = 3.0
 """Espera maxima de una apertura (incluido un reinicio de PortAudio)."""
-CLOSE_TIMEOUT_S = 3.0
+CLOSE_TIMEOUT_S = 1.5
 """Espera maxima de un cierre y de la salida del hilo en ``WasapiBackend.close``."""
 THREAD_NAME = "micnaga-portaudio"
 
@@ -125,9 +127,17 @@ def pick_device(endpoint_name: str, candidates: Iterable[dict[str, Any]]) -> dic
 class _Job(Generic[T]):
     """Una llamada encolada al hilo de PortAudio."""
 
-    def __init__(self, fn: Callable[[], T], on_abandoned: Callable[[T], None] | None) -> None:
+    def __init__(
+        self,
+        fn: Callable[[], T],
+        on_abandoned: Callable[[T], None] | None,
+        *,
+        run_late: bool,
+    ) -> None:
         self.fn = fn
         self.on_abandoned = on_abandoned
+        self.run_late = run_late
+        """Ejecutar aunque caduque en la cola (cierres: el flujo tiene que pararse igual)."""
         self.lock = threading.Lock()
         self.done = threading.Event()
         self.abandoned = False
@@ -138,8 +148,8 @@ class _Job(Generic[T]):
     def run(self) -> None:
         """Se ejecuta en el hilo de PortAudio."""
         with self.lock:
-            if self.abandoned:  # caduco en la cola: ya nadie espera el resultado
-                self.done.set()
+            if self.abandoned and not self.run_late:
+                self.done.set()  # apertura caducada en la cola: ya nadie la espera
                 return
         result: T | None = None
         error: Exception | None = None
@@ -205,22 +215,30 @@ class PortAudioThread:
         *,
         timeout: float,
         on_abandoned: Callable[[T], None] | None = None,
+        run_late: bool = False,
     ) -> T:
         """Ejecuta ``fn`` en el hilo (en linea si ya se esta en el) y devuelve su resultado.
 
         Lanza ``PortAudioTimeout`` si no termina en ``timeout`` s o si el hilo sigue colgado de
         una llamada anterior. Si ``fn`` termina despues de agotarse el tiempo, se llama a
         ``on_abandoned(resultado)`` en el hilo (p. ej. para cerrar un flujo que nadie recogera).
+        Sin ``run_late`` una llamada que caduca antes de empezar ya no se ejecuta; con
+        ``run_late`` (cierres) se ejecuta siempre: si el hilo esta colgado se encola igualmente
+        y se lanza ``PortAudioTimeout`` en el acto.
         """
         if self.on_thread():
             return fn()
         with self._lock:
             stuck = self._stuck
-            if stuck is not None and not stuck.done.is_set():
+            hung = stuck is not None and not stuck.done.is_set()
+            if hung and not run_late:
                 raise PortAudioTimeout("PortAudio thread is still stuck in a previous call")
             q = self._ensure_started()
-            job: _Job[T] = _Job(fn, on_abandoned)
+            job: _Job[T] = _Job(fn, on_abandoned, run_late=run_late)
+            job.abandoned = hung
             q.put(job)
+        if hung:
+            raise PortAudioTimeout("PortAudio thread is stuck; the call will run when it frees up")
         if not job.done.wait(timeout):
             with job.lock:
                 timed_out = not job.done.is_set()
@@ -387,14 +405,21 @@ class PortAudioSource:
         self._closed = True
         if not self._backend.can_call():
             return  # el backend ya se cerro: su hilo cerro todos los flujos al salir
-        try:
-            self._backend.call(self._close_here, timeout=self._backend.close_timeout_s)
+        try:  # run_late: aunque se agote la espera, el flujo se para cuando el hilo se libere
+            self._backend.call(
+                self._close_here, timeout=self._backend.close_timeout_s, run_late=True
+            )
         except PortAudioTimeout as exc:
             log.error("closing %s: %s", self.info.name, exc)
 
     def _close_here(self) -> None:
         self._suspend()
         self._backend.forget(self)
+
+    def _shutdown(self) -> None:
+        """Cierre desde el apagado del backend (en el hilo de PortAudio, sin encolar nada)."""
+        self._closed = True
+        self._suspend()
 
 
 class WasapiBackend:
@@ -433,9 +458,10 @@ class WasapiBackend:
         *,
         timeout: float,
         on_abandoned: Callable[[T], None] | None = None,
+        run_late: bool = False,
     ) -> T:
         """Ejecuta ``fn`` en el hilo de PortAudio (ver :meth:`PortAudioThread.call`)."""
-        return self._runner.call(fn, timeout=timeout, on_abandoned=on_abandoned)
+        return self._runner.call(fn, timeout=timeout, on_abandoned=on_abandoned, run_late=run_late)
 
     def pyaudio(self) -> Any:
         """La instancia de ``PyAudio`` (creada en el hilo de PortAudio)."""
@@ -476,9 +502,9 @@ class WasapiBackend:
 
     def _shutdown_here(self) -> None:
         """Cierra todos los flujos y hace ``terminate`` (al salir el hilo de PortAudio)."""
-        for s in list(self._sources):
+        for s in list(self._sources):  # tambien las que ya marcaron _closed sin llegar aqui
             try:
-                s.close()
+                s._shutdown()
             except Exception:
                 log.exception("closing source %s failed", s.info.name)
         self._sources.clear()

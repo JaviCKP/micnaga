@@ -251,9 +251,10 @@ Fusionado desde `docs/agent_reports/wave1_*.md` (los informes siguen ahí con el
     controladores fallan si los objetos de PortAudio se usan desde varios hilos). `PyAudio()`,
     enumeración/resolución, `pa.open`, `stop_stream`/`close`, `terminate` y el reinicio por
     `DeviceNotFound` van a un hilo daemon propio (`wasapi.PortAudioThread`, con COM); el
-    `Recorder` y los protocolos de `sources.py` no cambian. Esperas acotadas (abrir 4 s, cerrar
-    3 s, por debajo del `JOIN_TIMEOUT_S` de 5 s del grabador); con el hilo colgado las llamadas
-    siguientes fallan en el acto y `close()` no espera. El backend es reutilizable tras
+    `Recorder` y los protocolos de `sources.py` no cambian. Esperas acotadas (abrir 3 s, cerrar
+    1,5 s: un reenganche, cerrar + abrir, cabe en el `JOIN_TIMEOUT_S` de 5 s del grabador); con
+    el hilo colgado las aperturas fallan en el acto, los cierres se encolan igualmente (el flujo
+    se para en cuanto el hilo se libera) y `close()` no espera. El backend es reutilizable tras
     `close()` (el hilo vuelve a arrancar si el anterior ya salió). **No confirmable sin
     conectar/desconectar dispositivos reales**: arreglo de diseño probado con un `PyAudio` falso
     que registra el hilo de cada llamada. Pendiente: `Pa_Initialize` cuenta referencias en

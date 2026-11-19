@@ -482,6 +482,68 @@ def test_a_late_open_closes_its_own_stream(
     assert pa_thread is not None and not pa_thread.is_alive()
 
 
+def _block_opens(monkeypatch: pytest.MonkeyPatch) -> tuple[threading.Event, threading.Event]:
+    """``FakePA.open`` se queda esperando a ``release``; ``entered`` avisa de que empezo."""
+    entered, release = threading.Event(), threading.Event()
+    real_open = FakePA.open
+
+    def slow_open(self: FakePA, **kwargs: Any) -> FakeStream:
+        entered.set()
+        release.wait(10)
+        return real_open(self, **kwargs)
+
+    monkeypatch.setattr(FakePA, "open", slow_open)
+    return entered, release
+
+
+def test_a_close_that_expires_in_the_queue_still_runs(
+    fake_pa: type[FakePA], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = wasapi.WasapiBackend(open_timeout_s=5.0, close_timeout_s=0.2)
+    mic = backend.open_mic()
+    mic_stream = fake_pa.instances[0].streams[0]
+    entered, release = _block_opens(monkeypatch)
+    opener = threading.Thread(target=backend.open_system, name="micnaga-cap-system")
+    try:
+        opener.start()  # el hilo de PortAudio queda ocupado en una apertura lenta
+        assert entered.wait(5)
+        mic.close()  # caduca en la cola (0,2 s) sin haber empezado
+        assert not mic_stream.closed
+    finally:
+        release.set()
+        opener.join(5)
+    _wait_for(lambda: mic_stream.closed)  # se ejecuto en cuanto el hilo quedo libre
+    assert mic_stream.stopped
+    pa_thread = backend.portaudio_thread
+    backend.close()
+    assert pa_thread is not None and not pa_thread.is_alive()
+
+
+def test_a_close_while_the_thread_is_stuck_is_queued_not_dropped(
+    fake_pa: type[FakePA], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    backend = wasapi.WasapiBackend(open_timeout_s=0.2, close_timeout_s=0.2)
+    mic = backend.open_mic()
+    mic_stream = fake_pa.instances[0].streams[0]
+    _entered, release = _block_opens(monkeypatch)
+    pa_thread = backend.portaudio_thread
+    assert pa_thread is not None
+    try:
+        with pytest.raises(wasapi.PortAudioTimeout):
+            backend.open_system()  # el hilo queda colgado
+        t0 = time.monotonic()
+        mic.close()  # no espera: se encola para cuando el hilo se libere
+        assert time.monotonic() - t0 < 0.1
+        assert not mic_stream.closed
+    finally:
+        release.set()
+    _wait_for(lambda: mic_stream.closed)
+    _wait_for(lambda: len(fake_pa.instances[0].streams) == 2)
+    _wait_for(lambda: fake_pa.instances[0].streams[1].closed)  # la apertura tardia se deshizo
+    backend.close()
+    assert not pa_thread.is_alive()
+
+
 def test_backend_restarts_its_thread_after_close(fake_pa: type[FakePA]) -> None:
     backend = wasapi.WasapiBackend()
     backend.open_mic()
