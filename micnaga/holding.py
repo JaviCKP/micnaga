@@ -135,7 +135,10 @@ def move_to_held(
     """Aparta la carpeta en ``_descartadas`` (anota motivo y fecha). Devuelve la ruta nueva.
 
     Idempotente: una carpeta que ya esta dentro de ``_descartadas`` solo actualiza ``held.json``.
+    Lo transcrito en vivo mientras se grababa (``work/live/``) se borra: una sesion apartada
+    conserva solo el audio, como siempre (DECISIONS §23).
     """
+    _drop_live_work(session_dir)
     if meetings_root is not None:
         root = meetings_root
     elif session_dir.parent.name == HELD_DIRNAME:
@@ -161,6 +164,23 @@ def move_to_held(
     unmark_discarded(dest)
     log.info("session held (%s)", reason)  # sin titulo ni ruta
     return dest
+
+
+def _drop_live_work(session_dir: Path) -> None:
+    live = paths.work_dir(session_dir) / "live"
+    for _ in range(10):
+        try:
+            shutil.rmtree(live)
+        except FileNotFoundError:
+            break
+        except OSError:  # el proceso en vivo aun lo tiene abierto: se reintenta un momento
+            time.sleep(0.2)
+            continue
+        break
+    with contextlib.suppress(OSError):
+        paths.work_dir(session_dir).rmdir()  # solo si quedo vacia
+    if live.exists():
+        log.warning("could not delete the live transcription of a held session")
 
 
 @dataclass(frozen=True)

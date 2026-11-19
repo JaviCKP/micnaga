@@ -25,7 +25,7 @@ El desfase constante entre las dos pistas debido a la latencia de captura de cad
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
 import numpy as np
@@ -40,6 +40,8 @@ SHIFT_ONLY_TOLERANCE_SAMPLES = 1.0
 """Si la correccion varia menos que esto en toda la pista, basta un desplazamiento entero."""
 _CHUNK = 1 << 20
 _MARGIN = 64
+WARP_THREADS = 4
+"""Hilos para remuestrear por trozos (pista con deriva de una reunion larga: ~10 s -> ~4 s)."""
 """Muestras de contexto a cada lado de un trozo (la sobremuestra de soxr tiene transitorios)."""
 
 F32 = NDArray[np.float32]
@@ -209,10 +211,85 @@ def resample_to_clock(
             out[dst0 : dst0 + (src1 - src0)] = x[src0:src1]
         return out
 
-    for j0 in range(0, n_out, _CHUNK):
+    def warp(j0: int) -> None:
         j1 = min(j0 + _CHUNK, n_out)
         out[j0:j1] = _warp_chunk(x, positions(j0, j1), sample_rate, oversample)
+
+    starts = range(0, n_out, _CHUNK)
+    workers = min(WARP_THREADS, len(starts))
+    if workers <= 1:
+        for j0 in starts:
+            warp(j0)
+        return out
+    # soxr y scipy.ndimage sueltan el GIL: los trozos son independientes (mismo resultado)
+    from concurrent.futures import ThreadPoolExecutor
+
+    with ThreadPoolExecutor(workers, thread_name_prefix="micnaga-align") as pool:
+        list(pool.map(warp, starts))
     return out
+
+
+def clock_length(
+    marks: Sequence[SyncMark], n_samples: int, sample_rate: int = DEFAULT_SAMPLE_RATE
+) -> int:
+    """Muestras de la pista sobre el reloj comun (la ``n_out`` de :func:`resample_to_clock`)."""
+    if n_samples <= 0:
+        return 0
+    ks, kc = clock_knots(marks, sample_rate, n_samples=n_samples)
+    return round(float(np.interp(n_samples, ks, kc)) * sample_rate)
+
+
+def resample_range_to_clock(
+    read: Callable[[int, int], F32],
+    n_samples: int,
+    marks: Sequence[SyncMark],
+    j0: int,
+    j1: int,
+    sample_rate: int = DEFAULT_SAMPLE_RATE,
+    *,
+    oversample: int = 4,
+) -> F32:
+    """Muestras ``[j0, j1)`` de ``resample_to_clock(x, marks)`` leyendo solo lo necesario.
+
+    ``read(a, b)`` devuelve ``x[a:b]`` de una pista de ``n_samples`` muestras (que puede seguir
+    creciendo: el procesado en vivo la lee mientras se graba). Misma correspondencia y misma
+    interpolacion que la funcion entera; fuera de la pista, silencio. La decision «basta un
+    desplazamiento entero» se toma con los nudos conocidos hasta ahora.
+    """
+    j1 = max(j0, j1)
+    out = np.zeros(j1 - j0, dtype=np.float32)
+    if j1 <= j0 or n_samples <= 0:
+        return out
+    ks, kc = clock_knots(marks, sample_rate, n_samples=n_samples)
+
+    def positions_at(tau: F64) -> F64:
+        p = np.interp(tau, kc, ks)
+        before = tau < kc[0]
+        after = tau > kc[-1]
+        if before.any():
+            p[before] = ks[0] + (tau[before] - kc[0]) * sample_rate
+        if after.any():
+            p[after] = ks[-1] + (tau[after] - kc[-1]) * sample_rate
+        return p
+
+    tau_probe = np.concatenate([kc, [0.0]])
+    d = positions_at(tau_probe) - tau_probe * sample_rate
+    if float(np.ptp(d)) <= SHIFT_ONLY_TOLERANCE_SAMPLES:
+        k = round(float(np.mean(d)))
+        src0, src1 = max(j0 + k, 0), min(n_samples, j1 + k)
+        if src1 > src0:
+            dst0 = src0 - (j0 + k)
+            out[dst0 : dst0 + (src1 - src0)] = read(src0, src1)
+        return out
+    p = positions_at(np.arange(j0, j1, dtype=np.float64) / sample_rate)
+    lo = max(math.floor(float(p.min())) - _MARGIN, 0)
+    hi = min(math.ceil(float(p.max())) + _MARGIN, n_samples)
+    if hi <= lo:
+        return out
+    seg = np.asarray(read(lo, hi), dtype=np.float32)
+    y = _warp_chunk(seg, p - lo, sample_rate, oversample)
+    y[(p < 0) | (p > n_samples - 1)] = 0.0
+    return y
 
 
 def align_tracks(

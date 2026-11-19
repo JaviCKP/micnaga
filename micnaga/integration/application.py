@@ -205,6 +205,7 @@ class Application:
         exit_after_s: float = 0.0,
         brain: Any = None,
         live_title: Any = None,
+        live: Any = None,
     ) -> None:
         self.config = config
         try:  # solo congelada: el AUMID debe coincidir con el acceso directo del instalador
@@ -253,12 +254,18 @@ class Application:
         ctl_kwargs: dict[str, Any] = {}
         if foreground is not None:
             ctl_kwargs["foreground"] = foreground
+        if live is None and spawn is None:  # app real (los tests inyectan ``spawn``)
+            from micnaga.integration.live import LiveRunner
+
+            live = LiveRunner(lambda: self.config, models_ready=self._models_ready_fn)
+        self.live = live
         self.controller = AppController(
             config,
             self.ui,
             self.finisher,
             recorder_factory=recorder_factory,
             on_job_queued=self.supervisor.kick,
+            live=live,
             **ctl_kwargs,
         )
         self.ui.set_levels_provider(self._levels)

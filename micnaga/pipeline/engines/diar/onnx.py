@@ -40,7 +40,7 @@ from micnaga import models
 from micnaga.pipeline import vad
 from micnaga.pipeline.engines.asr._common import MODEL_SR, to_mono_16k
 from micnaga.registry import EngineUnavailableError
-from micnaga.types import AudioArray, SpeechRegion, Turn
+from micnaga.types import AudioArray, Turn
 
 if TYPE_CHECKING:
     from micnaga.config import Config
@@ -406,10 +406,9 @@ class OnnxDiarizer:
                 f"WeSpeaker model not found at {onnx_path}; run the first-start model download "
                 "(micnaga.models.download_models)."
             )
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = max(1, threads)
-        so.inter_op_num_threads = 1
-        so.log_severity_level = 3
+        from micnaga.pipeline.engines.ort_options import session_options
+
+        so = session_options(threads)
         try:
             self._sess: Any = ort.InferenceSession(
                 str(onnx_path), sess_options=so, providers=["CPUExecutionProvider"]
@@ -429,10 +428,14 @@ class OnnxDiarizer:
         out = self._sess.run(["embs"], {"feats": feats})[0]
         return _unit(np.asarray(out, dtype=np.float32))
 
-    def _embed_windows(
-        self, audio: AudioArray, regions: Sequence[tuple[float, float]]
+    def embed_windows(
+        self, audio: AudioArray, regions: Sequence[tuple[float, float]], offset: int = 0
     ) -> tuple[NDArray[np.float32], list[tuple[float, float]], list[int]]:
-        """Embeddings de las ventanas de todos los tramos (fbank una vez por tramo)."""
+        """Embeddings de las ventanas de todos los tramos (fbank una vez por tramo).
+
+        ``audio`` empieza en la muestra ``offset`` de la pista (los tiempos de ``regions`` y de
+        las ventanas son de la pista): el procesado en vivo pasa solo el trozo de cada tramo.
+        """
         spans: list[tuple[float, float]] = []
         region_of: list[int] = []
         vecs: list[NDArray[np.float32]] = []
@@ -446,7 +449,7 @@ class OnnxDiarizer:
 
         for ri, (r0, r1) in enumerate(regions):
             a = round(r0 * 100) * FRAME_SHIFT  # muestra, alineada a 10 ms
-            seg = audio[a : min(len(audio), int(r1 * MODEL_SR))]
+            seg = audio[a - offset : min(len(audio), int(r1 * MODEL_SR) - offset)]
             if len(seg) < MIN_WINDOW_S * MODEL_SR:
                 continue
             ft = fbank(seg)
@@ -474,19 +477,59 @@ class OnnxDiarizer:
     # ---------------------------------------------------------------- Diarizer
 
     def diarize(self, audio: AudioArray, sr: int, n_speakers: int | None) -> list[Turn]:
+        return self.diarize_with_probs(audio, sr, n_speakers, None)
+
+    def speech_regions(
+        self, probs: NDArray[np.float32], duration_s: float, *, final: bool = True
+    ) -> list[tuple[float, float]]:
+        """Tramos para las ventanas a partir de las probabilidades de Silero del audio.
+
+        Con ``final=False`` (audio aun creciendo, procesado en vivo) solo se devuelven los tramos
+        que ya no pueden cambiar: los que acaban antes de ``duration_s - guarda``.
+        """
+        params = self.region_params()
+        found = vad.regions_with(probs, duration_s, params)
+        if not final:
+            limit = duration_s - params.stable_guard_s
+            found = [r for r in found if r.end <= limit]
+        return [(r.start, r.end) for r in found if r.end - r.start >= MIN_WINDOW_S]
+
+    def region_params(self) -> vad.RegionParams:
+        return vad.region_params(self._config, min_silence_ms=300, pad_ms=100)
+
+    def diarize_with_probs(
+        self,
+        audio: AudioArray,
+        sr: int,
+        n_speakers: int | None,
+        probs: NDArray[np.float32] | None,
+    ) -> list[Turn]:
+        """``diarize`` reutilizando las probabilidades de Silero ya calculadas sobre ``audio``
+        (etapa 5): mismo resultado sin volver a pasar el VAD."""
         self._check_open()
         if n_speakers is not None and n_speakers < 1:
             raise ValueError("n_speakers must be >= 1 or None")
         x = to_mono_16k(audio, sr)
         if len(x) < MIN_WINDOW_S * MODEL_SR:
             return []
-        regions_obj: list[SpeechRegion] = vad.detect_speech(
-            x, MODEL_SR, min_silence_ms=300, pad_ms=100, model=self._vad_model, config=self._config
-        )
-        regions = [(r.start, r.end) for r in regions_obj if r.end - r.start >= MIN_WINDOW_S]
+        if probs is None or sr != MODEL_SR:
+            probs = vad.speech_probs(x, MODEL_SR, model=self._vad_model, config=self._config)
+        regions = self.speech_regions(probs, len(x) / MODEL_SR)
         if not regions:
             return []
-        emb, spans, region_of = self._embed_windows(x, regions)
+        emb, spans, region_of = self.embed_windows(x, regions)
+        return self.turns_from_embeddings(x, regions, emb, spans, region_of, n_speakers)
+
+    def turns_from_embeddings(
+        self,
+        x: AudioArray,
+        regions: Sequence[tuple[float, float]],
+        emb: NDArray[np.float32],
+        spans: Sequence[tuple[float, float]],
+        region_of: Sequence[int],
+        n_speakers: int | None,
+    ) -> list[Turn]:
+        """Clustering + turnos a partir de los embeddings de las ventanas (``embed_windows``)."""
         if len(emb) == 0:
             return []
         labels = cluster_embeddings(

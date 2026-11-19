@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
 
 import numpy as np
+from numpy.typing import NDArray
 
 from micnaga import paths
 from micnaga.types import AudioArray, CaptureMeta, SpeechRegion
@@ -67,6 +68,12 @@ class SpeechDetector(Protocol):
     def __call__(self, audio: AudioArray, sr: int, config: Config) -> list[SpeechRegion]: ...
 
 
+class SpeechProbs(Protocol):
+    """Probabilidad de voz por trama de 32 ms (Silero); los tramos salen de ellas."""
+
+    def __call__(self, audio: AudioArray, sr: int, config: Config) -> NDArray[np.float32]: ...
+
+
 @dataclass
 class Deps:
     """Dependencias externas de las etapas (inyectables en los tests)."""
@@ -80,6 +87,15 @@ class Deps:
     align_tracks: Aligner
     release_vad: Callable[[], None] = lambda: None
     voiceprints: VoiceprintStore | None = None
+    speech_probs: SpeechProbs | None = None
+    """Si esta, la etapa 5 guarda las probabilidades (``05_probs.npz``) y los tramos salen de
+    ellas con los parametros de ``[vad]`` (identico a ``detect_speech``); el diarizador ONNX las
+    reutiliza en vez de volver a pasar el VAD por la pista remota."""
+    live_vad: Callable[[Config], Any] | None = None
+    """VAD con estado (``vad.SileroVad.probs_from``) para el procesado en vivo; sin el, una
+    sesion con ``work/live/`` se procesa por lotes."""
+    create_live_embedder: Callable[[Config], Any] = lambda _c: None
+    """Embedder de ventanas (diarizador ONNX) para el procesado en vivo, o ``None``."""
 
 
 def default_deps() -> Deps:
@@ -118,6 +134,23 @@ def default_deps() -> Deps:
 
         return align(mic, system, meta)
 
+    def speech_probs(audio: AudioArray, sr: int, config: Config) -> NDArray[np.float32]:
+        from micnaga.pipeline.vad import speech_probs as probs
+
+        return probs(audio, sr, config=config)
+
+    def live_vad(config: Config) -> Any:
+        from micnaga.pipeline.vad import load_model
+
+        return load_model(config)
+
+    def create_live_embedder(config: Config) -> Any:
+        if config.processing.diarization != "onnx" or config.capture.sample_rate != 16000:
+            return None
+        from micnaga.pipeline.engines.diar.onnx import create
+
+        return create(config)
+
     def release_vad() -> None:
         try:
             from micnaga.pipeline.vad import release_model
@@ -133,6 +166,9 @@ def default_deps() -> Deps:
         group_regions=group_regions,
         align_tracks=align_tracks,
         release_vad=release_vad,
+        speech_probs=speech_probs,
+        live_vad=live_vad,
+        create_live_embedder=create_live_embedder,
     )
 
 

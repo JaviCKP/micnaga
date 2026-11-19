@@ -175,6 +175,25 @@ def test_long_paragraphs_are_split_at_a_sentence_end() -> None:
     assert all(m.end - m.start <= 45 + 10 for m in merged)
 
 
+def test_false_period_without_a_pause_does_not_split_a_long_paragraph() -> None:
+    # Parakeet pone puntos a mitad de oracion: un punto seguido sin pausa (< 0,35 s) del mismo
+    # hablante no parte el parrafo aunque ya pase del limite; el texto queda tal cual.
+    phrases = [seg("S1", i * 10.0, i * 10.0 + 9.8, f"Frase {i}.") for i in range(8)]
+    merged = merge_segments(phrases, merge_gap_s=1.5, max_paragraph_s=45)
+    assert [m.text for m in merged] == [" ".join(f"Frase {i}." for i in range(8))]
+    # con una pausa real tras el punto si se parte (pasado el limite de 45 s)
+    phrases[6] = seg("S1", 60.4, 69.8, "Frase 6.")
+    split = merge_segments(phrases, merge_gap_s=1.5, max_paragraph_s=45)
+    assert [m.start for m in split] == [0.0, 60.4]
+
+
+def test_false_periods_still_split_far_too_long_paragraphs() -> None:
+    phrases = [seg("S1", i * 10.0, i * 10.0 + 9.9, f"Frase {i}.") for i in range(12)]
+    merged = merge_segments(phrases, merge_gap_s=1.5, max_paragraph_s=45)
+    assert len(merged) == 2
+    assert merged[0].end - merged[0].start >= 90
+
+
 # ------------------------------------------------------------------ eco (etapa 9)
 
 

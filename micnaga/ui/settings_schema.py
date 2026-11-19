@@ -124,6 +124,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             _f("processing.aec", "choice", choices=("auto", "webrtc", "speex", "off")),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
             _f("processing.low_priority", "bool"),
+            _f("processing.live", "bool"),
             _f("processing.glossary", "list"),
             _f(
                 "processing.echo_similarity",

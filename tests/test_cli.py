@@ -40,6 +40,7 @@ def test_command_table_follows_convention() -> None:
         "record": ("micnaga.capture.cli", "run"),
         "process": ("micnaga.pipeline.cli", "run_process"),
         "worker": ("micnaga.pipeline.cli", "run_worker"),
+        "live": ("micnaga.pipeline.cli", "run_live"),
         "bench": ("micnaga.bench.cli", "run"),
         "app": ("micnaga.app", "run"),
         "tools": ("micnaga.brain.mcp", "run"),

@@ -55,7 +55,7 @@ MIN_PEAK_Z = 7.0
 Ruido blanco da z ~ 4-5 en 8000 retardos; un eco real da > 20."""
 
 
-def estimate_bulk_delay(
+def gcc_phat(
     mic: AudioArray,
     ref: AudioArray,
     sr: int,
@@ -63,20 +63,16 @@ def estimate_bulk_delay(
     max_delay_s: float = 0.5,
     window_s: float = 20.0,
     windows: int = 3,
-    min_z: float = MIN_PEAK_Z,
-) -> int:
-    """Retardo bruto (muestras) con el que el eco de ``ref`` llega a ``mic`` (GCC-PHAT).
+) -> tuple[int, float]:
+    """``(retardo, z)``: pico de GCC-PHAT (muestras >= 0) y su prominencia en desviaciones tipicas.
 
     Mira hasta ``windows`` ventanas de ``window_s`` segundos con mas energia en ``ref`` y
-    promedia sus correlaciones. Devuelve 0 si no hay senal o si el pico no destaca
-    (``min_z`` desviaciones tipicas): con un eco debil o sin eco, GCC-PHAT siempre devuelve
-    *algun* maximo y retrasar la referencia a ciegas empeoraria el resultado.
-    Solo detecta retardos >= 0.
+    promedia sus correlaciones. ``(0, 0.0)`` si no hay senal.
     """
     n = min(len(mic), len(ref))
     win = int(window_s * sr)
     if n < sr:
-        return 0
+        return 0, 0.0
     starts = list(range(0, max(1, n - win + 1), max(1, win)))
     energies = [float(np.sum(np.square(ref[s : s + win]))) for s in starts]
     order = np.argsort(energies)[::-1][:windows]
@@ -95,7 +91,27 @@ def estimate_bulk_delay(
         seg = cc[: max_lag + 1]  # retardos positivos: mic va por detras de ref
         acc = seg if acc is None else acc + seg
     if acc is None:
-        return 0
+        return 0, 0.0
     peak = int(np.argmax(acc))
     z = (float(acc[peak]) - float(np.mean(acc))) / (float(np.std(acc)) + 1e-12)
+    return peak, z
+
+
+def estimate_bulk_delay(
+    mic: AudioArray,
+    ref: AudioArray,
+    sr: int,
+    *,
+    max_delay_s: float = 0.5,
+    window_s: float = 20.0,
+    windows: int = 3,
+    min_z: float = MIN_PEAK_Z,
+) -> int:
+    """Retardo bruto (muestras) con el que el eco de ``ref`` llega a ``mic`` (GCC-PHAT).
+
+    Devuelve 0 si no hay senal o si el pico no destaca (``min_z`` desviaciones tipicas): con un
+    eco debil o sin eco, GCC-PHAT siempre devuelve *algun* maximo y retrasar la referencia a
+    ciegas empeoraria el resultado. Solo detecta retardos >= 0.
+    """
+    peak, z = gcc_phat(mic, ref, sr, max_delay_s=max_delay_s, window_s=window_s, windows=windows)
     return peak if z >= min_z else 0

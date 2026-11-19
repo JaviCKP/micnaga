@@ -67,6 +67,8 @@
   "settings.f.processing.threads.help": "Deja núcleos libres para el resto del equipo.",
   "settings.f.processing.low_priority": "Prioridad baja",
   "settings.f.processing.low_priority.help": "",
+  "settings.f.processing.live": "Transcribir mientras grabas",
+  "settings.f.processing.live.help": "Al colgar, la transcripción está lista en uno o dos minutos.",
   "settings.f.processing.glossary": "Glosario personal",
   "settings.f.processing.glossary.help": "Nombres, proyectos y siglas. Uno por línea.",
   "settings.f.processing.echo_similarity": "Umbral de eco por texto",

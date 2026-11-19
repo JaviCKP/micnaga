@@ -18,6 +18,9 @@ hilo de la UI/hotkeys, y **deben volver rapido**):
   el grabador solo los persiste mientras esta grabando.
 * Sin grabador (``start`` fallo por falta de dispositivos), nada se muestra: ni pastilla ni popup
   sin grabacion detras.
+* Procesado en vivo (``integration.live``): se lanza al empezar a grabar, se pide parar con el
+  «No» (y se relanza con «Deshacer») y, al parar, el hilo de parada espera a que salga antes del
+  FLAC. Apartar la sesion borra lo transcrito en vivo (``holding``).
 
 La cuenta atras de los popups es la del vigilante: la UI la pinta con ``popup_state`` (se la da
 ``popup_countdown()`` de este controlador) y el vigilante los cierra.
@@ -36,6 +39,7 @@ from typing import TYPE_CHECKING
 from micnaga import holding, paths
 from micnaga.config import Config
 from micnaga.integration.jobs import Finisher, finalize_and_enqueue, finalize_and_hold
+from micnaga.integration.live import LivePort, NoLive
 from micnaga.integration.ports import RecorderFactory, RecorderLike, UiPort
 from micnaga.watcher import (
     EndCloseReason,
@@ -99,6 +103,7 @@ class AppController:
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         ticker: bool = True,
         sync_s: float = 30.0,
+        live: LivePort | None = None,
     ) -> None:
         self._config = config
         self._ui = ui
@@ -106,6 +111,7 @@ class AppController:
         self._factory = recorder_factory or default_recorder_factory
         self._on_job_queued = on_job_queued or (lambda: None)
         self._foreground = foreground
+        self._live: LivePort = live if live is not None else NoLive()
         self._now = now
         self._lock = threading.RLock()
         self._session: _Session | None = None
@@ -199,6 +205,7 @@ class AppController:
             self._report_start_failure()
             return
         log.info("recording started (provisional=%s)", provisional)
+        self._start_live(directory)
         self._wake_ticker()
 
     def _report_start_failure(self) -> None:
@@ -313,6 +320,10 @@ class AppController:
                 log.exception("pause on discard failed")
         self._ui.hide_pill()
         self._ui.show_undo(undo_s)
+        try:
+            self._live.signal_stop(s.directory)
+        except Exception:
+            log.exception("could not stop live processing")
         log.info("recording discarded (undo for %.0f s)", undo_s)
 
     def cancel_discard(self) -> None:
@@ -329,6 +340,7 @@ class AppController:
                 s.recorder.resume()
             except Exception:
                 log.exception("resume on undo failed")
+        self._start_live(s.directory)
         log.info("discard undone")
 
     def hold_recording(self, *, reason: HoldReason, trim: bool) -> None:
@@ -343,6 +355,7 @@ class AppController:
 
         def stop_then_hold() -> None:
             self._safe_stop(s)
+            self._stop_live(directory)
             self._finisher.submit(
                 "hold",
                 finalize_and_hold(self._config, directory, reason=reason, end_s=end_s),
@@ -434,6 +447,7 @@ class AppController:
 
                 def stop_then_hold() -> None:
                     self._safe_stop(s)
+                    self._stop_live(directory)
                     self._finisher.submit(
                         "hold",
                         finalize_and_hold(self._config, directory, reason=reason, end_s=None),
@@ -475,7 +489,9 @@ class AppController:
         end_s = s.end_mark_s if trim else None
 
         def stop_then_queue() -> None:
-            if not self._safe_stop(s):
+            stopped = self._safe_stop(s)
+            self._stop_live(directory)
+            if not stopped:
                 return
             self._finisher.submit(
                 "finalize",
@@ -485,6 +501,19 @@ class AppController:
             )
 
         self._spawn_stopper(stop_then_queue)
+
+    def _start_live(self, directory: Path) -> None:
+        try:
+            self._live.start(directory)
+        except Exception:
+            log.exception("could not start live processing")
+
+    def _stop_live(self, directory: Path) -> None:
+        """Espera a que el proceso en vivo salga (antes del recorte y el FLAC)."""
+        try:
+            self._live.stop(directory)
+        except Exception:
+            log.exception("could not stop live processing")
 
     @staticmethod
     def _safe_stop(s: _Session) -> bool:
