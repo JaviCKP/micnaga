@@ -73,7 +73,7 @@ float light(vec2 p){
   vec2 c = vec2(uSize.x * uCx, -R + uRise);
   float d = length(p - c) - R;
   float atm = exp(-abs(max(d, 0.)) / uFall) * step(0., d) + .16 * step(d, 0.) * exp(-abs(d) / 40.);
-  float haze = pow(fbm(p / 420. + vec2(uT * .03, uT * .011)), 2.2) * smoothstep(uRise + 120., 0., p.y) * .3;
+  float haze = pow(fbm(p / 420. + vec2(uT * .03, uT * .011)), 2.2) * smoothstep(uRise + 90., 0., p.y) * .22;
   return (atm + haze) * uGain * (1. + .04 * sin(uT * .37));
 }
 void main(){
@@ -98,7 +98,7 @@ void main(){
     const R = Math.max(W * 1.6, 1400), cx = W * c.cx, cy = -R + c.rise;
     const d = Math.hypot(px - cx, py - cy) - R;
     const atm = d >= 0 ? Math.exp(-d / c.fall) : 0.16 * Math.exp(d / 40);
-    const haze = Math.pow(fbm(px / 420 + t * 0.03, py / 420 + t * 0.011), 2.2) * smooth(c.rise + 120, 0, py) * 0.3;
+    const haze = Math.pow(fbm(px / 420 + t * 0.03, py / 420 + t * 0.011), 2.2) * smooth(c.rise + 90, 0, py) * 0.22;
     return (atm + haze) * c.gain * (1 + 0.04 * Math.sin(t * 0.37));
   }
 
@@ -168,7 +168,7 @@ void main(){
     if (!ground.cv) return;
     const tones = (isDark() ? TONES.dark : TONES.light).map(rgb);
     // paper needs less light than night for the same presence
-    const c = Object.assign({}, ground.cfg, { gain: ground.cfg.gain * (isDark() ? 1 : 0.85) });
+    const c = Object.assign({}, ground.cfg, { gain: ground.cfg.gain * (isDark() ? 1 : 0.75) });
     if (ground.gl) {
       const gl = ground.gl, u = ground.u;
       gl.viewport(0, 0, ground.cw, ground.ch);

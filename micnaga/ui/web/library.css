@@ -111,17 +111,19 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
 .m-meta { display: flex; align-items: center; gap: 8px; margin-top: 9px; font: 500 11.5px/1.3 var(--mono); letter-spacing: 0.01em; color: var(--text-3); flex-wrap: wrap; font-variant-ligatures: none; }
 .m-meta .sep { opacity: 0.5; }
 
-/* limpieza con IA: palabra corregida (subrayado muy suave; el original al pasar) y «Original» */
-.ph .tx .fx { text-decoration: underline dotted color-mix(in srgb, var(--accent) 45%, transparent); text-decoration-thickness: 1px; text-underline-offset: 3px; cursor: help; }
+/* limpieza con IA: palabra corregida (un subrayado punteado muy suave; el original al pasar) y
+   «Original», un conmutador de la misma familia que los chips */
+.ph .tx .fx { text-decoration: underline dotted color-mix(in srgb, var(--accent) 45%, transparent); text-decoration-thickness: 1px; text-underline-offset: 4px; cursor: help; transition: text-decoration-color var(--dur-hover) var(--ease); }
 .ph .tx .fx:hover { text-decoration-color: var(--accent); }
 .orig-toggle {
-  align-self: center; height: 26px; padding: 0 10px; border: 0; border-radius: var(--r-full);
-  font: 600 11.5px/1 var(--font-ui); color: var(--text-3); background: transparent;
-  box-shadow: inset 0 0 0 1px var(--line); cursor: pointer;
-  transition: color var(--dur-fast) var(--ease), background var(--dur-fast) var(--ease), box-shadow var(--dur-fast) var(--ease);
+  align-self: center; height: 26px; padding: 0 9px; border: 0; border-radius: var(--r);
+  font: 500 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); background: transparent;
+  box-shadow: inset 0 0 0 1px var(--line-strong); cursor: default;
+  transition: color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease), box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
-.orig-toggle:hover { color: var(--text); background: var(--hover); }
-.orig-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.orig-toggle:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--text-3); }
+.orig-toggle:active { transform: scale(var(--press-scale)); }
+.orig-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .orig-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .transcript.orig .ph .tx { color: var(--text-2); }
 
