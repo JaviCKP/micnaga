@@ -276,6 +276,8 @@ class LibraryApi:
         self._held = held
         self._opener = opener or _startfile
         self._brain = brain
+        self._hq_procs: dict[str, Any] = {}
+        self._hq_lock = threading.Lock()
 
     # ---------------------------------------------------------------- lectura
 
@@ -286,6 +288,7 @@ class LibraryApi:
             can_edit=self._ops is not None,
             has_held=self._held is not None,
             secretaria=self._brain is not None,
+            hq=cfg.processing.hq_transcribe and self._ops is not None,
         )
 
     def open_settings(self) -> Result:
@@ -536,6 +539,88 @@ class LibraryApi:
     def secretaria(self, action: str, args: dict[str, Any] | None = None) -> Result:
         """Acta, propuestas (aplicar / deshacer / descartar) y «Analizar» de una reunion."""
         return call_brain(self._brain, LIBRARY_BRAIN_ACTIONS, action, args)
+
+    def hq(self, action: str, folder: str) -> Result:
+        """«Mejorar transcripcion» (``pipeline.hq``): ``info`` | ``start`` | ``status`` |
+        ``cancel`` | ``restore``. El trabajo es un proceso aparte (``micnaga hq``)."""
+        from micnaga.pipeline import hq
+
+        cfg = self._config()
+        if not cfg.processing.hq_transcribe or self._ops is None:
+            return fail("library.err.read_only")
+        path = self._meeting_json(folder)
+        if path is None:
+            return fail("library.err.not_found")
+        meeting = path.parent
+        if action == "info":
+            return ok(
+                minutes=hq.estimate_minutes(meeting, hq.model_name(cfg)),
+                download_mb=round(hq.download_bytes(cfg) / 1e6),
+                model=hq.model_name(cfg),
+                previa=hq.has_previa(meeting),
+                status=self._hq_status(meeting),
+            )
+        if action == "status":
+            return ok(status=self._hq_status(meeting), previa=hq.has_previa(meeting))
+        if action == "start":
+            if self._hq_alive(meeting):
+                return ok(status=self._hq_status(meeting))
+            try:
+                proc = hq.spawn(meeting)
+            except Exception:
+                log.exception("could not start the hq transcription")
+                return fail("library.err.op_failed")
+            with self._hq_lock:
+                self._hq_procs[meeting.name] = proc
+            threading.Thread(
+                target=self._hq_wait, args=(meeting, proc), name="micnaga-hq-wait", daemon=True
+            ).start()
+            return ok(status=self._hq_status(meeting))
+        if action == "cancel":
+            hq.request_cancel(meeting)
+            return ok()
+        if action == "restore":
+            if self._hq_alive(meeting):
+                return fail("library.err.op_failed")
+            try:
+                restored = hq.restore(meeting)
+            except Exception:
+                log.exception("hq restore failed")
+                return fail("library.err.op_failed")
+            if not restored:
+                return fail("library.err.not_found")
+            return self.get_meeting(folder)
+        return fail("library.err.op_failed")
+
+    def _hq_alive(self, meeting: Path) -> bool:
+        from micnaga.pipeline import hq
+        from micnaga.pipeline.worker import mutex_exists
+
+        with self._hq_lock:
+            proc = self._hq_procs.get(meeting.name)
+        if proc is not None and proc.poll() is None:
+            return True
+        return mutex_exists(hq.mutex_name(meeting))  # lanzado por otra ventana o antes
+
+    def _hq_status(self, meeting: Path) -> dict[str, Any] | None:
+        from micnaga.pipeline import hq
+
+        st = hq.read_status(meeting)
+        if st and st.get("state") == "running" and not self._hq_alive(meeting):
+            return None  # un estado «en marcha» huerfano (la app se reinicio, o lo mataron)
+        return st
+
+    def _hq_wait(self, meeting: Path, proc: Any) -> None:
+        """Al terminar bien: limpieza con IA y acta otra vez (si la Secretaria esta activa)."""
+        from micnaga.pipeline import hq
+
+        proc.wait()
+        st = hq.read_status(meeting) or {}
+        if st.get("state") == "done" and self._brain is not None:
+            try:
+                self._brain.api("analyze", {"folder": meeting.name})
+            except Exception:
+                log.exception("secretaria re-run after hq failed")
 
     def open_folder(self, folder: str) -> Result:
         if not valid_folder_name(folder):

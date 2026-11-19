@@ -278,7 +278,90 @@
     $("total").textContent = mic.fmtClock(player.duration || tr.meeting.duration_s);
     updateTime(keepPlayback ? t : 0);
     renderTicks(tr);
+    hqRender();
     document.dispatchEvent(new CustomEvent("mic:meeting", { detail: { folder: S.folder } }));
+  }
+
+  // «Mejorar transcripcion»: icono en la cabecera, confirmacion en linea y linea de progreso
+  const HQ = { timer: 0, folder: "", info: null };
+  function hqShow(text, go, no) {
+    const bar = $("hq-bar");
+    bar.hidden = false;
+    $("hq-text").textContent = text;
+    $("hq-go").hidden = !go; $("hq-no").hidden = !no;
+    if (go) { $("hq-go").textContent = go[0]; $("hq-go").onclick = go[1]; }
+    if (no) { $("hq-no").textContent = no[0]; $("hq-no").onclick = no[1]; }
+  }
+  function hqHide() {
+    clearTimeout(HQ.timer);
+    $("hq-bar").hidden = true; $("hq-progress").hidden = true;
+    $("hq-btn").setAttribute("aria-pressed", "false");
+  }
+  async function hqRender() {
+    const btn = $("hq-btn");
+    clearTimeout(HQ.timer);
+    if (!S.hq) { btn.hidden = true; $("hq-bar").hidden = true; return; }
+    btn.hidden = false;
+    btn.onclick = hqAsk;
+    HQ.folder = S.folder;
+    hqHide();
+    const r = await mic.call("hq", "status", S.folder);
+    if (!r || !r.ok || HQ.folder !== S.folder) return;
+    if (r.status && r.status.state === "running") hqPoll();
+    else if (r.previa) hqOffer();
+  }
+  function hqOffer() {
+    hqShow("", null, [mic.t("library.hq_restore"), hqRestore]);
+  }
+  function hqPhase(fase, v) {
+    if (fase === "descarga") return mic.t("library.hq_phase_descarga", v);
+    if (fase === "prepara") return mic.t("library.hq_phase_prepara", v);
+    if (fase === "transcribe") return mic.t("library.hq_phase_transcribe", v);
+    if (fase === "ensambla") return mic.t("library.hq_phase_ensambla", v);
+    return mic.t("library.hq_phase_cola", v);
+  }
+  async function hqAsk() {
+    if (!$("hq-bar").hidden) { hqHide(); return; }
+    const r = await mic.call("hq", "info", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); return; }
+    if (r.status && r.status.state === "running") { hqPoll(); return; }
+    $("hq-btn").setAttribute("aria-pressed", "true");
+    const vars = { min: r.minutes, mb: r.download_mb };
+    const ask = r.download_mb ? mic.t("library.hq_ask_dl", vars) : mic.t("library.hq_ask", vars);
+    hqShow(ask,
+      [mic.t("library.hq_go"), hqStart], [mic.t("library.hq_cancel"), hqHide]);
+  }
+  async function hqStart() {
+    const r = await mic.call("hq", "start", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); hqHide(); return; }
+    hqPoll();
+  }
+  async function hqPoll() {
+    const folder = S.folder;
+    const r = await mic.call("hq", "status", folder);
+    if (folder !== S.folder) return;
+    const st = (r && r.ok && r.status) || null;
+    if (st && st.state === "running") {
+      const pct = Math.round((st.pct || 0) * 100);
+      hqShow(hqPhase(st.fase, { pct }), null,
+        [mic.t("library.hq_cancel"), () => mic.call("hq", "cancel", folder)]);
+      const bar = $("hq-progress");
+      bar.hidden = false;
+      bar.style.setProperty("--p", String(st.pct || 0));
+      HQ.timer = setTimeout(hqPoll, 1500);
+      return;
+    }
+    hqHide();
+    if (st && st.state === "done") { snack(mic.t("library.hq_done")); await openMeeting(folder); return; }
+    if (st && st.state === "failed") snack(mic.t("library.hq_failed"));
+    if (st && st.state === "cancelled") snack(mic.t("library.hq_cancelled"));
+    if (r && r.previa) hqOffer();
+  }
+  async function hqRestore() {
+    const r = await mic.call("hq", "restore", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); return; }
+    snack(mic.t("library.hq_restored"));
+    await openMeeting(S.folder);
   }
 
   function renderTracks() {
@@ -812,7 +895,7 @@
   (async () => {
     await mic.i18nReady;
     const boot = await mic.call("bootstrap");
-    if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; }
+    if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; S.hq = !!boot.hq; }
     if (S.vpEnabled && S.canEdit) {
       const vps = await mic.call("list_voiceprints");
       S.vpNames = new Set((vps || []).map((v) => v.name));

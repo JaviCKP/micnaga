@@ -1222,3 +1222,37 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    CPU de los `msedgewebview2.exe` hijos del proceso, 20 s por toma, 20 núcleos lógicos): con el
    limbo 9,2 % y 5,8 % de un núcleo; parado (`data-motion="off"`) 0,0 % y 0,3 %. Es decir,
    ~6-9 % de un núcleo (~0,3-0,5 % del equipo), y solo con la ventana enfocada.
+
+## 26. «Mejorar transcripción» bajo demanda con Whisper grande (rama `feat/hq-transcribe`)
+
+1. **Qué es:** un icono discreto en la cabecera de la reunión → confirmación en línea («¿Mejorar
+   la transcripción? · ~N min · la actual se conserva», con el tamaño si falta el modelo) → un
+   proceso aparte `micnaga hq <carpeta>` (BELOW_NORMAL, mutex por reunión, sin pasar por la cola
+   de trabajos ni por el mutex del worker) que re-transcribe **toda** la reunión. Estado en
+   `hq_estado.json` (fase, %), cancelar con `hq.cancelar` (se mira entre bloques; nada se escribe
+   hasta el final). Código: `micnaga/pipeline/hq.py`; flag `processing.hq_transcribe`.
+2. **Modelo (medido, 6 hilos, 60 s de voz del sistema de una reunión real, int8 CPU):**
+   `large-v3` carga 5,1 s y decodifica 33,4 s (RTF 0,56); `large-v3-turbo` carga 3,1 s y
+   decodifica 19,1 s (RTF 0,32). Coincidencia de palabras entre ambos: 93,6 % (solo un indicio de
+   calidad, sin referencia). Turbo es ~1,75× más rápido, no un orden de magnitud, así que el
+   defecto es **`large-v3`** (lo que se pidió: el más pesado) y `processing.hq_model =
+   "large-v3-turbo"` queda como opción. Ojo: `large-v3` pesa **3,09 GB** (fp16 de Systran), no
+   ~1,5 GB; turbo pesa 1,62 GB. El aviso enseña el tamaño real del manifiesto.
+3. **Descarga:** dos grupos nuevos en el manifiesto (`faster-whisper-large-v3`,
+   `faster-whisper-large-v3-turbo`) con commit fijado, tamaño y SHA-256 (los de `model.bin`
+   coinciden con el `lfs.oid` publicado y se comprobaron al descargar con el propio
+   descargador). No están en `OPTIONAL_GROUPS`: el asistente nunca los baja; solo al primer uso.
+4. **Decodificación:** solo los bloques de voz de `work/05_vad.json`; si `work/` ya se borró, se
+   rehacen las etapas 1-5 con su código y se borra al final. `beam_size` 5,
+   `condition_on_previous_text` False, palabras con tiempos. Guardas: umbrales de faster-whisper
+   (no_speech 0,6 / logprob -1 / compression 2,4), segmentos descartados con los mismos criterios
+   y `drop_loops` (n-gramas de hasta 4 repetidos 3+ veces → una vez).
+5. **Hablantes:** se conservan la diarización y los nombres de `transcripcion.json` (incluidas
+   las ediciones del usuario). Micro = «Yo»; cada palabra del sistema va al hablante remoto cuyo
+   tramo actual solapa más (o el más cercano a ≤ 3 s; si no, el de la palabra anterior). Después,
+   las etapas 9 (eco) y 11 (párrafos) de siempre; marcadores intactos; MD, SRT y FTS nuevos.
+6. **Previa:** `transcripcion.previa.json` (y `limpieza.json` → `limpieza.previa.json`, para que
+   la limpieza con Haiku vuelva a pasar). «Volver a la anterior» restaura ambos y reindexa. Al
+   terminar bien, la biblioteca pide `analyze` a la Secretaria (limpieza + acta) si está activa.
+7. **Medido de verdad** (copia de 3 min, `large-v3`, modelo ya descargado): 139,9 s de reloj;
+   331 → 330 palabras.

@@ -120,6 +120,13 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             _f("processing.asr_engine", "choice", choices=("parakeet", "whisper")),
             _f("processing.whisper_model", "choice", choices=("tiny", "base", "small", "medium")),
+            _f("processing.hq_transcribe", "bool", advanced=True),
+            _f(
+                "processing.hq_model",
+                "choice",
+                choices=("large-v3", "large-v3-turbo"),
+                advanced=True,
+            ),
             _f("processing.diarization", "choice", choices=("onnx", "diarize", "pyannote")),
             _f("processing.aec", "choice", choices=("auto", "webrtc", "speex", "off")),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
