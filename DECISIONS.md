@@ -1196,3 +1196,29 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    lista: el relleno cuesta más de lo que ahorra), más hilos (6/8/10 iguales: el codificador int8
    no escala) y un valor `threads = "auto"` (mismo motivo; no se añade). Micro y sistema **en
    paralelo**: ver punto 3.
+
+## 25. Acabado visual (rama `feat/visual-finish`)
+
+1. **Pulsación con tokens.** `--dur-press` (60 ms), `--press-scale` (0,97, botones y chips),
+   `--press-scale-sm` (0,92, controles del tamaño de un icono y casillas) y `--press-scale-lg`
+   (0,99, filas). Sustituyen los 0,86 / 0,9 / 0,94 / 0,95 / 0,98 sueltos; con movimiento reducido
+   valen 1. `.tr-btn` gana estado pulsado; la rotación del icono de «rehacer» y `sec-pop` (sin uso)
+   se quitan.
+2. **Las tarjetas de la Secretaria se revelan una vez por reunión.** `secretaria.js` reconstruye el
+   panel en cada `render()` (y cada segundo mientras trabaja), así que la entrada de la tarjeta se
+   repetía: la línea en vivo «parpadeaba» cada segundo. `motion.js` marca `.seen` la tarjeta de un
+   tipo ya mostrado antes de pintar. El acta se lee por secciones (cabecera, contexto, resumen,
+   bloques) a `--stagger`.
+3. **«Aplicar».** La casilla cae con un 4 % de rebote y deja un anillo fino que se disuelve; la
+   fila toma un lavado violeta que se vacía (1,1 s). Una vez por fila, en cascada; sin confeti.
+4. **Asistente.** Sin cajas dentro de caja: las dos comprobaciones de audio son una sola tira
+   partida por una línea; más aire (44 px); el estado en `--text-2`; el limbo enmascarado a la
+   mitad inferior (nada tramado detrás del texto); el escalonado ya no cuenta la marca oculta.
+5. **Contraste AA en claro.** `--text-3` #66666f → #5e5e67 (4,43 → 5,0 sobre la fila
+   seleccionada) y `--warm` #c4501b → #ad4312 (4,19 → 5,26 sobre el fondo). Nuevo `--warm-ink`
+   (blanco en claro, casi negro en oscuro) para los glifos sobre cálido: «grabar», la fallida, el
+   botón del popup.
+6. **Coste del limbo medido en WebView2** (biblioteca abierta, quieta, ventana visible; suma de
+   CPU de los `msedgewebview2.exe` hijos del proceso, 20 s por toma, 20 núcleos lógicos): con el
+   limbo 9,2 % y 5,8 % de un núcleo; parado (`data-motion="off"`) 0,0 % y 0,3 %. Es decir,
+   ~6-9 % de un núcleo (~0,3-0,5 % del equipo), y solo con la ventana enfocada.

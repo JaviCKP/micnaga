@@ -134,7 +134,7 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 .swap > span { position: absolute; inset: 0; display: grid; place-items: center;
   transition: opacity var(--dur-fast) var(--ease-out), transform var(--dur-fast) var(--ease-out);
 }
-.swap-a::before { content: ""; width: 13px; height: 13px; border-radius: 50%; background: #0b0b0f; }
+.swap-a::before { content: ""; width: 13px; height: 13px; border-radius: 50%; background: var(--warm-ink); }
 .swap-b { opacity: 0; transform: scale(0.4); }
 .swap-b .ico { width: 20px; height: 20px; stroke-width: 2.6; stroke-linecap: square; stroke-linejoin: miter; }
 .lift[data-phase="confirming"] .swap-a { opacity: 0; transform: scale(0.4); }
@@ -187,6 +187,6 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 .end-dur { font: 500 11px/1 var(--mono); font-variant-numeric: tabular-nums; color: var(--text-3); }
 /* el boton principal del popup de fin lleva un icono (parar / guardar) en vez del punto */
 .swap-a:not(:empty)::before { display: none; }
-.swap-a .ico { width: 18px; height: 18px; stroke-width: 2.6; color: #0b0b0f; stroke-linecap: square; stroke-linejoin: miter; }
-.swap-a .stop-sq { width: 12px; height: 12px; border-radius: 2px; background: #0b0b0f; }
+.swap-a .ico { width: 18px; height: 18px; stroke-width: 2.6; color: var(--warm-ink); stroke-linecap: square; stroke-linejoin: miter; }
+.swap-a .stop-sq { width: 12px; height: 12px; border-radius: 2px; background: var(--warm-ink); }
 .lift[data-phase="confirming"] .card[data-mode="end"] .swap-a { opacity: 1; transform: none; }
