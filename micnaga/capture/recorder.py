@@ -304,6 +304,10 @@ class Recorder:
                 self._state = RecorderState.IDLE
                 self._workers.clear()
                 self._timeline = None
+                try:  # sin fuentes no se usa: libera PortAudio y su hilo (reutilizable)
+                    backend.close()
+                except Exception:
+                    log.exception("backend close failed")
                 raise CaptureError("no audio source could be opened (mic and system failed)")
             self._state = RecorderState.RECORDING
             self._write_meta(STATE_RECORDING)
