@@ -163,14 +163,16 @@ def brief(services: list[str], *, today: str, email: bool, ctx: dict[str, Any] |
     ]
     if "gmail" in services:
         lines.append(
-            "Gmail: como mucho 3 search_threads (pageSize ≤ 5, view THREAD_VIEW_SUMMARY, "
-            "newer_than:90d) con los asistentes o la empresa, y como mucho 2 get_thread."
+            "Gmail, ANTES de responder: 1-3 search_threads (pageSize ≤ 5, view "
+            "THREAD_VIEW_SUMMARY, newer_than:90d) con los correos de los asistentes o el nombre "
+            "de la empresa; get_thread solo si un hilo trata de lo hablado (máximo 2)."
         )
     if "drive" in services:
         lines.append(
-            "Drive: como mucho 3 search_files (pageSize ≤ 5, snippetVerbosity BRIEF) por los "
-            "documentos que se mencionen (presupuesto, propuesta, contrato...) y como mucho 2 "
-            "read_file_content."
+            "Drive, ANTES de responder, si se menciona un documento (presupuesto, propuesta, "
+            "contrato, acta...): 1-3 search_files (fullText con palabras clave y la empresa, "
+            "pageSize ≤ 5, snippetVerbosity BRIEF); read_file_content solo del que de verdad "
+            "corresponda (máximo 2), para contrastar cifras, fechas y alcance."
         )
     if "gmail" in services or "drive" in services:
         lines.append(

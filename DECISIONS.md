@@ -707,3 +707,100 @@ le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/sta
    `logs/crash.log`. Si el bucle de la GUI termina por cualquier otra
    cosa se registra el motivo y se recrean las ventanas sin tocar la grabación (máx. 5 en 10 min).
    Toda salida deja `shutting down (reason: …)` en el log.
+
+
+## 19. Secretaria con Google: Gmail, Calendar y Drive (rama `feat/secretaria-google`)
+
+Código nuevo en `micnaga/brain/google/` y `micnaga/brain/items.py`; cambios pequeños y aditivos en
+el runner, `secretary`, `executor`, `service`, `bridge`, la configuración y la interfaz. Guía:
+`docs/ONBOARDING_google.md`.
+
+1. **Sin tokens de Google.** Micnaga usa los conectores oficiales de la cuenta de claude.ai del
+   usuario; toda llamada, de lectura o de escritura, pasa por `claude -p`. Solo con la sesión de
+   Claude Code (con token o clave, los conectores no existen; sin verificar con un token real).
+2. **Qué ve cada `claude -p`** (medido, Claude Code 2.1.327):
+   - `--strict-mcp-config` **oculta** los conectores de claude.ai. Con Google activo no se usa.
+   - Sin él, la conexión MCP es **no bloqueante**: con `--setting-sources project` el `system/init`
+     sale a ~0,6 s, sin conectores, y la sesión no los tiene. `MCP_CONNECTION_NONBLOCKING=0` (variable
+     no documentada, leída del binario) hace esperar ~1,3 s y aparecen. Se mantiene
+     `--setting-sources project`: así no se cargan los ganchos ni los servidores MCP del usuario.
+   - **Lista blanca real**, `--settings {"allowedMcpServers": [...]}`: los conectores por URL
+     (`https://gmailmcp.googleapis.com/*`, `calendarmcp`, `drivemcp`) y los servidores propios por
+     nombre (`micnaga` y los de `secretaria.mcp_servers`). El resto no se carga: Claude Docs,
+     whatsapp-business-tools, n8n-mcp, iphone-local… (comprobado en `system/init`).
+   - `--disallowedTools` quita la herramienta de la sesión, también por servidor (`mcp__<servidor>`).
+     Se deniegan todas las escrituras de Google, las lecturas que el análisis no usa, los servicios
+     desactivados y los servidores ajenos vistos en la última detección.
+   - Tras cada pasada, un conector que no sale `connected` en `system/init` ve descartado lo suyo.
+3. **Detección** (`google/detect.py`): `claude -p` con la lista blanca, **cortado al llegar
+   `system/init`** (1,4-1,5 s, cero tokens). Respaldo y nombres de servidores ajenos: `claude mcp
+   list` (5-6 s). Caché en `<datos>/secretaria/google.json`; «Comprobar» va en un hilo.
+4. **Análisis de solo lectura.** Herramientas permitidas: Gmail `search_threads`/`get_thread`;
+   Calendar `list_events`/`search_events`/`get_event`/`suggest_time`; Drive
+   `search_files`/`read_file_content`/`get_file_metadata`. Instrucciones con topes (1-3 búsquedas
+   por servicio, `pageSize ≤ 5`, fragmentos `BRIEF`, máximo 2 lecturas completas) y +12 turnos.
+   Salida `google` (con `--json-schema`): `enlaces`, `contrastes`, `reunion_siguiente`, `correo`.
+   Validación local: solo se aceptan las URLs de Google que aparecen tal cual en los resultados de
+   las herramientas; los correos de asistentes, solo si se vieron (evento, Gmail o transcripción);
+   «Contrastes» solo con fuente y si lo dicho ≠ lo escrito.
+5. **Contexto al grabar** (`google/context.py`): tras el «Sí» (grabación confirmada), un hilo pide
+   `list_events` de ahora ± 15 min. Elige en Python el que lleva el código de Meet de la pestaña, o
+   el más cercano. Título → pastilla y título provisional (y el título en directo con Haiku se
+   omite); asistentes → candidatos para nombrar hablantes y buscar en Odoo. Fallos silenciosos,
+   tope de 45 s. Medido: 3,5 s.
+6. **Propuestas** (grupo `google`):
+   - `evento_google`: **siempre** `addGoogleMeetUrl: true`. Asistentes desmarcados; con alguno
+     marcado, `notificationLevel=ALL` y la revisión dice «Se enviará invitación a X»; sin ninguno,
+     `NONE`. Sin hora acordada, huecos de `suggest_time` y la propuesta sale desmarcada.
+   - `correo_google`: `create_draft` con firma; «Enviar directamente» (`send_message`) nunca sale
+     elegido. `secretaria.google_email_mode = draft | off`.
+   - `acta_drive`: Google Doc (HTML) en `google_drive_folder_id`; desmarcado.
+   - Un `crear_evento` de Odoo (rama `feat/secretaria-odoo`) se convierte en `evento_google`
+     (`analysis.route_odoo_events`, con prueba sintética): todo evento pasa primero por Google.
+     **Al unir:** basta con que `Secretary.analyze` siga llamando a `gplan.finish(...)` después de
+     construir las propuestas de Odoo.
+7. **Escrituras tras «Aplicar»** (`google/apply.py`, `calls.py`, `guard.py`):
+   - Una ejecución `claude -p` (Haiku) por propuesta, con **solo esa herramienta** en
+     `--allowedTools` y la lista blanca de ese conector.
+   - La entrada exacta se construye en Python desde los datos ya editados, nunca desde la salida
+     del modelo.
+   - **Gancho `PreToolUse`** en `--settings`: `micnaga hook-guard --plan <json>`.
+     - Se ejecuta antes de cada llamada, también en `-p`, y deniega aunque `--allowedTools`
+       permita la herramienta (medido, deja `permission_denials`).
+     - Solo deja pasar una llamada cuyo nombre y entrada normalizada coinciden con lo aprobado. Al
+       dejarla pasar devuelve `updatedInput` = la entrada aprobada (medido: se ejecuta la del
+       gancho, no la del modelo).
+     - Cada aprobación es de un solo uso (recibo `O_EXCL`).
+     - Medido: Claude Code deja **pasar** la llamada si el gancho sale con 1, no existe (127) o se
+       pasa de tiempo. Por eso el guardián sale con 2 ante cualquier error, se prueba antes de
+       cada ejecución (`self_test`) y toda escritura con éxito sin recibo se marca `unguarded`.
+     - En Windows lo ejecuta Git Bash: rutas con `/` y entre comillas (con espacios, probado). Su
+       salida es JSON solo ASCII: en `cp1252` un «·» rompía el `updatedInput` (bug encontrado en
+       las pruebas).
+   - **Idempotencia**: `google_writes` en `micnaga.db` (`intent` antes de lanzar, `done` con ids y
+     enlaces, `unknown` si se agotó el tiempo). Antes de repetir un evento dudoso se busca su marca
+     `ref` (`list_events` + `fullText`). Con los recibos del guardián, reintentar no duplica.
+   - Ids y enlaces salen de `tool_use_result.structuredContent` del stream.
+8. **Espejo en Odoo** (`google/mirror.py`): `calendar.event` con el mismo título y hora (UTC), el Meet
+   en `videocall_location` (o en la descripción si el campo no existe), el enlace de Google y
+   `google_event_id: <id>` en la descripción. Solo el usuario interno como asistente. Contexto
+   `no_mail_to_attendees`, `mail_notrack`, `mail_create_nolog`, `tracking_disable`. Deduplica por
+   `google_odoo` y por la descripción. Si `ir.module.module` tiene `google_calendar` instalado, no
+   hace nada. Un fallo del espejo no deshace el evento.
+9. **Propuestas editables** (`brain/items.py`, `web/items.js`):
+   - Cada propuesta declara sus campos (`text`, `textarea`, `number`, `date`, `datetime`, `choice`,
+     `emails`, `people`). Los tipos desconocidos, p. ej. los de la rama de Odoo, reciben un
+     esquema genérico deducido de `datos`.
+   - `edit` valida y **conserva el id** (sube `revision`); `replace` admite una versión revisada
+     con el mismo id, pensada para «corrígelo con un mensaje».
+   - Los `campos` se añaden al responder a la interfaz y no se guardan.
+10. **Medidas reales** (sesión Max de este PC):
+    - `list_events` 0,6 s, `search_threads` 1,0 s, `search_files` 0,8 s dentro de una ejecución.
+    - Una llamada guardada entera: 3,4-3,7 s.
+    - Pasada sobre una reunión sintética con los tres servicios: 11,5 s, 4 turnos, 2 lecturas
+      (Gmail y Drive), unos 0,04 $ equivalentes.
+11. **Sin verificar**:
+    - Con token o clave de API.
+    - El espejo contra un Odoo 19 real (solo con un Odoo falso), salvo lo que se probó al final.
+    - Un «Contraste» real: no había documento discrepante y no se crean documentos de prueba.
+    - El modo congelado `micnaga-cli.exe hook-guard`.
