@@ -550,3 +550,53 @@ Resultado: 75 dependencias; 70 permisivas, 1 MPL-2.0 (tqdm), 2 LGPL revisadas, 2
 6. **Pendiente:** el instalador NO se ha ejecutado en este PC (escribiría Run y menú Inicio); probar instalación,
    actualización y desinstalación a mano. `Disable*Page=yes` sin ninguna página visible debería arrancar la
    instalación sola: confirmarlo en la prueba real.
+
+## 17. Secretaria (`micnaga/brain`, diseño `docs/design/ai_brain.md`)
+
+1. **Dónde corre.** En el proceso de la app (no es la etapa 12): `BrainService` (hilo serie, E/S pura) arranca con
+   `job_done`; tabla propia `secretary_runs` y FTS propio `acta_fts` en `micnaga.db`, creados con `IF NOT EXISTS`
+   (sin tocar `SCHEMA_VERSION`: una versión sin Secretaria abre la misma base). Reintentos con espera creciente
+   (1 min, 5 min, 30 min, 2 h; `rate_limit` hasta su `resetsAt`; `auth`/`not_found` solo con «Reintentar»). Al
+   arrancar: `running` → `pending` y se recogen las reuniones de las últimas 24 h sin acta. Con
+   `secretaria.enabled = false` todo es inerte y el aviso «Lista» sale como antes.
+2. **Aviso.** El toast «Lista» espera a la pasada hasta 120 s y añade «· N propuestas»; si tarda más, sale sin el
+   número. Si la pasada falla y hay título provisional, se usa ese (si el actual es genérico).
+3. **`claude -p`.** `--output-format stream-json --verbose --json-schema`, `--tools ""`, `--strict-mcp-config`,
+   `--mcp-config <fichero>`, `--allowedTools mcp__micnaga__*` (+ las herramientas listadas de cada servidor
+   extra), `--permission-mode dontAsk`, `--setting-sources project`, `--disable-slash-commands`,
+   `--no-session-persistence`, `--system-prompt-file`, desde una carpeta temporal vacía; nunca `--bare` ni
+   `--safe-mode`. Entorno del hijo **por lista blanca**: nunca se heredan `ANTHROPIC_*`/`CLAUDE_CODE_*`
+   (comprobado con una clave falsa en el entorno: `apiKeySource: none`). Objeto de trabajo de Windows con
+   «matar al cerrar» + árbol de procesos muerto al vencer el tiempo. `claude.cmd` de npm se resuelve a
+   `node cli.js` (un `.cmd` sin shell destroza el JSON).
+4. **El modelo cita evidencias por índice de frase** (`#n`) y hablantes por id; Micnaga resuelve el instante y el
+   nombre. Fechas ISO validadas; correcciones de palabra solo si el texto aparece tal cual y no hay cifras.
+5. **Qué sale marcado lo decide Micnaga** (`brain/plan.py`): vincular/nota/actividad si el registro existe al
+   releerlo; crear contacto si la búsqueda propia no encuentra parecidos (≥ 0,9) y el email/teléfono se dijeron en
+   la reunión; etapa/importe si los valores «anteriores» que leyó el modelo coinciden con los actuales. Si el
+   servidor MCP no aparece `connected` en `system/init`, las propuestas de CRM se descartan.
+6. **Escrituras** (`brain/executor.py`), siempre tras «Aplicar»: revalida antes de escribir (`changed_in_odoo`),
+   repite la búsqueda de duplicados, guarda ids creados y valores anteriores para «Deshacer» por línea; reaplicar
+   no duplica. La nota al historial es `message_post` con subtipo nota (no envía correo).
+7. **Secretos**: Administrador de credenciales (`win32cred`): `Micnaga/claude-token`, `Micnaga/anthropic-key`,
+   `Micnaga/odoo`. La clave de Odoo la lee el propio servidor MCP; ni el modelo ni la línea de comandos de
+   `claude` la ven. Los tests usan un almacén en memoria o `MICNAGA_SECRETS_FILE` (nunca el real).
+8. **Contexto y automejora**: `micnaga/brain/context/*.md` (paquete) + `<datos>/secretaria/context/*.md` +
+   `<datos>/secretaria/learned.md` (fuera del programa: sobrevive a las actualizaciones; el design lo situaba en
+   `micnaga/brain/context/`). Historial en `<datos>/secretaria/history/`.
+9. **Fuentes MCP extra**: `secretaria.mcp_servers`, una línea JSON por servidor
+   (`{"name","command","args","env","tools"}`), validada en `Config.validate`; solo se autorizan las `tools`
+   listadas.
+10. **Título en directo** (se aparta de SPEC §1.2, aprobado en design §8.3): a partir de 120 s grabados de una
+    sesión confirmada, un proceso aparte (`micnaga brain live-asr`, BELOW_NORMAL, 2 hilos) transcribe los primeros
+    90 s; Haiku propone el título (se descarta con confianza < 0,4). Se salta con ahorro de batería o CPU > 70 %.
+    Se vigila solo `controller.session_dir` + `capture.json` (sin tocar el controlador). **Medido (i7-12700F,
+    Parakeet, podcast real):** hijo 7,2 s de reloj, 19 s de CPU (≈ 2,6 núcleos de media: onnxruntime usa más
+    hilos que los 2 de cálculo), pico 1,0 GB de RAM; Haiku 1,7–2,1 s. Sin medir en el i5-1245U.
+11. **Medidas reales de `claude -p`** (sesión Max de este PC): título Haiku 1,7 s; acta Sonnet de la reunión real
+    de 3 min 5,3 s; reunión de negocio sintética + Odoo falso 16,1 s, 7 turnos, 5 consultas.
+12. **Sin verificar**: Odoo 19 real (nombre del método de permisos —se usa `check_access_rights` con
+    `search_count` de respaldo— y si `mail.activity` exige `res_model_id`: se envía cuando `ir.model` es legible);
+    JSON-2; el comportamiento con `claude` instalado por npm; los tests `test_bridge` del Run real fallan en un PC
+    donde la app de desarrollo ya escribió `HKCU\...\Run` (no es de esta rama).
+

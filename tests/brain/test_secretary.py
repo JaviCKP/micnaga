@@ -179,7 +179,15 @@ def test_user_titles_are_never_overwritten(
 
 @pytest.mark.parametrize(
     ("title", "generic"),
-    [("Reunión", True), ("Meet – abc-defg-hij", True), ("", True), ("Revisión semanal", False)],
+    [
+        ("Reunión", True),
+        ("Meet – abc-defg-hij", True),
+        ("", True),
+        ("Teams", True),
+        ("WhatsApp", True),
+        ("handy.exe", True),
+        ("Revisión semanal", False),
+    ],
 )
 def test_generic_titles(title: str, generic: bool) -> None:
     assert is_generic_title(title) is generic
