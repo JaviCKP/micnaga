@@ -1137,6 +1137,7 @@ class UiHost:
             opener=self._folder_opener,
             held=self._held_ops,
             brain=self._brain,
+            open_settings=self.open_settings,
         )
 
     def open_library(

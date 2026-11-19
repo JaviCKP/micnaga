@@ -259,8 +259,10 @@ class LibraryApi:
         opener: Callable[[Path], None] | None = None,
         held: HeldOps | None = None,
         brain: BrainPort | None = None,
+        open_settings: Callable[[], None] | None = None,
     ) -> None:
         self._db_factory = db_factory
+        self._open_settings = open_settings
         self._root = meetings_root
         self._audio_url = audio_url
         self._config = config
@@ -279,6 +281,17 @@ class LibraryApi:
             has_held=self._held is not None,
             secretaria=self._brain is not None,
         )
+
+    def open_settings(self) -> Result:
+        """Abre (o trae al frente) la ventana de Ajustes desde la biblioteca."""
+        if self._open_settings is None:
+            return fail("library.err.not_found")
+        try:
+            self._open_settings()
+        except Exception:
+            log.exception("open_settings failed")
+            return fail("library.err.not_found")
+        return ok()
 
     # ------------------------------------------------------------- «Descartadas»
 

@@ -651,6 +651,7 @@
     else if (e.key === "ArrowLeft" && e.target.id !== "scrub") { player.seek(player.time - 5); }
   });
   $("q").addEventListener("input", onQuery);
+  $("settings-btn").addEventListener("click", () => { mic.call("open_settings"); });
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
   // ------------------------------------------------------------------ «Descartadas»

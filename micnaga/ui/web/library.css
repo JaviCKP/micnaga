@@ -20,6 +20,9 @@
 .side { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
 .side-head { display: flex; align-items: baseline; gap: 10px; padding: 20px 20px 14px; }
 .side-head h1 { font-size: var(--fs-d2); }
+.side-head .settings-btn { margin-left: auto; align-self: center; }
+.side-head .horas-btn:not([hidden]) + .settings-btn { margin-left: 0; }
+.side-head .settings-btn .ico { width: 17px; height: 17px; }
 .count { font-size: var(--fs-d1); color: var(--text-3); }
 
 .search {

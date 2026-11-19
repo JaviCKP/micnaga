@@ -543,3 +543,17 @@ def test_wizard_auto_finish_runs_first_run_done_after_a_successful_download() ->
             break
         time.sleep(0.02)
     assert seen == []  # un fallo no cierra el asistente: se queda para reintentar
+
+
+def test_open_settings_from_library(env: Env) -> None:
+    opened: list[bool] = []
+    api = LibraryApi(
+        db_factory=lambda: Database(env.root / "micnaga.db"),
+        meetings_root=lambda: env.root,
+        audio_url=lambda f, t: "",
+        config=lambda: env.cfg,
+        open_settings=lambda: opened.append(True),
+    )
+    assert api.open_settings()["ok"] is True
+    assert opened == [True]
+    assert lib(env).open_settings()["ok"] is False  # sin callback: no rompe
