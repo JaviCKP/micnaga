@@ -158,12 +158,14 @@ pausa 85,8 %, `diarize` 86,7 %, sherpa con el umbral ajustado a mano (CAM++ 0,9,
 WeSpeaker 0,7) 86,7 %, sherpa con su umbral por defecto (CAM++ 0,5) 51,3 %. Pipeline completo (palabras de la
 etapa 8): antes 85,1 % con 3 hablantes remotos + «Yo»; ahora **88,6 % con 2 hablantes**.
 
-**Decisión: `onnx` sigue por defecto** (DECISIONS.md §17.4). Es el más exacto en todos los casos con referencia,
-el único que da el número correcto de hablantes en los cinco casos (con el post-filtro) y el más rápido. sherpa-onnx
-con su configuración recomendada sobre-segmenta la grabación real (15 hablantes en bruto) y ningún umbral único
-acierta en todos los casos; no se adopta con la evidencia actual (una sola grabación real y voces sintéticas que
-pueden perjudicar a su segmentación): re-evaluar con reuniones reales. `diarize` junta las dos voces del caso
-mixto (1 hablante) y necesita torch.
+**Decisión: `onnx` sigue por defecto** (DECISIONS.md §17.4). Es el más exacto en todos los casos con referencia
+(DER ~2 %, 3–15 veces menos que sherpa-onnx con cualquier umbral) y el más rápido, y con el post-filtro da el
+número correcto de hablantes en los cinco casos. sherpa-onnx con su configuración recomendada (0,5) sobre-segmenta
+la grabación real (15 hablantes en bruto); con un umbral elegido a mano sobre estos mismos datos (ERes2Net o
+TitaNet a 0,8) también acierta el número de hablantes en los cinco casos tras el post-filtro, pero con mucho más
+DER y empatando con `onnx` en la grabación real. No se adopta con la evidencia actual (una sola grabación real y
+voces sintéticas que pueden perjudicar a su segmentación): re-evaluar con reuniones reales. `diarize` junta las
+dos voces del caso mixto (1 hablante) y necesita torch.
 
 Notas: el caso mixto no produjo un fantasma con ningún motor (el silencio y la ráfaga no llegan a hablante); el
 post-filtro se demuestra con la grabación real («No» de 0,65 s a los 3:09) y con los tests unitarios. Los

@@ -100,7 +100,7 @@ def run(ctx: StageContext) -> StageResult:
         raw_turns = diarizer.diarize(audio, ctx.sr, None)
         ctx.progress(0.7)
         emb_engine = diarizer if isinstance(diarizer, SpeakerEmbedder) else None
-        minor = postfilter.minor_speakers(raw_turns)
+        minor = postfilter.speakers_to_absorb(raw_turns)
         similarity: dict[str, Any] = {}
         if minor and emb_engine is not None and len({t.speaker for t in raw_turns}) > 1:
             similarity = dict(emb_engine.embed(audio, ctx.sr, raw_turns))  # solo en memoria

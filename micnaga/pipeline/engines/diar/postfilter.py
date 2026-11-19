@@ -74,6 +74,21 @@ def minor_speakers(
     }
 
 
+def speakers_to_absorb(
+    turns: Sequence[Turn],
+    *,
+    min_speaker_s: float = MIN_SPEAKER_S,
+    single_turn_max_s: float = SINGLE_TURN_MAX_S,
+) -> set[str]:
+    """Menores que se absorberan (si todos son menores, todos menos el que mas habla)."""
+    totals = speech_by_speaker(turns)
+    minor = minor_speakers(turns, min_speaker_s=min_speaker_s, single_turn_max_s=single_turn_max_s)
+    if totals and minor >= set(totals):
+        keep = max(sorted(totals), key=lambda sid: totals[sid])
+        minor = minor - {keep}
+    return minor
+
+
 def _unit(v: NDArray[np.float32]) -> NDArray[np.float32]:
     a = np.asarray(v, dtype=np.float32).ravel()
     return np.asarray(a / max(float(np.linalg.norm(a)), 1e-12), dtype=np.float32)
@@ -130,10 +145,9 @@ def absorb_minor_speakers(
     if not valid:
         return []
     totals = speech_by_speaker(valid)
-    minor = minor_speakers(valid, min_speaker_s=min_speaker_s, single_turn_max_s=single_turn_max_s)
-    if minor >= set(totals):  # todos menores: se queda el que mas habla
-        keep = max(sorted(totals), key=lambda sid: totals[sid])
-        minor = minor - {keep}
+    minor = speakers_to_absorb(
+        valid, min_speaker_s=min_speaker_s, single_turn_max_s=single_turn_max_s
+    )
     majors = sorted(set(totals) - minor)
     emb = embeddings or {}
     target: dict[str, str] = {}

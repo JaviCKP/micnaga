@@ -72,6 +72,8 @@ def test_dominant_speaker_is_never_absorbed() -> None:
     # se queda el que mas habla (el antiguo S2) y absorbe a los demas; renumerado a S1
     assert out == [Turn("S1", 0, 1.0), Turn("S1", 2, 4.0), Turn("S1", 6, 6.5)]
     assert pf.absorb_minor_speakers([Turn("S1", 0, 0.5)]) == [Turn("S1", 0, 0.5)]
+    assert pf.speakers_to_absorb(turns) == {"S1", "S3"}
+    assert pf.speakers_to_absorb([Turn("S1", 0, 0.5)]) == set()  # un solo hablante corto se queda
 
 
 def test_real_speakers_are_kept_and_renumbered_by_first_appearance() -> None:

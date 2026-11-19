@@ -497,5 +497,6 @@ def test_real_models_long_silence_and_noise_burst_make_no_ghost(tmp_path: Path) 
     finally:
         d.close()
     assert len({t.speaker for t in turns}) == 2
-    assert all(t.start < 65.0 for t in turns)  # nada en el silencio ni en la rafaga
+    end = max(t.end for t in truth)
+    assert all(t.start < end + 1.0 for t in turns)  # nada en el silencio ni en la rafaga
     assert diar_eval.der(turns, truth) < DER_BOUND

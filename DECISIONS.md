@@ -582,10 +582,12 @@ hablantes cuando hay pocos**.
    (pyannote segmentation-3.0 + embeddings CAM++/ERes2Net de 3D-Speaker, WeSpeaker ResNet34-LM o NeMo TitaNet
    small, clustering rápido; sin torch) contra `onnx` y `diarize` (tabla en `docs/diarization_onnx.md`). Con el
    umbral recomendado por sherpa-onnx (0,5) da **15 hablantes en bruto para 2 voces** en la grabación real y
-   sobre-segmenta los diálogos TTS; ningún umbral (0,5–1,1) acierta el número de hablantes en todos los casos
-   con ninguno de los 4 modelos, y en TTS su DER (6–51 %) es muy superior al de `onnx` (1,2–2,3 %) incluso con
-   `num_clusters` fijado (el error es de la segmentación, no del clustering; las voces sintéticas pueden
-   perjudicarla). En la grabación real, con umbral ajustado a mano, solo empata con `onnx`. Es 4–8 veces más
+   sobre-segmenta los diálogos TTS (DER 4,7–51 %). Ajustando el umbral a mano sobre estos mismos datos
+   (ERes2Net o TitaNet a 0,8) acierta el número de hablantes en los cinco casos tras el post-filtro, igual que
+   `onnx`, pero con un DER 3–15 veces mayor en todos los casos con referencia (tts2 30 %, tts3 8–10 %,
+   tts4 6,5–18 %, mixto 7–8,5 %, frente a ~2 % de `onnx`), incluso con `num_clusters` fijado (el error es de la
+   segmentación, no del clustering; las voces sintéticas pueden perjudicarla). En la grabación real solo empata
+   con `onnx`. Es 4–7 veces más
    lento. **No se adopta con la evidencia actual**; re-evaluar con reuniones reales (banco F2) con
    `tests/engines/diar_compare.py`. Sus modelos quedan fijados en `models.CANDIDATE_MANIFEST` (la app nunca los
    descarga) y el adaptador es solo de evaluación (`tests/engines/sherpa_diar.py`). `pyannote` no se pudo
