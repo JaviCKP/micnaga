@@ -348,3 +348,29 @@ dialog::backdrop { background: light-dark(rgb(243 243 240 / 0.72), rgb(0 0 0 / 0
 .app.behind { opacity: 0; }
 /* under the dithered wipe the swap is instant: the cells are the transition */
 :root.wiping .settings-view, :root.wiping .app { transition: none; }
+
+/* The limb stays in empty space only: tall under the sidebar's free bottom, and a low band behind
+   the player in the main column. It must never show through text or controls (the transcript's
+   bottom fade would otherwise reveal it under the proposals bar and the last lines). */
+.ambient {
+  -webkit-mask-image:
+    linear-gradient(to top, #000 0, #000 40%, transparent 70%),
+    linear-gradient(to top, #000 0, #000 56px, transparent 84px);
+  -webkit-mask-size: var(--side-w) 100%, 100% 100%;
+  -webkit-mask-position: left bottom, left bottom;
+  -webkit-mask-repeat: no-repeat;
+  -webkit-mask-composite: source-over;
+  mask-image:
+    linear-gradient(to top, #000 0, #000 40%, transparent 70%),
+    linear-gradient(to top, #000 0, #000 56px, transparent 84px);
+  mask-size: var(--side-w) 100%, 100% 100%;
+  mask-position: left bottom, left bottom;
+  mask-repeat: no-repeat;
+  mask-composite: add;
+}
+/* Ajustes on top: its own nav is narrower, so only the low band behind everything */
+body:has(.settings-view:not([hidden])) .ambient {
+  -webkit-mask-image: linear-gradient(to top, #000 0, #000 56px, transparent 84px);
+  mask-image: linear-gradient(to top, #000 0, #000 56px, transparent 84px);
+  -webkit-mask-size: 100% 100%; mask-size: 100% 100%;
+}
