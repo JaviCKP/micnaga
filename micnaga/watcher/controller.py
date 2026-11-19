@@ -105,7 +105,7 @@ class WatcherController(Protocol):
         monitor_hint: MonitorHint | None,
         timeout_s: float,
     ) -> None:
-        """Popup de fin: «¿Ha terminado?» (confirmada) o «¿La guardo?» (sin confirmar)."""
+        """Popup de fin: «Reunión terminada» (confirmada) o «¿La guardo?» (sin confirmar)."""
         ...
 
     def close_end_popup(self, *, reason: EndCloseReason) -> None: ...

@@ -58,7 +58,7 @@ from tests.watcher.helpers import (
 
 MEETING_A = MeetingInfo.from_tab(tab())
 END_ASK_A = ShowEndPopup(False, None, MONITOR, 10.0)  # «¿La guardo?»
-END_DONE_A = ShowEndPopup(True, None, MONITOR, 10.0)  # «¿Ha terminado?»
+END_DONE_A = ShowEndPopup(True, None, MONITOR, 10.0)  # «Reunión terminada»
 
 
 def popup_session(sim: Sim) -> None:

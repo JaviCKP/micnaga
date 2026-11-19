@@ -17,8 +17,12 @@ sin verificar: [`DECISIONS.md`](DECISIONS.md). Licencias de terceros: [`THIRD_PA
 * **Huellas de voz** (opcionales, desactivadas por defecto): cifradas con DPAPI de Windows (ligadas a tu
   cuenta) y borrables por persona. Son datos biométricos: pide consentimiento antes de guardar la de un
   compañero.
-* Lo que no es una reunión (una nota de voz, una prueba de micro, una llamada de 20 s) se descarta solo y
-  solo queda en el registro la fecha y el motivo.
+* **Nada se borra sin un «No» tuyo, y un «No» se puede deshacer.** Cuando una app usa el micro se graba en
+  provisional y se pregunta. «No» (o «Descartar» al final) para la grabación y la aparta; lo mismo pasa con lo
+  que nunca contestaste. Lo apartado va a la carpeta **`_descartadas`** dentro de tu carpeta de reuniones, en
+  tu equipo y sin transcribir. Se borra solo a los `storage.discarded_keep_days` días (7 por defecto) y hasta
+  entonces puedes recuperarlo o borrarlo ya desde la biblioteca («Descartadas»). Ten en cuenta que ese audio
+  existe en disco durante esos días (mínimo 1; «Borrar ya» lo elimina antes).
 * La extensión de navegador opcional no usa la red (solo *native messaging* hacia la app local).
 
 ## Instalación desde el código fuente

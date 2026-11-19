@@ -658,3 +658,52 @@ hablantes cuando hay pocos**.
     JSON-2; el comportamiento con `claude` instalado por npm; los tests `test_bridge` del Run real fallan en un PC
     donde la app de desarrollo ya escribió `HKCU\...\Run` (no es de esta rama).
 
+
+
+## 18. Flujo Sí/No recuperable, popup de fin y «Descartadas» (rama `fix/review-findings`)
+
+**Desviación de la spec §5 pedida expresamente por el usuario** tras una prueba real (el popup no
+le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/state_machine.md`.
+
+1. **Flujo** (cualquier app con el micro, sin listas blancas): 20 s de micro en uso → grabación
+   provisional + pastilla → popup a los 20 s. «Sí» = confirmada (solo la compuerta de duración,
+   `gates.min_duration_s = 30`). «No» = se pausa al instante, chip «Descartada · Deshacer» 8 s
+   (`detection.undo_s`) y, sin deshacer, la carpeta va a `_descartadas`. Sin respuesta = sigue
+   grabando en provisional (la pastilla ofrece «¿Guardar?») y se decide al final.
+2. **Popup de fin** (mismo cristal que el popup): el micro libre `detection.end_confirm_s` (2 s)
+   abre «Reunión terminada» (Terminar / Seguir grabando; termina solo a los
+   `detection.end_popup_timeout_s` = 10 s) o, sin confirmar, «¿La guardo?» (Guardar / Descartar; sin
+   respuesta se aparta). La grabación sigue mientras se decide y luego se **recorta** al momento en
+   que se soltó el micro (`capture.json → trim_end_samples`, aplicado e idempotente en
+   `finalize_session`). `detection.end_after_s` queda solo como tiempo de olvido de lo ignorado.
+3. **Compuertas relajadas por defecto**: `min_remote_speech_s = 0`, `min_turns = 0` (antes 30 s y
+   6 turnos), y `gates.require_confirmed = true`: la etapa 1 no transcribe nada sin un «Sí»/«Guardar».
+   Lo que no pasa una compuerta se **aparta**, no se borra. Migración de config v1 → v2
+   (`[meta] version`): solo se cambian los valores que seguían en los defaults antiguos; los que el
+   usuario tocó se respetan.
+4. **«Descartadas» y privacidad.** Nada se borra sin un «No» explícito, y el «No» es recuperable:
+   `<reuniones>/_descartadas/<carpeta>/` con `held.json` (motivo `declined` / `unanswered` /
+   `unconfirmed` / `gates` / `interrupted` / `suspended` / `failed` y fecha). Se purga a los
+   `storage.discarded_keep_days` (7, mínimo 1) días al arrancar; la biblioteca lista, recupera
+   (vuelve a la raíz, `confirmed = true`, se encola) o borra ya. **Coste de privacidad asumido por
+   el usuario**: el audio de algo que dijo «No» existe en disco hasta 7 días (local, nunca
+   transcrito, nunca sale del equipo). Se documenta en el README.
+5. **Durabilidad del «No»**: al pulsarlo se escribe de forma síncrona (fsync) la marca
+   `.micnaga-discard.json` en la carpeta; si la app muere durante el «Deshacer» o antes de apartar,
+   el arranque la aparta en vez de transcribirla. Una sesión sin confirmar al salir con «Salir» también
+   se aparta (`unanswered`; `interrupted` si la app murió); una confirmada se encola.
+6. **Popup que no salía (A)**: no se reprodujo en este PC; se corrigieron las causas plausibles:
+   overlays visibles al arrancar (pywebview hace `form.Show()` al navegar en ventanas
+   transparentes), revelado con `requestAnimationFrame` (no corre en un WebView2 ocluido → ahora
+   `setTimeout`), y una comprobación a 1,2 s de que la ventana está visible (si no, se re-presenta y
+   queda en el log). Un fallo al abrir la captura ya no deja el vigilante colgado (aviso + vuelta a
+   vigilar).
+7. **Salida de la app**: solo «Salir», el fin de sesión de Windows o el instalador. **Un**
+   mecanismo reproducido: con la app lanzada desde una consola, un Ctrl+C de esa consola llega al
+   manejador SIGINT de pywebview y la app sale «limpiamente»; `app.ConsoleGuard` lo ignora (y lo
+   registra). No explica todo: la app real corre con `pythonw` (sin consola) y sus reinicios del
+   19/11 no dejan ninguna línea de cierre ni evento de fallo en el visor de eventos, así que
+   murió de forma abrupta por una causa aún desconocida. Por eso `faulthandler` escribe ahora en
+   `logs/crash.log`. Si el bucle de la GUI termina por cualquier otra
+   cosa se registra el motivo y se recrean las ventanas sin tocar la grabación (máx. 5 en 10 min).
+   Toda salida deja `shutting down (reason: …)` en el log.
