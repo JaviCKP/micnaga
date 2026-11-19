@@ -371,6 +371,7 @@ class Secretary:
                 context=learn.load_context(),
                 glossary=glossary_lines(self.config),
                 odoo=odoo_text,
+                user_name=(str(profile.get("user") or "") or None) if profile else None,
             ),
             system_prompt=system_prompt("secretaria"),
             model=model,

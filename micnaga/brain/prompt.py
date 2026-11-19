@@ -66,6 +66,7 @@ def build_input(
     glossary: list[str] | None = None,
     odoo: str | None = None,
     instructions: str = "",
+    user_name: str | None = None,
 ) -> str:
     """Texto completo de la pasada de la Secretaria."""
     m = transcript.meeting
@@ -75,6 +76,8 @@ def build_input(
         f"- Duración: {max(1, round(m.duration_s / 60))} min",
         f"- Título actual: {m.title}",
         f"- Origen: {m.source}" + (f" · {m.meet_code}" if m.meet_code else ""),
+        "",
+        *([f"- Usuario (hablante `me`): {user_name}"] if user_name else []),
         "",
         "## Hablantes (id: nombre actual)",
         *[f"- {s.id}: {s.name}" for s in transcript.speakers],

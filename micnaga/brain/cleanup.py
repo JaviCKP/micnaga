@@ -512,6 +512,57 @@ def names_in_results(texts: list[str]) -> list[str]:
     return out
 
 
+# Terminos de trabajo que el ASR destroza a menudo («Claudio» por Claude, «prometto» por prompt).
+BASE_VOCAB = (
+    "Claude",
+    "Anthropic",
+    "prompt",
+    "prompts",
+    "Odoo",
+    "CRM",
+    "Micnaga",
+    "Bitnaga",
+    "PQC",
+    "poscuántico",
+    "IA",
+    "LLM",
+    "MCP",
+    "API",
+    "SaaS",
+    "Google Meet",
+    "Gmail",
+    "Google Drive",
+    "nmap",
+    "testssl",
+    "ssh-audit",
+    "TLS",
+    "VPN",
+    "pentesting",
+    "SOC",
+    "demo",
+    "copiloto",
+)
+
+
+def user_names() -> list[str]:
+    """Nombre del propio usuario (perfil de Odoo en cache): nombre completo, nombre de pila y su
+    diminutivo habitual, para que «Hola, Javi» no se corrija hacia el nombre del otro hablante."""
+    from micnaga.brain.learn import secretaria_dir
+
+    out: list[str] = []
+    with contextlib.suppress(OSError, ValueError, AttributeError, TypeError):
+        data = json.loads((secretaria_dir() / "odoo_capacidades.json").read_text(encoding="utf-8"))
+        for prof in data.values() if isinstance(data, dict) else []:
+            full = " ".join(str(prof.get("user") or "").split())
+            if not full:
+                continue
+            first = full.split()[0]
+            out += [full, first]
+            if len(first) > 4:
+                out.append(first[:4])  # Javier -> Javi
+    return list(dict.fromkeys(out))
+
+
 def vocabulary(
     config: Any, folder: Path, transcript: Transcript, *, with_db: WithDb | None = None
 ) -> list[str]:
@@ -521,7 +572,7 @@ def vocabulary(
     from micnaga.brain import learn
     from micnaga.brain.secretary import glossary_lines, is_generic_title
 
-    found: list[str] = []
+    found: list[str] = list(BASE_VOCAB)
     with contextlib.suppress(Exception):
         found += [ln.partition(":")[0].strip() for ln in glossary_lines(config)]
     with contextlib.suppress(Exception):
@@ -530,6 +581,7 @@ def vocabulary(
         for _name, text in learn._read_md(learn.user_context_dir()):
             found += proper_terms(text)
     found += load_vocab_cache()
+    found += user_names()
     with contextlib.suppress(OSError, ValueError, AttributeError):
         from micnaga.brain.google.analysis import CONTEXT_JSON
 
