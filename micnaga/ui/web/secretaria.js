@@ -9,9 +9,10 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [] };
+  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [], editing: null };
   const call = (action, args) => mic.call("secretaria", action, args || {});
   const lib = () => window.micnaga && window.micnaga.library;
+  const IT = () => window.micnaga && window.micnaga.items;   // editable items + Google (items.js)
 
   /** A small «01:17 ▸» stamp that plays that moment. */
   function stamp(t) {
@@ -100,6 +101,7 @@
       section(mic.t("secretaria.open"), a.preguntas_abiertas, (it) => line(it, "?")),
       section(mic.t("secretaria.next"), a.proximos_pasos, (it) => line(it, "→")),
     ].filter(Boolean);
+    if (IT()) blocks.push(...IT().actaExtras(a, call, stamp));
     if (blocks.length) {
       const grid = el("div", "sec-grid");
       blocks.forEach((b) => grid.append(b));
@@ -130,7 +132,7 @@
         return mic.t("secretaria.p.update", { what: parts.join(" · ") });
       }
       case "programar_actividad": return mic.t("secretaria.p.activity", { what: d.resumen, d: fmtDay(d.fecha) });
-      default: return p.titulo || p.tipo;
+      default: return (IT() && IT().text(p)) || p.titulo || p.tipo;
     }
   }
   const WARN = {
@@ -170,7 +172,7 @@
     if (odooState && odooState !== "conectado" && odooState !== "sin_configurar") {
       box.append(el("p", "sec-warn", mic.t("secretaria.odoo." + odooState)));
     }
-    const groups = [["crm", "secretaria.group.crm"], ["correcciones", "secretaria.group.fix"]];
+    const groups = [["google", "secretaria.group.google"], ["crm", "secretaria.group.crm"], ["correcciones", "secretaria.group.fix"]];
     const checks = [];
     for (const [g, key] of groups) {
       const items = props.filter((p) => p.grupo === g);
@@ -194,12 +196,34 @@
         const sub = [];
         if (p.motivo) sub.push(p.motivo);
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
-        if (p.estado === "fallida") sub.push(mic.t("secretaria.failed"));
+        if (p.estado === "fallida") sub.push((IT() && IT().errorText(p.error)) || mic.t("secretaria.failed"));
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));
+        const note = p.estado === "pendiente" && IT() ? IT().notice(p) : null;
+        if (note) {
+          const n = el("span", "sec-pnote", note);
+          n.dataset.out = String((p.invita && p.invita.length > 0) || !!p.envia);
+          txt.append(n);
+        }
+        const res = IT() ? IT().result(p, call) : null;
+        if (res) txt.append(res);
         lab.append(cb, mark, txt);
         li.append(lab);
         const s = stamp(p.t);
         if (s) li.append(s);
+        if (IT() && (p.campos || []).length && (p.estado === "pendiente" || p.estado === "fallida")) {
+          const ed = el("button", "icon-btn sec-pedit");
+          ed.type = "button";
+          ed.innerHTML = mic.icon("edit");
+          ed.setAttribute("aria-label", mic.t("secretaria.edit"));
+          ed.dataset.tip = mic.t("secretaria.edit");
+          ed.setAttribute("aria-expanded", String(S.editing === p.id));
+          ed.addEventListener("click", () => { S.editing = S.editing === p.id ? null : p.id; render(); });
+          li.append(ed);
+          if (S.editing === p.id) {
+            li.dataset.editing = "true";
+            li.append(IT().editor(p, (values) => edit(p.id, values), () => { S.editing = null; render(); }));
+          }
+        }
         if (p.estado === "aplicada") {
           const u = el("button", "icon-btn sec-pundo");
           u.type = "button";
@@ -241,6 +265,12 @@
     const failed = (r.acta.propuestas || []).filter((p) => ids.includes(p.id) && p.estado === "fallida").length;
     if (action !== "apply") snack(mic.t("secretaria.undone"));
     else snack(failed ? mic.t("secretaria.applied_some", { n: failed }) : mic.t("secretaria.applied"));
+  }
+
+  async function edit(id, values) {
+    const r = await call("edit", { folder: S.folder, id, values });
+    if (r && r.ok) { S.acta = r.acta; S.editing = null; render(); snack(mic.t("secretaria.edited")); }
+    return r;
   }
 
   function snack(text) {
@@ -323,6 +353,7 @@
     const folder = e.detail && e.detail.folder;
     if (folder === S.folder) return;
     S.folder = folder;
+    S.editing = null;
     S.acta = null;
     S.run = null;
     clearTimeout(S.poll);
@@ -338,7 +369,7 @@
     const tag = t.tagName;
     if (tag === "INPUT" && t.type !== "checkbox") return;
     if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "SELECT" || t.isContentEditable) return;
-    if (t.closest && t.closest(".ph, dialog, .menu")) return;
+    if (t.closest && t.closest(".ph, dialog, .menu, .it-form")) return;
     const b = document.querySelector(".sec-apply");
     if (b && !b.disabled && !b.hidden) { e.preventDefault(); b.click(); }
   });

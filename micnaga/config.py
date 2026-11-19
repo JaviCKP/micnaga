@@ -139,6 +139,14 @@ class SecretariaConfig:
     # Servidores MCP extra (solo lectura, contexto): un objeto JSON por linea, p. ej.
     # {"name": "drive", "command": "npx", "args": ["..."], "env": {}, "tools": ["search"]}
     mcp_servers: list[str] = field(default_factory=list)
+    # Google (conectores oficiales de tu cuenta de claude.ai; Micnaga no guarda tokens de Google).
+    # Todo pasa por ``claude -p``: lectura en el analisis, escrituras solo tras «Aplicar».
+    google_gmail: bool = False
+    google_calendar: bool = False
+    google_drive: bool = False
+    google_calendar_id: str = "primary"
+    google_drive_folder_id: str = ""  # vacio = «Mi unidad»
+    google_email_mode: str = "draft"  # draft | off. «Enviar directamente» nunca sale elegido
 
 
 @dataclass
@@ -200,6 +208,9 @@ class Config:
         _check_choice("secretaria.model_title", sec.model_title, ("haiku", "sonnet"))
         for line in sec.mcp_servers:
             _check_mcp_server(line)
+        _check_choice("secretaria.google_email_mode", sec.google_email_mode, ("draft", "off"))
+        if not sec.google_calendar_id.strip():
+            raise ConfigError("secretaria.google_calendar_id must not be empty")
 
     # Atajos utiles para el resto de modulos --------------------------------------------
 

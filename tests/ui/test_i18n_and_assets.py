@@ -49,7 +49,8 @@ def _dynamic_keys() -> set[str]:
     # Secretaria: tarjeta de Odoo (CARD_OF por ruta) y textos que el JS elige de un mapa o
     # compone con el estado/el error que devuelve Python.
     keys.add("settings.cards.odoo")
-    keys |= {f"secretaria.group.{g}" for g in ("crm", "fix")}
+    keys.add("settings.cards.google")
+    keys |= {f"secretaria.group.{g}" for g in ("crm", "fix", "google")}
     keys |= {
         f"secretaria.st.{s}"
         for s in (

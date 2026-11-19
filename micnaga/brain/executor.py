@@ -113,8 +113,10 @@ class Executor:
         *,
         odoo: OdooGetter | None = None,
         db: Any = None,
+        google: Callable[[], Any] | None = None,
     ) -> None:
         self.folder = folder
+        self._google_getter = google  # micnaga.brain.google.apply.GoogleApplier
         self._odoo_getter = odoo
         self._odoo: Any = None
         self._db = db
@@ -158,8 +160,16 @@ class Executor:
 
         relabel(acta, output.read_transcript(self.folder))
 
+    def google(self) -> Any:
+        if self._google_getter is None:
+            raise ApplyError("google_unavailable")
+        return self._google_getter()
+
     def _apply_one(self, p: dict[str, Any], acta: dict[str, Any]) -> dict[str, Any] | None:
         kind, d = p.get("tipo"), p.get("datos") or {}
+        if p.get("grupo") == "google":
+            result: dict[str, Any] = self.google().apply(p, acta)
+            return result
         if p.get("grupo") == "correcciones":
             if kind == "hablante":
                 transcript = output.read_transcript(self.folder)
@@ -264,6 +274,9 @@ class Executor:
     def _undo_one(self, p: dict[str, Any]) -> None:
         u = p.get("deshacer") or {}
         kind = p.get("tipo")
+        if p.get("grupo") == "google":
+            self.google().undo(p)
+            return
         if p.get("grupo") == "correcciones":
             if kind == "hablante":
                 output.rename_speaker(self.folder, u["hablante"], u["nombre"], db=self._db)

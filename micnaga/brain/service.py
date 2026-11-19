@@ -30,6 +30,7 @@ from micnaga import paths
 from micnaga.brain import acta as acta_io
 from micnaga.brain import learn, secrets
 from micnaga.brain import store as bstore
+from micnaga.brain.google.service_api import GoogleApiMixin
 from micnaga.config import Config
 
 log = logging.getLogger(__name__)
@@ -42,7 +43,7 @@ Notify = Callable[[str, str, float, int, int], None]
 """``notify(carpeta, titulo, duracion_s, hablantes, propuestas)``."""
 
 
-class BrainService:
+class BrainService(GoogleApiMixin):
     def __init__(
         self,
         config: Callable[[], Config],
@@ -390,6 +391,10 @@ class BrainService:
             return {"ok": False, "error": "secretaria.err.unknown"}
         try:
             out: dict[str, Any] = handler(args)
+            if isinstance(out.get("acta"), dict):
+                from micnaga.brain.items import decorate
+
+                decorate(out["acta"])  # campos editables (solo para la interfaz)
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -448,7 +453,7 @@ class BrainService:
     def _executor(self, path: Path) -> Any:
         from micnaga.brain.executor import Executor
 
-        return Executor(path, odoo=self._odoo_client)
+        return Executor(path, odoo=self._odoo_client, google=lambda: self._google_applier(path))
 
     def _ids(self, args: dict[str, Any]) -> list[str]:
         ids = args.get("ids")

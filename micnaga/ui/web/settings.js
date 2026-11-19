@@ -12,6 +12,7 @@
   const CARD_OF = {
     startup: "ui", ui: "ui",
     "secretaria.odoo_url": "odoo", "secretaria.odoo_db": "odoo", "secretaria.odoo_login": "odoo",
+    "secretaria.google_gmail": "google", "secretaria.google_calendar": "google", "secretaria.google_drive": "google",
   };
 
   const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
@@ -355,7 +356,65 @@
       ost.set(s.has_odoo_key ? "off" : "off", s.has_odoo_key ? mic.t("secretaria.odoo_untested") : mic.t("secretaria.odoo_none"));
     };
     refresh();
+    if (cards.get("google")) googleCard(cards.get("google"));
     pane.append(learnedCard());
+  }
+
+  /** Google: Gmail / Calendar / Drive rows with a live dot. The connectors live in the user's
+      Claude account: «Conectar» opens that page, «Comprobar» asks the local claude again. */
+  function googleCard(card) {
+    const STATE = {
+      connected: ["ok", () => mic.t("secretaria.g.connected")],
+      needs_auth: ["warn", () => mic.t("secretaria.g.needs_auth")],
+      failed: ["fail", () => mic.t("secretaria.g.failed")],
+      absent: ["off", () => mic.t("secretaria.g.absent")],
+      unknown: ["off", () => mic.t("secretaria.g.unknown")],
+    };
+    const rows = {};
+    for (const svc of ["gmail", "calendar", "drive"]) {
+      const row = card.querySelector('.frow[data-path="secretaria.google_' + svc + '"]');
+      if (!row) continue;
+      const info = row.querySelector(".finfo");
+      const dot = el("span", "sig");
+      dot.dataset.s = "off";
+      const st = el("span", "g-st");
+      info.prepend(dot);
+      info.append(st);
+      const connect = el("button", "btn btn-sm btn-ghost", mic.t("secretaria.g.connect"));
+      connect.type = "button";
+      connect.hidden = true;
+      connect.addEventListener("click", () => sec("google_open"));
+      row.querySelector(".ctl").prepend(connect);
+      rows[svc] = { dot, st, connect };
+    }
+    const foot = statusRow();
+    const check = el("button", "btn btn-sm", mic.t("secretaria.g.check"));
+    check.type = "button";
+    foot.right.append(check);
+    card.append(foot.row);
+    let timer = 0;
+    async function load() {
+      const r = await sec("google_status");
+      if (!r || !r.ok) return r;
+      for (const [svc, v] of Object.entries(r.services || {})) {
+        const ui = rows[svc];
+        if (!ui) continue;
+        const [s, text] = STATE[v.state] || STATE.unknown;
+        ui.dot.dataset.s = r.checking ? "warn" : s;
+        ui.st.textContent = text();
+        ui.connect.hidden = v.state === "connected";
+      }
+      check.disabled = !!r.checking;
+      if (r.checking) foot.set("warn", mic.t("secretaria.g.checking"));
+      else if (r.auth !== "session") foot.set("warn", mic.t("secretaria.g.session_only"));
+      else if (r.checked) foot.set("off", mic.t("secretaria.g.checked", { t: new Date(r.checked * 1000).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }) }));
+      else foot.set("off", mic.t("secretaria.g.never"));
+      clearTimeout(timer);
+      if (r.checking) timer = setTimeout(load, 1000);
+      return r;
+    }
+    check.addEventListener("click", async () => { await sec("google_check"); load(); });
+    load().then((r) => { if (r && r.ok && !r.checked && !r.checking) check.click(); });   // first time: detect once
   }
 
   function learnedCard() {

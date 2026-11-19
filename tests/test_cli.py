@@ -44,6 +44,7 @@ def test_command_table_follows_convention() -> None:
         "app": ("micnaga.app", "run"),
         "tools": ("micnaga.brain.mcp", "run"),
         "brain": ("micnaga.brain.cli", "run"),
+        "hook-guard": ("micnaga.brain.google.guard", "main"),
     }
 
 

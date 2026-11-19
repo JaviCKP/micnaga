@@ -276,6 +276,7 @@ class Application:
         if self.brain is not None and setter is not None:
             setter(self.brain)
         self.live_title = live_title if live_title is not None else self._make_live_title()
+        self.google_context = self._make_google_context()
 
     def _make_brain(self) -> Any:
         try:
@@ -298,6 +299,23 @@ class Application:
             return LiveTitler(lambda: self.config, lambda: self.controller.session_dir, on_title)
         except Exception:
             log.exception("live title unavailable")
+            return None
+
+    def _make_google_context(self) -> Any:
+        """Evento de Google Calendar en curso al grabar (inerte si Calendar no esta activado)."""
+        try:
+            from micnaga.brain.google.context import GoogleContextWatcher
+
+            def on_title(title: str) -> None:
+                setter = getattr(self.ui, "set_pill_title", None)
+                if setter is not None:
+                    setter(title)
+
+            return GoogleContextWatcher(
+                lambda: self.config, lambda: self.controller.session_dir, on_title
+            )
+        except Exception:
+            log.exception("google context unavailable")
             return None
 
     def _db_key(self) -> object:
@@ -344,7 +362,7 @@ class Application:
                 log.warning("hotkey %s unavailable: %s", name, getattr(result, "error", ""))
         if self._start_watcher:
             self.watcher.start()
-        for extra in (self.brain, self.live_title):
+        for extra in (self.brain, self.live_title, self.google_context):
             if extra is not None:
                 try:
                     extra.start()
@@ -376,7 +394,7 @@ class Application:
             lambda: self.finisher.stop(5.0),
             self.supervisor.stop,
             self.events_server.stop,
-            *(x.stop for x in (self.live_title, self.brain) if x is not None),
+            *(x.stop for x in (self.google_context, self.live_title, self.brain) if x is not None),
         ):
             try:
                 step()

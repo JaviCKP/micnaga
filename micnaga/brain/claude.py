@@ -294,6 +294,18 @@ class ToolCall:
         return parts[2] if len(parts) >= 3 and parts[0] == "mcp" else self.name
 
 
+@dataclass(frozen=True)
+class ToolResult:
+    """El resultado de una llamada (evento ``user/tool_result``): texto y, si el servidor lo da,
+    ``structuredContent`` (ids, enlaces). Las escrituras de Google se leen de aqui."""
+
+    tool_use_id: str
+    name: str
+    is_error: bool
+    text: str
+    structured: dict[str, Any] | None = None
+
+
 @dataclass
 class ClaudeResult:
     structured: dict[str, Any] | None
@@ -307,6 +319,11 @@ class ClaudeResult:
     """Estado de cada servidor MCP segun ``system/init`` (``connected``, ``failed``...)."""
     tool_calls: list[ToolCall] = field(default_factory=list)
     api_key_source: str = ""
+    tool_results: list[ToolResult] = field(default_factory=list)
+    tools: list[str] = field(default_factory=list)
+    """Herramientas que ``system/init`` declara disponibles en esta sesion."""
+    denials: list[str] = field(default_factory=list)
+    """Herramientas denegadas (``permission_denials`` del resultado final)."""
 
 
 @dataclass
@@ -321,6 +338,25 @@ class ClaudeRequest:
     max_turns: int = 25
     max_budget_usd: float | None = None
     timeout_s: float = DEFAULT_TIMEOUT_S
+    disallowed_tools: list[str] = field(default_factory=list)
+    settings: dict[str, Any] | None = None
+    """``--settings`` (fichero temporal): ``allowedMcpServers``, ganchos ``PreToolUse``..."""
+    extra_env: dict[str, str] = field(default_factory=dict)
+    strict_mcp: bool = True
+    """``--strict-mcp-config``. Debe ser ``False`` para ver los conectores de claude.ai
+    (Google): entonces ``settings`` lleva la lista blanca ``allowedMcpServers``."""
+
+
+def _result_text(content: object) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "".join(
+            str(c.get("text", ""))
+            for c in content
+            if isinstance(c, dict) and c.get("type") == "text"
+        )
+    return ""
 
 
 def parse_stream(
@@ -335,6 +371,8 @@ def parse_stream(
     result: dict[str, Any] | None = None
     init: dict[str, Any] = {}
     calls: list[ToolCall] = []
+    names: dict[str, str] = {}
+    results: list[ToolResult] = []
     garbled = 0
     rejected_reset: float | None = None
     for raw in lines:
@@ -359,6 +397,7 @@ def parse_stream(
                 if not isinstance(item, dict) or item.get("type") != "tool_use":
                     continue
                 name = str(item.get("name", ""))
+                names[str(item.get("id", ""))] = name
                 if name == STRUCTURED_TOOL or not name:
                     continue
                 args = item.get("input")
@@ -369,6 +408,8 @@ def parse_stream(
                         on_event(call)
                     except Exception:
                         log.debug("on_event failed", exc_info=True)
+        elif kind == "user":
+            results += _tool_results(ev, names)
         elif kind == "rate_limit_event":
             info = ev.get("rate_limit_info")
             if isinstance(info, dict) and info.get("status") == "rejected":
@@ -409,7 +450,39 @@ def parse_stream(
         mcp_servers=servers,
         tool_calls=calls,
         api_key_source=str(init.get("apiKeySource", "")),
+        tool_results=results,
+        tools=[str(t) for t in init.get("tools") or [] if isinstance(t, str)],
+        denials=[
+            str(d.get("tool_name", ""))
+            for d in result.get("permission_denials") or []
+            if isinstance(d, dict)
+        ],
     )
+
+
+def _tool_results(ev: dict[str, Any], names: dict[str, str]) -> list[ToolResult]:
+    msg = ev.get("message")
+    content = msg.get("content") if isinstance(msg, dict) else None
+    extra = ev.get("tool_use_result")
+    structured = extra.get("structuredContent") if isinstance(extra, dict) else None
+    out: list[ToolResult] = []
+    for item in content if isinstance(content, list) else []:
+        if not isinstance(item, dict) or item.get("type") != "tool_result":
+            continue
+        tid = str(item.get("tool_use_id", ""))
+        name = names.get(tid, "")
+        if name == STRUCTURED_TOOL:
+            continue
+        out.append(
+            ToolResult(
+                tool_use_id=tid,
+                name=name,
+                is_error=bool(item.get("is_error")),
+                text=_result_text(item.get("content")),
+                structured=structured if isinstance(structured, dict) else None,
+            )
+        )
+    return out
 
 
 # ============================================================================== proceso
@@ -558,7 +631,6 @@ class ClaudeRunner:
             req.model,
             "--tools",
             "",
-            "--strict-mcp-config",
             "--permission-mode",
             "dontAsk",
             "--setting-sources",
@@ -573,6 +645,8 @@ class ClaudeRunner:
             "--system-prompt-file",
             str(sp),
         ]
+        if req.strict_mcp:
+            args.append("--strict-mcp-config")
         if req.max_budget_usd is not None:
             args += ["--max-budget-usd", f"{req.max_budget_usd:.2f}"]
         if req.schema is not None:
@@ -583,6 +657,12 @@ class ClaudeRunner:
             args += ["--mcp-config", str(cfg)]
         if req.allowed_tools:
             args += ["--allowedTools", ",".join(req.allowed_tools)]
+        if req.disallowed_tools:
+            args += ["--disallowedTools", ",".join(req.disallowed_tools)]
+        if req.settings is not None:
+            st = workdir.parent / "settings.json"
+            st.write_text(json.dumps(req.settings, ensure_ascii=False), encoding="utf-8")
+            args += ["--settings", str(st)]
         return args
 
     def run(
@@ -599,11 +679,17 @@ class ClaudeRunner:
                 log.warning("claude call failed (%s): retrying once", exc.kind)
                 time.sleep(self.retry_delay_s)
 
+    def run_once(
+        self, req: ClaudeRequest, on_event: Callable[[ToolCall], None] | None = None
+    ) -> ClaudeResult:
+        """Sin reintento (escrituras: un reintento ciego podria duplicar)."""
+        return self._run_once(req, on_event)
+
     def _run_once(
         self, req: ClaudeRequest, on_event: Callable[[ToolCall], None] | None
     ) -> ClaudeResult:
         cmd = self.command()
-        env = self.env()
+        env = self.env(req.extra_env or None)
         with tempfile.TemporaryDirectory(prefix="micnaga-claude-") as tmp:
             workdir = Path(tmp) / "cwd"
             workdir.mkdir()

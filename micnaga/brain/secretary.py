@@ -186,6 +186,16 @@ class Secretary:
             return None, {"estado": "clave" if kind == "auth" else "sin_conexion"}
         return client, {"estado": "conectado", "uid": uid}
 
+    def _google(self, folder: Path) -> Any:
+        """Lo que Google anade a esta pasada (``None`` si no hay nada activado)."""
+        try:
+            from micnaga.brain.google.analysis import prepare
+
+            return prepare(self.config, folder)
+        except Exception:
+            log.exception("google preparation failed: analysing without Google")
+            return None
+
     # ------------------------------------------------------------------ pasada
 
     def analyze(
@@ -246,6 +256,9 @@ class Secretary:
             max_turns=30 if with_crm else 12,
             timeout_s=self.timeout_s,
         )
+        gplan = self._google(folder)  # Google (solo lectura): micnaga.brain.google.analysis
+        if gplan is not None:
+            gplan.extend(req, today=today or datetime.now().date().isoformat())
 
         def on_tool(call: ToolCall) -> None:
             status(
@@ -273,6 +286,8 @@ class Secretary:
         proposals = plan.build_corrections(data.get("correcciones"), transcript)
         if odoo is not None and odoo_info.get("estado") == "conectado":
             proposals += plan.build_crm(data.get("propuestas"), transcript, odoo)
+        if gplan is not None:
+            proposals = gplan.finish(data, result, transcript, acta, proposals)
         plan.number(proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
         acta.update(

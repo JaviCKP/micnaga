@@ -151,3 +151,7 @@
   .nav h1, .tab span, .nav-brand { display: none; }
   .tab { justify-content: center; padding: 0; }
 }
+
+/* Google (Ajustes > Secretaria): estado de cada conector junto a su nombre */
+.finfo > .sig { flex: none; margin-right: 10px; }
+.g-st { margin-left: 8px; font-size: 12px; color: var(--text-3); }

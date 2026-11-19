@@ -218,6 +218,12 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             ),
             _f("secretaria.model_title", "choice", choices=("haiku", "sonnet"), advanced=True),
             _f("secretaria.mcp_servers", "list", advanced=True),
+            _f("secretaria.google_gmail", "bool"),
+            _f("secretaria.google_calendar", "bool"),
+            _f("secretaria.google_drive", "bool"),
+            _f("secretaria.google_email_mode", "choice", choices=("draft", "off"), advanced=True),
+            _f("secretaria.google_calendar_id", "text", advanced=True),
+            _f("secretaria.google_drive_folder_id", "text", advanced=True),
         ),
     ),
     (

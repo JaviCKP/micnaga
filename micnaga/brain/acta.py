@@ -86,6 +86,21 @@ def render_markdown(acta: dict[str, Any]) -> str:
         lines.append("")
     block("Preguntas abiertas", acta.get("preguntas_abiertas") or [])
     block("Próximos pasos", acta.get("proximos_pasos") or [])
+    contrasts = acta.get("contrastes") or []  # Google: solo si hay discrepancia real
+    if contrasts:
+        lines.append("## Contrastes")
+        for c in contrasts:
+            src = f"[{c['fuente']}]({c['url']})" if c.get("url") else c.get("fuente", "")
+            lines.append(
+                f"- Dicho: {c.get('dicho', '')}{_when(c.get('t'))} · Escrito: "
+                f"{c.get('escrito', '')} ({src})"
+            )
+        lines.append("")
+    links = acta.get("enlaces") or []
+    if links:
+        lines.append("## Enlaces")
+        lines += [f"- [{x.get('titulo', '')}]({x.get('url', '')})" for x in links]
+        lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 

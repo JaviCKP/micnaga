@@ -18,6 +18,7 @@ bench      ``micnaga.bench.cli:run``                     bench/  (``python -m mi
 app        ``micnaga.app:run``                           app.py (bandeja, vigilante, UI)
 tools      ``micnaga.brain.mcp:run``                     brain/ (servidor MCP stdio)
 brain      ``micnaga.brain.cli:run``                     brain/ (Secretaria)
+hook-guard ``micnaga.brain.google.guard:main``           brain/google (gancho PreToolUse)
 =========  ============================================  =================================
 
 Si el modulo aun no existe (``ModuleNotFoundError`` de ese modulo o de un paquete
@@ -43,6 +44,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "app": ("micnaga.app", "run"),
     "tools": ("micnaga.brain.mcp", "run"),
     "brain": ("micnaga.brain.cli", "run"),
+    "hook-guard": ("micnaga.brain.google.guard", "main"),
 }
 
 HELP: dict[str, str] = {
@@ -53,6 +55,7 @@ HELP: dict[str, str] = {
     "app": "bandeja, vigilante y ventanas",
     "tools": "servidor MCP de solo lectura de la Secretaria (lo lanza claude -p)",
     "brain": "Secretaria: analizar una reunion, probar Claude/Odoo, titulo en directo",
+    "hook-guard": "(interno) gancho PreToolUse: solo deja pasar lo aprobado",
 }
 
 EXIT_NOT_IMPLEMENTED = 2

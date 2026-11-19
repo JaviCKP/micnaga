@@ -146,6 +146,14 @@ def run_asr_child(
     return data
 
 
+def _calendar_title(session: Path) -> bool:
+    try:
+        data = json.loads((session / "contexto_google.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(data, dict) and bool(data.get("titulo"))
+
+
 # ============================================================================== hijo
 
 
@@ -263,6 +271,9 @@ class LiveTitler:
         """Una comprobacion (los tests la llaman directamente)."""
         session = self._session_dir()
         if session is None or not self._enabled() or session.name in self._done:
+            return None
+        if _calendar_title(session):  # el titulo ya vino de Google Calendar
+            self._done.add(session.name)
             return None
         recorded = recorded_seconds(session)
         if recorded < self.start_after_s or not is_confirmed(session):
