@@ -22,7 +22,9 @@
     plan: { text: "", busy: false, error: null, note: null },
     last: null,               // what «Deshacer» in the bar undoes: "apply" | "plan"
     trail: [],                // research steps seen while the acta was being prepared
+    full: false,              // «Acta completa» reading view open (fullacta.js)
   };
+  const FA = () => window.micnaga && window.micnaga.fullActa;
   const call = (action, args) => mic.call("secretaria", action, args || {});
   const lib = () => window.micnaga && window.micnaga.library;
   const IT = () => window.micnaga && window.micnaga.items;   // Google items + research (items.js)
@@ -82,6 +84,7 @@
       return mic.t("secretaria.st.other", { server: st.servidor || "" });
     }
     if (st.fase === "comprobando") return mic.t("secretaria.st.checking");
+    if (st.fase === "corrigiendo") return mic.t("secretaria.st.cleaning");
     if (st.fase === "en_cola") return mic.t("secretaria.st.queued");
     if (st.fase === "pensando") return mic.t("secretaria.st.thinking");
     return mic.t("secretaria.st.reading");
@@ -120,6 +123,13 @@
     redo.dataset.tipPos = "left";
     redo.setAttribute("aria-label", mic.t("secretaria.redo"));
     redo.addEventListener("click", analyze);
+    if (FA()) {
+      const full = el("button", "btn btn-sm sec-full", mic.t("secretaria.full"));
+      full.type = "button";
+      full.insertAdjacentHTML("afterbegin", mic.icon("doc", "mini"));
+      full.addEventListener("click", () => { S.full = true; render(); });
+      head.append(full);
+    }
     head.append(redo);
     box.append(head);
     if (a.contexto) {
@@ -844,7 +854,9 @@
     const caret = focusAsk ? active.selectionStart : null;
     host.replaceChildren();
     const working = S.run && (S.run.state === "pending" || S.run.state === "running");
-    if (S.acta) host.append(renderActa(S.acta), renderProposals(S.acta));
+    if (S.acta && S.full && FA()) {
+      host.append(FA().view(S.folder, call, () => { S.full = false; render(); }), renderProposals(S.acta));
+    } else if (S.acta) host.append(renderActa(S.acta), renderProposals(S.acta));
     if (working) {
       host.prepend(liveChip(status));
     } else if (!S.acta && S.run && S.run.state === "failed") {
@@ -899,6 +911,7 @@
   document.addEventListener("mic:meeting", (e) => {
     const folder = e.detail && e.detail.folder;
     if (folder === S.folder) return;
+    if (FA() && S.folder) FA().forget(S.folder);
     S.folder = folder;
     S.acta = null;
     S.open = new Set();
@@ -909,6 +922,7 @@
     S.plan = { text: "", busy: false, error: null, note: null };
     S.last = null;
     S.trail = [];
+    S.full = false;
     S.run = null;
     clearTimeout(S.poll);
     const host = $("sec");

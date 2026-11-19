@@ -3,6 +3,8 @@
 * ``secretary_runs``: cola/estado de la pasada por reunion (clave: nombre de carpeta).
   ``pending -> running -> done | failed | skipped``; reintentos con espera creciente
   (``next_try``). Al arrancar, lo que quedo ``running`` vuelve a ``pending``.
+* ``original_fts``: el texto del ASR de los parrafos que la limpieza con IA cambio de palabra
+  (``micnaga.brain.cleanup``): la busqueda encuentra tambien lo que se oyo.
 * ``acta_fts``: texto del acta (titulo, resumen, decisiones, tareas...) en FTS5 propio. No usa
   ``segments``: ``Database._replace_segments`` la vacia al renombrar o fusionar hablantes.
 
@@ -37,6 +39,10 @@ _SCHEMA = (
         folder UNINDEXED, title UNINDEXED, text,
         tokenize = 'unicode61 remove_diacritics 2'
     )""",
+    """CREATE VIRTUAL TABLE IF NOT EXISTS original_fts USING fts5 (
+        folder UNINDEXED, start UNINDEXED, speaker UNINDEXED, text,
+        tokenize = 'unicode61 remove_diacritics 2'
+    )""",
 )
 MAX_ATTEMPTS = 4
 BACKOFF_S = (60.0, 300.0, 1800.0, 7200.0)
@@ -52,6 +58,14 @@ class Run:
     next_try: float
     proposals: int
     updated_at: float
+
+
+@dataclass(frozen=True)
+class OriginalHit:
+    folder: str
+    start: float
+    speaker: str
+    snippet: str
 
 
 @dataclass(frozen=True)
@@ -225,6 +239,29 @@ def search_actas(db: Database, query: str, limit: int = 20) -> list[ActaHit]:
     return [ActaHit(r["folder"], r["title"], r["snip"]) for r in rows]
 
 
+def index_originals(db: Database, folder: str, rows: list[tuple[float, str, str]]) -> None:
+    """``(inicio, hablante, texto original)`` de los parrafos corregidos de una reunion."""
+    with db.transaction() as conn:
+        conn.execute("DELETE FROM original_fts WHERE folder = ?", (folder,))
+        conn.executemany(
+            "INSERT INTO original_fts (folder, start, speaker, text) VALUES (?, ?, ?, ?)",
+            [(folder, start, speaker, text) for start, speaker, text in rows if text],
+        )
+
+
+def search_originals(db: Database, query: str, limit: int = 20) -> list[OriginalHit]:
+    match = fts_query(query)
+    if not match:
+        return []
+    rows = db.conn.execute(
+        "SELECT folder, start, speaker,"
+        " snippet(original_fts, 3, '<mark>', '</mark>', '…', 16) AS snip"
+        " FROM original_fts WHERE original_fts MATCH ? ORDER BY bm25(original_fts) LIMIT ?",
+        (match, limit),
+    ).fetchall()
+    return [OriginalHit(r["folder"], float(r["start"]), r["speaker"], r["snip"]) for r in rows]
+
+
 def rename_folder(db: Database, old: str, new: str, *, new_path: str, title: str) -> None:
     """Todo lo que lleva el nombre de la carpeta, en una transaccion: ``meetings`` (clave del
     upsert: si no, quedaria una fila duplicada), ``jobs.session_dir``, la pasada y el acta."""
@@ -238,6 +275,7 @@ def rename_folder(db: Database, old: str, new: str, *, new_path: str, title: str
         )
         conn.execute("UPDATE secretary_runs SET folder = ? WHERE folder = ?", (new, old))
         conn.execute("UPDATE acta_fts SET folder = ? WHERE folder = ?", (new, old))
+        conn.execute("UPDATE original_fts SET folder = ? WHERE folder = ?", (new, old))
 
 
 def set_meeting_title(db: Database, folder: str, title: str) -> None:

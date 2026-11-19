@@ -127,6 +127,83 @@ def _composite(
     return out
 
 
+DEMO_FULL_ACTA = """# Acta: Dental Triana · alcance ampliado
+
+**Fecha:** jueves 19 de noviembre de 2026, 10:30 · **Duración:** 1 min · **Asistentes:** Yo,
+Carlos (Dental Triana), Marta Gil (recepción)
+
+## Orden del día
+1. Alcance de la fase 1
+2. Presupuesto
+3. Integraciones y demo
+
+## 1. Alcance de la fase 1
+Carlos confirma que dirección aprueba incluir el **panel de ventas** en la fase 1 [00:20].
+Marta se incorpora como responsable de recepción [00:05] y deja su correo para los envíos.
+
+## 2. Presupuesto
+El total sube a unos 6.900 € [00:23]. Yo me comprometo a enviar el presupuesto revisado
+antes del viernes [00:26].
+
+## 3. Integraciones y demo
+Se pide integración con Odoo y con la sede de Triana [00:33]. La demo será el 3 de diciembre
+con datos reales [00:36]. Queda abierta la gestión de respuestas fuera de horario [00:39].
+
+## Decisiones
+- Panel de ventas en la fase 1, por decisión de dirección [00:20].
+
+## Acuerdos y tareas
+- **Yo:** presupuesto revisado, antes del viernes 20/11 [00:26].
+- **Marta:** lista de plantillas de WhatsApp, el martes 24/11 [00:29].
+
+## Preguntas abiertas
+- Respuestas a pacientes fuera de horario [00:39].
+
+## Próximos pasos
+- Demo con datos reales el 3 de diciembre [00:36].
+
+## Fuentes consultadas
+Ninguna, salvo la transcripción.
+"""
+
+
+def _dress_cleanup(folder: Path, root: Path) -> None:
+    """La reunion de demo como queda tras la limpieza con IA (texto original guardado) y con su
+    «Acta completa» ya escrita (un ``claude`` falso en proceso)."""
+    import dataclasses
+
+    from micnaga.brain import cleanup, full_acta
+    from micnaga.brain.claude import ClaudeResult
+    from micnaga.config import Config
+    from micnaga.pipeline import output
+    from micnaga.store.db import Database
+
+    tr = output.read_transcript(folder)
+    fixes = {
+        1: "Buenos días, Javier. Te presento a Marta, que lleva la recepción de la clínica.",
+        5: "El total sube a unos 6.900 euros.",
+        8: "Queremos que esté integrado con Odoo y con la sede de Triana.",
+        9: "Hacemos la demo el 3 de diciembre con datos reales.",
+    }
+    segs = list(tr.segments)
+    for i, text in fixes.items():
+        s = segs[i]
+        segs[i] = dataclasses.replace(
+            s, text=text, text_original=s.text, words=cleanup.remap_words(s.words, text)
+        )
+    output.write_transcript(folder, dataclasses.replace(tr, segments=segs))
+
+    class Writer:
+        def run_once(self, req: Any, on_event: Any = None) -> ClaudeResult:
+            return ClaudeResult(None, DEMO_FULL_ACTA, 0.15, {}, 40.0, 1, "claude-demo")
+
+    def with_db(fn: Any) -> Any:
+        with Database(root / "micnaga.db") as db:
+            return fn(db)
+
+    full_acta.FullActa(Config(), Writer(), with_db=with_db).make(folder)
+
+
 def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
     tmp = Path(tempfile.mkdtemp(prefix="micnaga-shots-"))
     env_keys = (
@@ -174,6 +251,7 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
         from tests.brain.demo import write_demo_meeting
 
         acta_folder = write_demo_meeting(root)
+        _dress_cleanup(root / acta_folder, root)
         # Odoo de negocio: un Odoo falso con permisos de empleado (sin CRM, contactos de solo
         # lectura) para el panel «Partes de horas» y una reunion con propuestas agrupadas.
         from datetime import datetime
@@ -460,6 +538,48 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                     out = out_dir / f"secretaria_pill_{theme}.png"
                     shots.append(_composite([(img, (30, 12), 1.0)], (480, 64), dark, out, 2))
                     img.unlink()
+                if want("cleanup"):
+                    to_row = (
+                        "document.querySelector('.ph[data-i=\"5\"]')"
+                        ".scrollIntoView({block: 'center'})"
+                    )
+                    shot(
+                        "cleanup_transcript",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        720,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js=to_row,
+                    )
+                    shot(
+                        "cleanup_original",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        720,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.getElementById('orig-toggle').click();"
+                        f"setTimeout(() => {to_row}, 80)",
+                    )
+                    shot(
+                        "acta_completa",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.querySelector('.sec-full').click()",
+                    )
                 if want("library"):
                     shot(
                         "library",

@@ -348,8 +348,17 @@ class Tools:
         db = self._db_factory()
         try:
             store.ensure_schema(db)
-            hits = db.search(text, 10)
-            actas = store.search_actas(db, text, 5)
+            words = [w for w in text.split() if len(w) >= 3]
+            queries = [text] + (words if len(words) > 1 else [])
+            hits: list[Any] = []
+            actas: list[Any] = []
+            for k, q in enumerate(queries):  # todas las palabras; si nada, cada una suelta
+                hits += [h for h in db.search(q, 20) if h.folder != self.current][:5]
+                actas += [a for a in store.search_actas(db, q, 8) if a.folder != self.current]
+                if k == 0 and (hits or actas):
+                    break
+            hits = list({(h.folder, h.start): h for h in hits}.values())[:10]
+            actas = list({a.folder: a for a in actas}.values())[:5]
         finally:
             db.close()
 

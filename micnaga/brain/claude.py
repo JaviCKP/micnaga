@@ -342,6 +342,8 @@ class ClaudeRequest:
     settings: dict[str, Any] | None = None
     """``--settings`` (fichero temporal): ``allowedMcpServers``, ganchos ``PreToolUse``..."""
     extra_env: dict[str, str] = field(default_factory=dict)
+    on_text: Callable[[str], None] | None = None
+    """Texto en streaming (``--include-partial-messages``): cada trozo de la respuesta."""
     strict_mcp: bool = True
     """``--strict-mcp-config``. Debe ser ``False`` para ver los conectores de claude.ai
     (Google): entonces ``settings`` lleva la lista blanca ``allowedMcpServers``."""
@@ -362,6 +364,7 @@ def _result_text(content: object) -> str:
 def parse_stream(
     lines: Any,
     on_event: Callable[[ToolCall], None] | None = None,
+    on_text: Callable[[str], None] | None = None,
 ) -> ClaudeResult:
     """Interpreta las lineas de ``--output-format stream-json`` (iterable de ``str``).
 
@@ -410,6 +413,14 @@ def parse_stream(
                         log.debug("on_event failed", exc_info=True)
         elif kind == "user":
             results += _tool_results(ev, names)
+        elif kind == "stream_event" and on_text is not None:
+            inner = ev.get("event")
+            delta = inner.get("delta") if isinstance(inner, dict) else None
+            if isinstance(delta, dict) and delta.get("type") == "text_delta":
+                try:
+                    on_text(str(delta.get("text") or ""))
+                except Exception:
+                    log.debug("on_text failed", exc_info=True)
         elif kind == "rate_limit_event":
             info = ev.get("rate_limit_info")
             if isinstance(info, dict) and info.get("status") == "rejected":
@@ -647,6 +658,8 @@ class ClaudeRunner:
         ]
         if req.strict_mcp:
             args.append("--strict-mcp-config")
+        if req.on_text is not None:
+            args.append("--include-partial-messages")
         if req.max_budget_usd is not None:
             args += ["--max-budget-usd", f"{req.max_budget_usd:.2f}"]
         if req.schema is not None:
@@ -772,7 +785,7 @@ class ClaudeRunner:
                 yield item
 
         try:
-            result = parse_stream(stream(), on_event)
+            result = parse_stream(stream(), on_event, req.on_text)
         except ClaudeOutputError as exc:
             with contextlib.suppress(subprocess.TimeoutExpired):
                 proc.wait(5)

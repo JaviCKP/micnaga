@@ -260,6 +260,7 @@
     if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
     renderSpeakers();
     renderMarkers();
+    renderOriginalToggle();
     renderTranscript();
     $("open-folder").onclick = async () => {
       const x = await mic.call("open_folder", S.folder);
@@ -514,6 +515,38 @@
     return out;
   }
 
+  /** Phrase text: the AI-corrected words get a faint underline with the heard words on hover;
+   *  with «Original» on, the ASR text as it was. Search highlights apply inside each piece. */
+  function fillText(tx, s) {
+    const q = S.highlightQuery;
+    if (S.showOriginal && typeof s.text_original === "string") { highlightInto(tx, s.text_original, q); return; }
+    const fix = Array.isArray(s.fix) ? s.fix : [];
+    if (!fix.length) { highlightInto(tx, s.text, q); return; }
+    let pos = 0;
+    for (const [a, b, o] of fix) {
+      if (a < pos || b > s.text.length) continue;
+      if (a > pos) { const t = el("span"); highlightInto(t, s.text.slice(pos, a), q); tx.append(...t.childNodes); }
+      const f = el("span", "fx");
+      f.title = mic.t("library.fixed_from", { o: o || "—" });
+      highlightInto(f, s.text.slice(a, b), q);
+      tx.append(f);
+      pos = b;
+    }
+    const t = el("span");
+    highlightInto(t, s.text.slice(pos), q);
+    tx.append(...t.childNodes);
+  }
+
+  function renderOriginalToggle() {
+    const b = $("orig-toggle");
+    const has = S.data.transcript.segments.some((s) => typeof s.text_original === "string");
+    b.hidden = !has;
+    if (!has) S.showOriginal = false;
+    b.setAttribute("aria-pressed", String(!!S.showOriginal));
+    $("tr").classList.toggle("orig", !!S.showOriginal);
+    b.onclick = () => { S.showOriginal = !S.showOriginal; renderOriginalToggle(); renderTranscript(); };
+  }
+
   function renderTranscript() {
     const tr = S.data.transcript;
     const box = $("tr");
@@ -534,7 +567,7 @@
       who.append(el("i"), el("span", "", nameOf(s.speaker)));
       row.append(who);
       const tx = el("span", "tx");
-      highlightInto(tx, s.text, S.highlightQuery);
+      fillText(tx, s);
       row.append(tx);
       if (marks.has(i)) {
         const f = el("span", "flag");

@@ -93,7 +93,7 @@ def test_full_pass_with_odoo(fake_claude: FakeClaude, fake_odoo: FakeOdoo, meeti
     corr = [p for p in props if p["grupo"] == "correcciones"]
     assert [(p["tipo"], p["datos"].get("a")) for p in corr] == [
         ("hablante", "Marta Gil"),
-        ("hablante", "Carlos Ruiz"),
+        ("hablante", "Carlos"),
         ("palabra", "Odoo"),
         ("palabra", "Triana"),
     ]
@@ -229,7 +229,7 @@ def test_apply_then_undo_everything(
 
     tr = output.read_transcript(folder)
     names = {s.id: s.name for s in tr.speakers}
-    assert names["S2"] == "Marta Gil" and names["S1"] == "Carlos Ruiz"
+    assert names["S2"] == "Marta Gil" and names["S1"] == "Carlos"
     text = " ".join(s.text for s in tr.segments)
     assert "Odoo" in text and "Odu" not in text and "Triana" in text
     assert "Marta Gil" in (folder / paths.TRANSCRIPT_MD).read_text(encoding="utf-8")

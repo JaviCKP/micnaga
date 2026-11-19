@@ -133,6 +133,7 @@ class SecretariaConfig:
     model_acta: str = "sonnet"
     model_title: str = "haiku"
     live_title: bool = True  # titulo provisional hacia el minuto 2 de una grabacion confirmada
+    clean_transcript: bool = True  # Haiku corrige la transcripcion antes del acta (brain/cleanup)
     horas_nudge: bool = False  # aviso del viernes por la tarde si faltan partes de horas
     odoo_url: str = ""
     odoo_db: str = ""
