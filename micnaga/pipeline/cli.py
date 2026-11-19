@@ -166,6 +166,9 @@ def run_live(argv: list[str]) -> int:
     apply_thread_limits(threads)
     set_low_priority()
     config.processing.threads = threads
+    from micnaga.capture import sync
+
+    sync.WARP_THREADS = threads
 
     from micnaga.logging_setup import setup_logging
 

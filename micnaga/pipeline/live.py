@@ -82,6 +82,8 @@ SLICE_S = 60.0
 """Multiplo de los bloques de 60 s del paso alto de la etapa 4 (mismo filtrado)."""
 HP_MARGIN_S = 2.0
 AEC_PREROLL_S = 8.0
+ECHO_LOOKBACK_S = 300.0
+"""La decision de eco de un trozo mira los ultimos 5 min (como la etapa 3 mira toda la pista)."""
 MANIFEST = "manifest.json"
 SLICE_META = "slice.json"
 STOP_FILE = "stop"
@@ -200,15 +202,18 @@ def stitch_words(blocks: Sequence[tuple[float, float, Sequence[Word]]]) -> list[
     Normalmente los bloques no se solapan (salen de los tramos de voz) y esto solo ordena. Si
     dos bloques se solapan (p. ej. uno calculado en vivo y otro rehecho al final con otra
     frontera), el tramo comun se reparte por su punto medio: cada palabra se queda en el bloque
-    que contiene su centro. Despues se quitan las repeticiones exactas (mismo texto normalizado
-    y comienzo a menos de ``DEDUPE_TOLERANCE_S``) que pudieran quedar en la frontera.
+    que contiene su centro. Despues, **solo junto a ese tramo comun**, se quitan las repeticiones
+    exactas (mismo texto normalizado y comienzo a menos de ``DEDUPE_TOLERANCE_S``) que pudieran
+    quedar en la frontera; una repeticion real dentro de un bloque («no, no») se conserva.
     """
     ordered = sorted(blocks, key=lambda b: (b[0], b[1]))
     kept: list[Word] = []
+    overlaps: list[tuple[float, float]] = []
     for i, (a, b, words) in enumerate(ordered):
         lo, hi = -np.inf, np.inf
         if i > 0 and ordered[i - 1][1] > a:  # solapa con el anterior
             lo = (a + ordered[i - 1][1]) / 2
+            overlaps.append((a, ordered[i - 1][1]))
         if i + 1 < len(ordered) and ordered[i + 1][0] < b:  # solapa con el siguiente
             hi = (ordered[i + 1][0] + b) / 2
         for w in words:
@@ -216,15 +221,23 @@ def stitch_words(blocks: Sequence[tuple[float, float, Sequence[Word]]]) -> list[
             if lo <= mid < hi:
                 kept.append(w)
     kept.sort(key=lambda w: (w.s, w.e))
+    if not overlaps:
+        return kept
+
+    def near_overlap(w: Word) -> bool:
+        tol = DEDUPE_TOLERANCE_S
+        return any(a - tol <= w.s <= b + tol for a, b in overlaps)
+
     out: list[Word] = []
     for w in kept:
         dup = False
-        for prev in reversed(out):
-            if w.s - prev.s > DEDUPE_TOLERANCE_S:
-                break
-            if _norm(prev.w) == _norm(w.w) and abs(prev.s - w.s) <= DEDUPE_TOLERANCE_S:
-                dup = True
-                break
+        if near_overlap(w):  # solo en el tramo comun: «sí, sí» dentro de un bloque se respeta
+            for prev in reversed(out):
+                if w.s - prev.s > DEDUPE_TOLERANCE_S:
+                    break
+                if _norm(prev.w) == _norm(w.w):
+                    dup = True
+                    break
         if not dup:
             out.append(w)
     return out
@@ -368,7 +381,6 @@ class LiveProcessor:
         engines: LiveEngines,
         *,
         stop: Callable[[], bool] = lambda: False,
-        parallel_asr: bool = False,
     ) -> None:
         self.session = session
         self.config = config
@@ -377,7 +389,6 @@ class LiveProcessor:
         self.slice_len = round(SLICE_S * self.sr)
         self.dir = live_dir(session)
         self._stop = stop
-        self._parallel = parallel_asr
         self._asr: AsrEngine | None = None
         self._vad: StatefulProbModel | None = None
         self._embedder: WindowEmbedder | None = None
@@ -481,9 +492,11 @@ class LiveProcessor:
         end = min(start + self.slice_len, src.length)
         margin = round(HP_MARGIN_S * sr)
         pre = round(AEC_PREROLL_S * sr)
-        lo, hi = max(0, start - pre), min(src.length, end + margin)
+        lo_echo = max(0, end - round(ECHO_LOOKBACK_S * sr))
+        lo_aec = max(0, start - pre)
+        lo, hi = min(lo_aec, lo_echo), min(src.length, end + margin)
         t0 = time.perf_counter()
-        aligned = {
+        wide = {
             t: resample_range_to_clock(
                 src.track(t).read, src.track(t).n, src.track(t).marks, lo, hi, sr
             )
@@ -491,8 +504,8 @@ class LiveProcessor:
         }
         self.stats.add_time("align", time.perf_counter() - t0)
         res = SliceResult(k, start, end, {}, {})
-        # 2) eco
-        mic = aligned["mic"]
+        # 2) eco: misma medida que la etapa 3, sobre los ultimos ECHO_LOOKBACK_S (no un minuto
+        # suelto: con poco audio la decision oscila)
         if not needs_aec(self.meta):
             res.aec_skipped = "headphones"
         elif self.config.processing.aec == "off":
@@ -501,14 +514,20 @@ class LiveProcessor:
             t0 = time.perf_counter()
             from micnaga.pipeline.aec.echo_check import measure_echo
 
-            a, b = start - lo, end - lo
-            check = measure_echo(mic[a:b], aligned["system"][a:b], sr)
+            a, b = lo_echo - lo, end - lo
+            check = measure_echo(wide["mic"][a:b], wide["system"][a:b], sr)
             res.echo = check.to_dict()
             if not check.echo:
                 res.aec_skipped = "no echo"
             else:
-                mic, res.aec, res.aec_skipped = self._cancel(mic, aligned["system"])
+                head = lo_aec - lo
+                cleaned, res.aec, res.aec_skipped = self._cancel(
+                    wide["mic"][head:], wide["system"][head:]
+                )
+                wide["mic"] = np.concatenate([wide["mic"][:head], cleaned])
             self.stats.add_time("aec", time.perf_counter() - t0)
+        aligned = wide
+        mic = wide["mic"]
         # 3) acondicionado (paso alto con margen, ganancia por energia activa acumulada)
         t0 = time.perf_counter()
         frame = max(1, int(FRAME_S * sr))
@@ -694,17 +713,10 @@ class LiveProcessor:
     def commit_asr(
         self, probs: dict[str, NDArray[np.float32]], length: int, final: bool
     ) -> dict[str, tuple[list[tuple[float, float]], list[Word]]]:
-        """Transcribe los bloques estables de las dos pistas (en paralelo si se pidio)."""
-        from micnaga.pipeline.stages.s06_asr import run_tracks
-
+        """Transcribe (o reutiliza) los bloques estables de las dos pistas."""
         plan = {t: self.asr_blocks(probs[t], length, final) for t in TRACKS}
         (self.dir / "asr").mkdir(parents=True, exist_ok=True)
-
-        def task(t: str) -> Callable[[], tuple[list[tuple[float, float]], list[Word]]]:
-            return lambda: (plan[t], self.transcribe_blocks(t, plan[t]))
-
-        results = run_tracks([task(t) for t in TRACKS], parallel=self._parallel)
-        return dict(zip(TRACKS, results, strict=True))
+        return {t: (plan[t], self.transcribe_blocks(t, plan[t])) for t in TRACKS}
 
     # -------------------------------------------------------------- ventanas de diarizacion
 
@@ -761,9 +773,7 @@ class LiveProcessor:
 
     def step(self) -> bool:
         """Procesa lo que haya disponible mientras se graba. ``True`` si hizo algo."""
-        from micnaga.capture.session import read_capture_json
-
-        self.meta = read_capture_json(self.session)
+        self.meta = read_meta_shared(self.session)
         src = _open_sources(self.session, self.meta, self.sr, final=False)
         margin = round(HP_MARGIN_S * self.sr)
         slices = self.cached_slices()
@@ -816,12 +826,12 @@ def finish(
 ) -> bool:
     """Completa lo calculado en vivo y deja hechas las etapas 2-6. ``False`` si no aplica.
 
-    Procesa los trozos que falten (la cola), transcribe los bloques pendientes de las dos pistas
-    en paralelo, calcula las ventanas de diarizacion que falten, escribe ``04_*.wav``,
+    Procesa los trozos que falten (la cola), transcribe los bloques pendientes de las dos
+    pistas, calcula las ventanas de diarizacion que falten, escribe ``04_*.wav``,
     ``05_vad.json``, ``05_probs.npz`` y ``06_words_*.json`` y las marcas 2-6 (las ultimas).
     """
     progress = on_progress or (lambda _f: None)
-    proc = LiveProcessor(ctx.session, ctx.config, engines, parallel_asr=True)
+    proc = LiveProcessor(ctx.session, ctx.config, engines)
     if not proc.ensure_manifest():
         discard_cache(ctx.session)
         return False
@@ -959,7 +969,6 @@ def _write_outputs(
             {
                 "engine": _engine_name(proc),
                 "words": counts,
-                "parallel": True,
                 "live": True,
             },
         ),
@@ -1047,10 +1056,21 @@ def mutex_name(session: Path) -> str:
     return f"Local\\micnaga-live-{_session_hash(session)}"
 
 
-def should_keep_running(session: Path) -> str | None:
-    """Motivo para parar el proceso en vivo, o ``None`` si debe seguir."""
-    from micnaga.capture.recovery import _owner_alive
-    from micnaga.capture.session import STATE_RECORDING, read_capture_json
+def read_meta_shared(session: Path) -> CaptureMeta:
+    """Lee ``capture.json`` de una vez y lo suelta enseguida.
+
+    El grabador lo reescribe con ``os.replace`` cada 10 s y en Windows ese reemplazo falla
+    mientras otro proceso lo tenga abierto (ni compartiendo el borrado); ``write_capture_json``
+    reintenta durante 200 ms, asi que basta con no tenerlo abierto mas que una lectura (< 1 ms)
+    y leerlo solo una vez por vuelta (cada pocos segundos), nunca entre bloques.
+    """
+    from micnaga.capture.session import capture_json_path
+
+    return CaptureMeta.from_json(capture_json_path(session).read_text(encoding="utf-8"))
+
+
+def quick_stop_reason(session: Path) -> str | None:
+    """Comprobacion barata (solo existencia de ficheros) que se hace entre bloques."""
     from micnaga.holding import DISCARD_MARKER
 
     if not session.is_dir():
@@ -1059,8 +1079,19 @@ def should_keep_running(session: Path) -> str | None:
         return "stop requested"
     if (session / DISCARD_MARKER).exists():
         return "discarded"
+    return None
+
+
+def should_keep_running(session: Path) -> str | None:
+    """Motivo para parar el proceso en vivo, o ``None`` si debe seguir."""
+    from micnaga.capture.recovery import _owner_alive
+    from micnaga.capture.session import STATE_RECORDING
+
+    quick = quick_stop_reason(session)
+    if quick is not None:
+        return quick
     try:
-        meta = read_capture_json(session)
+        meta = read_meta_shared(session)
     except (OSError, ValueError, KeyError):
         return None  # capture.json a medio reescribir: se mira en el siguiente paso
     if meta.extra.get("state") != STATE_RECORDING:
@@ -1068,6 +1099,9 @@ def should_keep_running(session: Path) -> str | None:
     if not _owner_alive(meta.extra):
         return "recorder is gone"
     return None
+
+
+MAX_STEP_ERRORS = 5
 
 
 def run_live(
@@ -1080,7 +1114,12 @@ def run_live(
     cpu_percent: Callable[[], float] | None = None,
     sleep: Callable[[float], None] = time.sleep,
 ) -> str:
-    """Bucle del proceso en vivo; devuelve el motivo de salida."""
+    """Bucle del proceso en vivo; devuelve el motivo de salida.
+
+    Entre bloques solo se mira si hay orden de parar (ficheros); ``capture.json`` se lee una
+    vez por vuelta. Un fallo pasajero (lectura a medias) se reintenta en la vuelta siguiente;
+    tras ``MAX_STEP_ERRORS`` seguidos se deja (el worker lo hara todo al colgar).
+    """
     if cpu_percent is None:
         import psutil
 
@@ -1091,24 +1130,37 @@ def run_live(
 
     reason: str | None = None
 
-    def stop() -> bool:
+    def quick_stop() -> bool:
+        nonlocal reason
+        reason = quick_stop_reason(session)
+        return reason is not None
+
+    def full_stop() -> bool:
         nonlocal reason
         reason = should_keep_running(session)
         return reason is not None
 
-    proc = LiveProcessor(session, config, engines, stop=stop)
+    proc = LiveProcessor(session, config, engines, stop=quick_stop)
+    errors = 0
     try:
-        if stop():
+        if full_stop():
             return reason or "stopped"
         proc.ensure_manifest()
-        while not stop():
+        while not full_stop():
             if cpu_percent() >= busy_percent:
                 sleep(BUSY_WAIT_S)  # el equipo esta ocupado: se cede (la cola espera al colgar)
                 continue
             try:
                 did = proc.step()
+                errors = 0
             except _Stopped:
                 break
+            except Exception:
+                errors += 1
+                log.warning("live step failed (%d in a row)", errors, exc_info=True)
+                if errors >= MAX_STEP_ERRORS:
+                    return "too many errors"
+                did = False
             if not did:
                 sleep(poll_s)
         return reason or "stopped"

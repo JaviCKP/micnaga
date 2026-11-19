@@ -122,14 +122,22 @@ def test_stitch_overlapping_blocks_never_duplicates_or_drops_a_word() -> None:
     assert out == ["uno", "dos", "tres", "cuatro"]
 
 
-def test_stitch_removes_exact_repeats_at_a_boundary_but_keeps_real_repeats() -> None:
+def test_stitch_removes_exact_repeats_in_an_overlap_but_keeps_real_repeats() -> None:
     blocks = [
-        (0.0, 5.0, [w("sí", 4.6, 5.0)]),
-        (5.0, 9.0, [w("Sí,", 4.7, 5.1), w("sí", 6.0, 6.3)]),  # eco del limite + uno real
+        (0.0, 5.2, [w("sí", 4.6, 4.9)]),
+        (4.8, 9.0, [w("Sí,", 4.75, 5.0), w("sí", 6.0, 6.3)]),  # repetido en el solape + uno real
     ]
     out = stitch_words(blocks)
     assert [x.w for x in out] == ["sí", "sí"]
     assert [x.s for x in out] == [4.6, 6.0]
+
+
+def test_stitch_keeps_quick_genuine_repeats_inside_a_block() -> None:
+    blocks = [
+        (0.0, 3.0, [w("no,", 1.0, 1.15), w("no", 1.16, 1.4), w("sí,", 2.0, 2.1)]),
+        (3.0, 6.0, [w("sí", 3.1, 3.3), w("sí", 3.32, 3.5)]),
+    ]
+    assert [x.w for x in stitch_words(blocks)] == ["no,", "no", "sí,", "sí", "sí"]
 
 
 # ----------------------------------------------------------------------------- VAD con estado

@@ -5,9 +5,9 @@ Se crea **un** motor ASR (``processing.asr_engine``; los hilos los toma el motor
 los tiempos de cada palabra, relativos al bloque, se desplazan a la linea de tiempo global. Despues
 se cierra el motor, ``del`` y ``gc.collect()``.
 
-Micro y sistema van **en paralelo** (dos hilos sobre el mismo modelo cargado: la memoria no se
-duplica) si el motor lo admite (``concurrent = True``, Parakeet/onnxruntime). Mientras un hilo
-decodifica (bucle Python de TDT) el otro usa el codificador; ver DECISIONS §23.
+Micro y sistema van **en serie** con un solo modelo: medido (DECISIONS §23), pasarlos en
+paralelo (un modelo compartido o dos con la mitad de hilos cada uno) no gana tiempo y duplica la
+memoria; el cuello es el codificador, no el bucle de decodificacion.
 
 Salidas: ``work/06_words_me.json`` y ``work/06_words_remote.json`` (listas de palabras
 ``{"w","s","e","p"}``); el nombre del motor queda en la marca (``info.engine``).
@@ -15,8 +15,6 @@ Salidas: ``work/06_words_me.json`` y ``work/06_words_remote.json`` (listas de pa
 
 from __future__ import annotations
 
-import threading
-from collections.abc import Callable, Sequence
 from typing import Any
 
 from micnaga.pipeline.engines.asr.base import AsrEngine
@@ -48,64 +46,27 @@ def transcribe_block(
     return transcribe_piece(engine, audio[i0:i1], a, sr)
 
 
-def run_tracks(tasks: Sequence[Callable[[], Any]], *, parallel: bool) -> list[Any]:
-    """Ejecuta las tareas (una por pista) en hilos o en serie; propaga el primer error."""
-    if not parallel or len(tasks) < 2:
-        return [t() for t in tasks]
-    results: list[Any] = [None] * len(tasks)
-    errors: list[BaseException] = []
-
-    def work(i: int) -> None:
-        try:
-            results[i] = tasks[i]()
-        except BaseException as exc:  # se relanza en el hilo principal
-            errors.append(exc)
-
-    threads = [threading.Thread(target=work, args=(i,), daemon=True) for i in range(len(tasks))]
-    for th in threads:
-        th.start()
-    for th in threads:
-        th.join()
-    if errors:
-        raise errors[0]
-    return results
-
-
 def run(ctx: StageContext) -> StageResult:
     vad: dict[str, Any] = ctx.read_json("05_vad.json")
     sr = ctx.sr
     total = sum(b - a for t in ("mic", "system") for a, b in vad[t]["chunks"]) or 1.0
-    done = [0.0]
-    lock = threading.Lock()
+    done = 0.0
+    counts: dict[str, int] = {}
     outputs = {"mic": WORDS_ME, "system": WORDS_REMOTE}
     engine = ctx.deps.create_asr(ctx.config)
     name = engine.name
-    parallel = bool(getattr(engine, "concurrent", False))
-
-    def track_task(track: str) -> Callable[[], int]:
-        def task() -> int:
+    with engine_scope(engine):
+        for track in ("mic", "system"):
             chunks: list[list[float]] = vad[track]["chunks"]
             words: list[Word] = []
             audio = ctx.conditioned(track) if chunks else None
             for a, b in chunks:
                 if audio is not None:
                     words.extend(transcribe_block(engine, audio, a, b, sr))
-                with lock:
-                    done[0] += b - a
-                    ctx.progress(done[0] / total)
+                done += b - a
+                ctx.progress(done / total)
             words.sort(key=lambda w: (w.s, w.e))
             ctx.write_json(outputs[track], [w.to_dict() for w in words])
-            return len(words)
-
-        return task
-
-    with engine_scope(engine):
-        counts = run_tracks([track_task("mic"), track_task("system")], parallel=parallel)
-    return StageResult(
-        [WORDS_ME, WORDS_REMOTE],
-        {
-            "engine": name,
-            "words": {"mic": counts[0], "system": counts[1]},
-            "parallel": parallel,
-        },
-    )
+            counts[track] = len(words)
+            del audio
+    return StageResult([WORDS_ME, WORDS_REMOTE], {"engine": name, "words": counts})

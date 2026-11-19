@@ -1029,3 +1029,21 @@ bonito, simple y sin texto de relleno.
 9. **Sin verificar**: la revisión con Google real (la lista blanca y las lecturas son las del
    análisis, ya medidas en §20) y con el `claude` real dentro de la ventana (las capturas usan el
    falso; la latencia real es la del punto 5).
+
+## 23. Procesado en vivo y procesado rápido al colgar (rama `feat/live-pipeline`)
+
+Origen: una reunión real de 47 min (2 hablantes, auriculares) tardó 18,5 min en estar lista tras
+colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
+
+1. **Por qué el ASR iba lento: hilos de onnxruntime en espera activa + prioridad baja.** Medido
+   con el codificador de Parakeet (`asr_profile`, tramo de 2 min, 6 hilos, BELOW_NORMAL): con el
+   equipo libre la decodificación TDT (bucle Python) es solo el 5-7 % del tiempo; el codificador
+   manda. Con el equipo ocupado (procesos normales en la CPU) los hilos de onnxruntime que esperan
+   girando son desalojados y cada operación paralela espera al más lento: **101 s** frente a
+   **9,7 s** con la espera activa desactivada (`session.intra_op.allow_spinning = 0`). Con el
+   equipo libre la velocidad es la misma y usa la mitad de CPU. `engines/ort_options.py` lo aplica
+   a Parakeet, WeSpeaker y Silero. Nada de esto se ve en un banco con el equipo libre.
+2. **Descartado con medidas:** pasar varios bloques juntos por el codificador (`recognize` con
+   lista: el relleno cuesta más de lo que ahorra), más hilos (6/8/10 iguales: el codificador int8
+   no escala) y un valor `threads = "auto"` (mismo motivo; no se añade). Micro y sistema **en
+   paralelo**: ver punto 3.
