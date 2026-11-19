@@ -4,9 +4,11 @@
 
 1. Lee ``transcripcion.json``; si ``acta.json`` ya corresponde a esa transcripcion (huella +
    version de prompt + modelo) no repite la llamada.
-2. Odoo (si esta configurado y responde): da a ``claude`` el servidor MCP de solo lectura. Si el
-   evento ``system/init`` no lo muestra conectado, las propuestas de CRM se descartan (el modelo
-   no pudo comprobar nada).
+2. Odoo (si esta configurado y responde): perfil de capacidades del usuario
+   (``capabilities.ensure``: modulos + ``check_access_rights``, una vez al dia) -> herramientas
+   MCP de solo lectura que se ofrecen y tipos de propuesta permitidos. Si el evento
+   ``system/init`` no muestra el servidor conectado, las propuestas de Odoo se descartan (el
+   modelo no pudo comprobar nada).
 3. ``claude -p`` (Sonnet por defecto) con la reunion por stdin -> acta + correcciones +
    propuestas + aprendizajes. Todo pasa por ``micnaga.brain.plan`` antes de guardarse.
 4. Escribe ``acta.json``/``acta.md``, indexa el acta en ``acta_fts``, guarda los aprendizajes
@@ -26,7 +28,7 @@ import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -76,8 +78,13 @@ def mcp_command() -> list[str]:
     return [sys.executable, "-m", "micnaga.brain.mcp"]
 
 
-def mcp_env(config: Config) -> dict[str, str]:
-    """Entorno explicito del servidor MCP (no se confia en lo que herede de ``claude``)."""
+def mcp_env(
+    config: Config, *, tools: list[str] | None = None, today: str | None = None
+) -> dict[str, str]:
+    """Entorno explicito del servidor MCP (no se confia en lo que herede de ``claude``).
+
+    ``tools``: herramientas de Odoo permitidas por el perfil de capacidades (``MICNAGA_TOOLS``).
+    """
     upper = {k.upper(): v for k, v in os.environ.items()}
     env = {k: upper[k] for k in _ENV_ALLOW if k in upper}
     package_root = str(Path(__file__).resolve().parents[2])
@@ -91,6 +98,10 @@ def mcp_env(config: Config) -> dict[str, str]:
         MICNAGA_ODOO_DB=config.secretaria.odoo_db,
         MICNAGA_ODOO_LOGIN=config.secretaria.odoo_login,
     )
+    if tools is not None:
+        env["MICNAGA_TOOLS"] = ",".join(tools)
+    if today:
+        env["MICNAGA_TODAY"] = today
     from micnaga.brain.secrets import ENV_SECRETS_FILE
 
     if os.environ.get(ENV_SECRETS_FILE):  # solo pruebas
@@ -154,6 +165,36 @@ def default_odoo_factory(config: Config) -> Any:
     return client_from_config(s.odoo_url, s.odoo_db, s.odoo_login)
 
 
+def odoo_brief(profile: dict[str, Any] | None, today: str) -> str:
+    """Lo que la Secretaria sabe de este Odoo antes de empezar (va en el texto de entrada)."""
+    from micnaga.brain import capabilities
+
+    lines = [
+        "Conectado (solo lectura) con las herramientas mcp__micnaga__*. "
+        "Compruébalo todo antes de proponer.",
+        f"Hoy es {today}.",
+    ]
+    if profile is not None:
+        text = capabilities.summary_text(profile) or "solo lectura básica"
+        lines.append(f"Puedes proponer sobre: {text}.")
+        targets = capabilities.note_targets(profile)
+        names = {
+            "project.task": "tareas",
+            "project.project": "proyectos",
+            "crm.lead": "oportunidades",
+            "res.partner": "contactos",
+        }
+        if targets:
+            lines.append(
+                "Notas internas y actividades solo sobre: "
+                + ", ".join(names.get(t, t) for t in targets)
+                + "."
+            )
+        else:
+            lines.append("No puedes dejar notas ni actividades en ningún registro.")
+    return "\n".join(lines)
+
+
 class Secretary:
     def __init__(
         self,
@@ -184,7 +225,21 @@ class Secretary:
         except Exception as exc:
             kind = getattr(exc, "kind", "failed")
             return None, {"estado": "clave" if kind == "auth" else "sin_conexion"}
+        if hasattr(client, "read_only"):
+            client.read_only = True  # analizar nunca escribe (ni siquiera validando el plan)
         return client, {"estado": "conectado", "uid": uid}
+
+    def _profile(self, client: Any) -> dict[str, Any] | None:
+        """Perfil de capacidades (guardado si es de hoy). Sin el, solo lo de CRM de siempre."""
+        if not hasattr(client, "cfg"):
+            return None
+        try:
+            from micnaga.brain import capabilities
+
+            return capabilities.ensure(client)
+        except Exception as exc:
+            log.warning("capability discovery failed: %s", getattr(exc, "kind", type(exc)))
+            return None
 
     # ------------------------------------------------------------------ pasada
 
@@ -213,24 +268,31 @@ class Secretary:
         status({"fase": "leyendo"})
         odoo, odoo_info = self._odoo()
         with_crm = odoo is not None
+        day = today or date.today().isoformat()
+        profile = self._profile(odoo) if odoo is not None else None
+        tools = None
+        types = None
+        if profile is not None:
+            from micnaga.brain import capabilities
+            from micnaga.brain.mcp import EVERY_ODOO_TOOL
+            from micnaga.brain.schema import PROPOSAL_TYPES
+
+            tools = capabilities.tools_for(profile, EVERY_ODOO_TOOL)
+            types = capabilities.actions_for(profile, PROPOSAL_TYPES)
+            odoo_info["capacidades"] = capabilities.summary_text(profile)
         servers: dict[str, dict[str, Any]] = {
             MCP_SERVER: {
                 "type": "stdio",
                 "command": mcp_command()[0],
                 "args": mcp_command()[1:],
-                "env": mcp_env(self.config),
+                "env": mcp_env(self.config, tools=tools, today=today),
             }
         }
         allowed = mcp_allowed_tools(MCP_SERVER)
         extra, extra_allowed = extra_mcp_servers(self.config)
         servers.update(extra)
         allowed += extra_allowed
-        odoo_text = None
-        if with_crm:
-            odoo_text = (
-                "Conectado (solo lectura) con las herramientas mcp__micnaga__*. "
-                "Compruébalo todo antes de proponer."
-            )
+        odoo_text = odoo_brief(profile, day) if with_crm else None
         req = ClaudeRequest(
             prompt=build_input(
                 transcript,
@@ -240,7 +302,7 @@ class Secretary:
             ),
             system_prompt=system_prompt("secretaria"),
             model=model,
-            schema=acta_schema(with_crm=with_crm),
+            schema=acta_schema(with_crm=with_crm, types=types),
             mcp_servers=servers,
             allowed_tools=allowed,
             max_turns=30 if with_crm else 12,
@@ -272,7 +334,13 @@ class Secretary:
         acta = plan.build_acta(data, transcript)
         proposals = plan.build_corrections(data.get("correcciones"), transcript)
         if odoo is not None and odoo_info.get("estado") == "conectado":
-            proposals += plan.build_crm(data.get("propuestas"), transcript, odoo)
+            proposals += plan.build_crm(
+                data.get("propuestas"),
+                transcript,
+                odoo,
+                profile=profile,
+                today=date.fromisoformat(day),
+            )
         plan.number(proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
         acta.update(

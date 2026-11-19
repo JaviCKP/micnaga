@@ -269,6 +269,29 @@ def add_learnings(
     return LearnOutcome(added, rejected)
 
 
+def upsert_prefixed(
+    prefix: str,
+    fact: str,
+    *,
+    source: str = "crm",
+    today: str | None = None,
+    path: Path | None = None,
+) -> bool:
+    """Un hecho que Micnaga calcula (no el modelo), p. ej. el patron de partes de horas: sustituye
+    la linea que empieza por ``prefix``. Pasa la misma validacion. ``True`` si cambio algo."""
+    text = " ".join(fact.split())
+    if not text.startswith(prefix) or reject_reason(text) is not None:
+        return False
+    items = list_learned(path)
+    same = [i for i in items if i.fact.startswith(prefix)]
+    if len(same) == 1 and same[0].fact == text:
+        return False
+    day = today or datetime.now().date().isoformat()
+    kept = [i for i in items if not i.fact.startswith(prefix)]
+    _write([*kept, Learned(day, source, text)], path)
+    return True
+
+
 def forget(index: int, path: Path | None = None) -> bool:
     items = list_learned(path)
     if not 0 <= index < len(items):

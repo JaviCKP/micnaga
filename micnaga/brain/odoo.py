@@ -22,6 +22,7 @@ import unicodedata
 import xmlrpc.client
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta, tzinfo
 from pathlib import Path
 from typing import Any
 
@@ -30,6 +31,7 @@ log = logging.getLogger(__name__)
 TIMEOUT_S = 20.0
 READ_METHODS = frozenset({"search_read", "read", "search_count", "fields_get", "name_search"})
 WRITE_METHODS = frozenset({"create", "write", "unlink", "message_post"})
+CHECK_METHODS = frozenset({"check_access_rights", "has_access"})
 
 DEFAULT_SCHEMA: dict[str, Any] = {
     "partner": {
@@ -129,7 +131,8 @@ def strip_html(text: object, max_len: int = 400) -> str:
 def m2o(value: object) -> dict[str, Any] | None:
     """``[id, "Nombre"]`` (many2one de XML-RPC) -> ``{"id", "nombre"}``."""
     if isinstance(value, list | tuple) and len(value) == 2:
-        return {"id": value[0], "nombre": value[1]}
+        name = value[1].strip() if isinstance(value[1], str) else value[1]
+        return {"id": value[0], "nombre": name}
     return None
 
 
@@ -142,7 +145,13 @@ class OdooConfig:
 
 
 class OdooClient:
-    def __init__(self, cfg: OdooConfig, *, timeout_s: float = TIMEOUT_S) -> None:
+    """``read_only=True`` (servidor MCP, validacion del plan, pruebas reales): cualquier metodo de
+    escritura lanza ``OdooError`` antes de salir a la red."""
+
+    def __init__(
+        self, cfg: OdooConfig, *, timeout_s: float = TIMEOUT_S, read_only: bool = False
+    ) -> None:
+        self.read_only = read_only
         url = cfg.url.strip().rstrip("/")
         if not re.match(r"^https?://", url):
             raise OdooError("the Odoo URL must start with http:// or https://", "failed")
@@ -196,8 +205,10 @@ class OdooClient:
     def call(
         self, model: str, method: str, args: Sequence[Any], kwargs: dict[str, Any] | None = None
     ) -> Any:
-        if method not in READ_METHODS | WRITE_METHODS | {"check_access_rights", "has_access"}:
+        if method not in READ_METHODS | WRITE_METHODS | CHECK_METHODS:
             raise OdooError(f"method {method!r} is not allowed")
+        if self.read_only and method in WRITE_METHODS:
+            raise OdooError(f"read-only client: {method!r} refused", "readonly")
         if self.uid is None:
             self.authenticate()
         try:
@@ -234,16 +245,23 @@ class OdooClient:
 
     # ------------------------------------------------------------------ comprobacion
 
-    def can_read(self, model: str) -> bool:
-        """Permiso de lectura. ``check_access_rights`` (<= 17/18) o, si no existe, un
-        ``search_count`` (Odoo 19 lo renombro; **sin verificar** contra un 19 real)."""
+    def can(self, model: str, operation: str) -> bool | None:
+        """``check_access_rights(operation)`` sin lanzar (verificado en Odoo 19.0 real). ``None``
+        si el metodo no existe o el modelo no esta instalado. Nunca se prueba escribiendo."""
         try:
             return bool(
-                self.call(model, "check_access_rights", ["read"], {"raise_exception": False})
+                self.call(model, "check_access_rights", [operation], {"raise_exception": False})
             )
         except OdooError as exc:
             if exc.kind in ("auth", "offline"):
                 raise
+            return None
+
+    def can_read(self, model: str) -> bool:
+        """Permiso de lectura. ``check_access_rights`` o, si no existe, un ``search_count``."""
+        ok = self.can(model, "read")
+        if ok is not None:
+            return ok
         try:
             self.call(model, "search_count", [[]])
             return True
@@ -400,10 +418,200 @@ class OdooClient:
             for r in rows
         ]
 
+    # ------------------------------------------------------------------ negocio (lectura)
+    # Horas (account.analytic.line), proyectos y tareas, calendario, actividades y gastos del
+    # usuario conectado. Salidas compactas con claves en espanol (las ve el modelo).
+
+    def user_info(self) -> dict[str, Any]:
+        """Nombre, contacto propio y zona horaria del usuario (cacheado)."""
+        cached: dict[str, Any] | None = getattr(self, "_user_info", None)
+        if cached is not None:
+            return dict(cached)
+        if self.uid is None:
+            self.authenticate()
+        rows = self.read("res.users", [int(self.uid or 0)], ["name", "partner_id", "tz"])
+        r = rows[0] if rows else {}
+        info = {
+            "uid": self.uid,
+            "nombre": r.get("name") or "",
+            "partner_id": (m2o(r.get("partner_id")) or {}).get("id"),
+            "tz": r.get("tz") or "",
+        }
+        self._user_info = info
+        return dict(info)
+
+    def installed_modules(self, names: Sequence[str]) -> set[str] | None:
+        """Modulos instalados de ``names`` (``None`` si ``ir.module.module`` no es legible)."""
+        try:
+            rows = self.search_read(
+                "ir.module.module",
+                [("state", "=", "installed"), ("name", "in", list(names))],
+                ["name"],
+                limit=len(names) + 5,
+            )
+        except OdooError as exc:
+            if exc.kind in ("auth", "offline"):
+                raise
+            return None
+        return {str(r["name"]) for r in rows}
+
+    def timesheet_lines(self, desde: str, hasta: str, *, limit: int = 600) -> list[dict[str, Any]]:
+        """Partes de horas propios (con proyecto) entre dos fechas ISO, ambas incluidas."""
+        if self.uid is None:
+            self.authenticate()
+        rows = self.search_read(
+            "account.analytic.line",
+            [
+                ("user_id", "=", self.uid),
+                ("project_id", "!=", False),
+                ("date", ">=", desde),
+                ("date", "<=", hasta),
+            ],
+            ["date", "project_id", "task_id", "unit_amount", "name"],
+            limit=limit,
+            order="date desc",
+        )
+        return [
+            {
+                "id": r.get("id"),
+                "fecha": r.get("date"),
+                "proyecto": m2o(r.get("project_id")),
+                "tarea": m2o(r.get("task_id")),
+                "horas": float(r.get("unit_amount") or 0.0),
+                "descripcion": r.get("name") or "",
+            }
+            for r in rows
+        ]
+
+    def projects(self, *, active: bool = True, limit: int = 80) -> list[dict[str, Any]]:
+        domain: list[Any] = [("active", "=", True)] if active else []
+        rows = self.search_read(
+            "project.project",
+            domain,
+            ["name", "partner_id", "allow_timesheets", "active"],
+            limit=limit,
+            order="name",
+        )
+        return [_project(r) for r in rows]
+
+    def read_project(self, project_id: int) -> dict[str, Any] | None:
+        rows = self.read(
+            "project.project", [project_id], ["name", "partner_id", "allow_timesheets", "active"]
+        )
+        return _project(rows[0]) if rows else None
+
+    def tasks(
+        self,
+        *,
+        project_id: int | None = None,
+        mine: bool = True,
+        open_only: bool = True,
+        text: str | None = None,
+        limit: int = 30,
+    ) -> list[dict[str, Any]]:
+        domain: list[Any] = []
+        if project_id:
+            domain.append(("project_id", "=", project_id))
+        if mine:
+            if self.uid is None:
+                self.authenticate()
+            domain.append(("user_ids", "in", [self.uid]))
+        if open_only:
+            domain.append(("state", "not in", list(CLOSED_TASK_STATES)))
+        if text:
+            domain.append(("name", "ilike", text[:80]))
+        rows = self.search_read(
+            "project.task", domain, TASK_FIELDS, limit=limit, order="date_deadline"
+        )
+        return [_task(r) for r in rows]
+
+    def read_task(self, task_id: int) -> dict[str, Any] | None:
+        rows = self.read("project.task", [task_id], TASK_FIELDS)
+        return _task(rows[0]) if rows else None
+
+    def calendar_events(self, desde: str, hasta: str, *, limit: int = 60) -> list[dict[str, Any]]:
+        """Eventos propios (el usuario asiste) entre dos fechas, en hora local."""
+        me = self.user_info()
+        tz = local_tz(me.get("tz"))
+        start = to_utc(f"{desde} 00:00", tz)
+        stop = to_utc(f"{hasta} 23:59", tz)
+        domain: list[Any] = [("start", "<=", stop), ("stop", ">=", start)]
+        if me.get("partner_id"):
+            domain.append(("partner_ids", "in", [me["partner_id"]]))
+        rows = self.search_read(
+            "calendar.event",
+            domain,
+            ["name", "start", "stop", "allday", "duration", "partner_ids", "location"],
+            limit=limit,
+            order="start",
+        )
+        out = []
+        for r in rows:
+            a, b = from_utc(r.get("start"), tz), from_utc(r.get("stop"), tz)
+            timed = not r.get("allday")
+            out.append(
+                {
+                    "id": r.get("id"),
+                    "nombre": r.get("name"),
+                    "fecha": a.date().isoformat() if a else None,
+                    "inicio": a.strftime("%H:%M") if a and timed else None,
+                    "fin": b.strftime("%H:%M") if b and timed else None,
+                    "horas": round(float(r.get("duration") or 0.0), 2),
+                    "todo_el_dia": not timed,
+                    "asistentes": len(r.get("partner_ids") or []),
+                    "lugar": r.get("location") or None,
+                }
+            )
+        return out
+
+    def my_activities(self, *, limit: int = 30) -> list[dict[str, Any]]:
+        if self.uid is None:
+            self.authenticate()
+        rows = self.search_read(
+            "mail.activity",
+            [("user_id", "=", self.uid)],
+            ["summary", "date_deadline", "res_model", "res_id", "res_name", "activity_type_id"],
+            limit=limit,
+            order="date_deadline",
+        )
+        return [
+            {
+                "id": r.get("id"),
+                "resumen": r.get("summary") or (m2o(r.get("activity_type_id")) or {}).get("nombre"),
+                "fecha": r.get("date_deadline"),
+                "modelo": r.get("res_model"),
+                "registro_id": r.get("res_id"),
+                "registro": r.get("res_name"),
+            }
+            for r in rows
+        ]
+
+    def my_expenses(self, *, limit: int = 15) -> list[dict[str, Any]]:
+        """Gastos recientes visibles para el usuario (las reglas de Odoo limitan a los suyos)."""
+        rows = self.search_read(
+            "hr.expense",
+            [],
+            ["name", "date", "total_amount", "state"],
+            limit=limit,
+            order="date desc",
+        )
+        return [
+            {
+                "id": r.get("id"),
+                "concepto": r.get("name"),
+                "fecha": r.get("date") or None,
+                "importe": r.get("total_amount"),
+                "estado": r.get("state"),
+            }
+            for r in rows
+        ]
+
     # ------------------------------------------------------------------ escrituras (ejecutor)
 
-    def create(self, model: str, values: dict[str, Any]) -> int:
-        out = self.call(model, "create", [values])
+    def create(
+        self, model: str, values: dict[str, Any], *, context: dict[str, Any] | None = None
+    ) -> int:
+        out = self.call(model, "create", [values], {"context": context} if context else None)
         if isinstance(out, list):
             out = out[0] if out else 0
         return int(out)
@@ -427,8 +635,74 @@ class OdooClient:
         return int(out or 0)
 
     def model_id(self, model: str) -> int | None:
-        rows = self.search_read("ir.model", [("model", "=", model)], ["id"], limit=1)
+        try:
+            rows = self.search_read("ir.model", [("model", "=", model)], ["id"], limit=1)
+        except OdooError as exc:
+            if exc.kind != "access":
+                raise
+            return None  # un empleado puede no leer ir.model: se usa res_model
         return int(rows[0]["id"]) if rows else None
+
+
+CLOSED_TASK_STATES = ("1_done", "1_canceled")
+TASK_FIELDS = ["name", "project_id", "stage_id", "state", "date_deadline", "user_ids"]
+DEFAULT_TZ = "Europe/Madrid"
+
+
+def local_tz(name: object = None) -> tzinfo:
+    """Zona del usuario de Odoo (o Europe/Madrid); sin base de zonas, la del sistema."""
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(str(name) if name else DEFAULT_TZ)
+    except Exception:
+        local = datetime.now().astimezone().tzinfo
+        return local if local is not None else UTC
+
+
+def from_utc(value: object, tz: tzinfo) -> datetime | None:
+    """``"2026-11-05 08:00:00"`` (UTC, como lo da Odoo) -> hora local."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        dt = datetime.strptime(value[:19], "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return None
+    return dt.replace(tzinfo=UTC).astimezone(tz)
+
+
+def to_utc(local: str, tz: tzinfo) -> str:
+    """``"2026-11-05 09:00"`` (hora local) -> ``"2026-11-05 08:00:00"`` (UTC, para Odoo)."""
+    dt = datetime.strptime(local[:16], "%Y-%m-%d %H:%M").replace(tzinfo=tz)
+    return dt.astimezone(UTC).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def add_hours(local: str, hours: float) -> str:
+    dt = datetime.strptime(local[:16], "%Y-%m-%d %H:%M") + timedelta(hours=hours)
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _project(r: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": r.get("id"),
+        "nombre": (r.get("name") or "").strip(),
+        "cliente": m2o(r.get("partner_id")),
+        "horas": r.get("allow_timesheets", True) is not False,
+        "activo": r.get("active", True) is not False,
+    }
+
+
+def _task(r: dict[str, Any]) -> dict[str, Any]:
+    deadline = r.get("date_deadline") or None
+    return {
+        "id": r.get("id"),
+        "nombre": r.get("name"),
+        "proyecto": m2o(r.get("project_id")),
+        "etapa": (m2o(r.get("stage_id")) or {}).get("nombre"),
+        "abierta": r.get("state") not in CLOSED_TASK_STATES,
+        "fecha_limite": str(deadline)[:10] if deadline else None,
+        "asignada_a": list(r.get("user_ids") or []),
+    }
 
 
 def _partner(r: dict[str, Any]) -> dict[str, Any]:
@@ -459,7 +733,13 @@ def _lead(r: dict[str, Any]) -> dict[str, Any]:
 
 
 def client_from_config(
-    url: str, db: str, login: str, key: str | None = None, *, timeout_s: float = TIMEOUT_S
+    url: str,
+    db: str,
+    login: str,
+    key: str | None = None,
+    *,
+    timeout_s: float = TIMEOUT_S,
+    read_only: bool = False,
 ) -> OdooClient | None:
     """Cliente con la clave del Administrador de credenciales (o ``None`` si falta algo)."""
     if key is None:
@@ -468,4 +748,4 @@ def client_from_config(
         key = secrets.get(secrets.ODOO_KEY)
     if not (url.strip() and db.strip() and login.strip() and key):
         return None
-    return OdooClient(OdooConfig(url, db, login, key), timeout_s=timeout_s)
+    return OdooClient(OdooConfig(url, db, login, key), timeout_s=timeout_s, read_only=read_only)

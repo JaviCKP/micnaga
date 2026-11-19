@@ -5,7 +5,13 @@ Nada de lo que devuelve el modelo se usa sin pasar por aqui:
 * Evidencias por indice de frase (``seg``) -> ``t`` en segundos (local). Fechas ISO validas.
 * Correcciones: el hablante debe existir (y no ser «Yo»); la palabra debe aparecer tal cual en
   la transcripcion y no tocar cifras.
-* Propuestas de Odoo: cada tipo tiene sus campos; ids que no existen se descartan.
+* Propuestas de Odoo: cada tipo tiene sus campos; ids que no existen se descartan. Solo se
+  aceptan los tipos que permite el perfil de capacidades del usuario y, para notas y
+  actividades, solo sobre registros donde puede escribir (``capabilities.note_targets``).
+* Horas (``registrar_horas``): una propuesta del modelo con varias ``fechas`` se expande en una
+  linea por dia; cada linea pasa la validacion de ``timesheets`` contra Odoo (proyecto abierto,
+  fecha no futura, 0,25-12 h, <= 10 h/dia). Solo sale marcada una peticion explicita de un dia
+  («apuntame 2 horas a X hoy») citada en la reunion.
 * **Que sale marcado lo decide Micnaga, no el modelo** (design §4.2): por tipo y solo si la
   comprobacion propia (releer el registro, repetir la busqueda de duplicados) coincide con lo
   que dice la propuesta. La ``confianza`` del modelo solo ordena.
@@ -15,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from typing import Any
 
 from micnaga.brain import schema as sc
@@ -185,13 +192,33 @@ def _transcript_blob(transcript: Transcript) -> str:
     return " ".join(s.text for s in transcript.segments).casefold().replace(" ", "")
 
 
-def build_crm(raw: object, transcript: Transcript, odoo: Any | None) -> list[dict[str, Any]]:
+MAX_RAW = 30
+MAX_HOUR_LINES = 80
+TASK_SIMILAR = 85
+
+
+def build_crm(
+    raw: object,
+    transcript: Transcript,
+    odoo: Any | None,
+    *,
+    profile: dict[str, Any] | None = None,
+    today: date | None = None,
+) -> list[dict[str, Any]]:
     """Valida el plan del modelo. Con ``odoo`` (cliente de lectura) revalida cada registro y
-    decide que sale marcado; sin el, nada sale marcado."""
+    decide que sale marcado; sin el, nada sale marcado. ``profile``: perfil de capacidades
+    (sin el, solo los tipos de CRM de siempre)."""
+    from micnaga.brain import capabilities
+
     n = len(transcript.segments)
     blob = _transcript_blob(transcript)
     out: list[dict[str, Any]] = []
     stages: list[dict[str, Any]] | None = None
+    allowed = set(capabilities.actions_for(profile, sc.PROPOSAL_TYPES))
+    targets = (
+        capabilities.note_targets(profile) if profile is not None else ["crm.lead", "res.partner"]
+    )
+    ctx = _Ctx(odoo, today or date.today(), targets, blob)
 
     def stages_cache() -> list[dict[str, Any]]:
         nonlocal stages
@@ -199,14 +226,14 @@ def build_crm(raw: object, transcript: Transcript, odoo: Any | None) -> list[dic
             stages = odoo.stages() if odoo is not None else []
         return stages
 
-    for it in sc.as_list(raw, 15):
-        if not isinstance(it, dict) or it.get("tipo") not in sc.PROPOSAL_TYPES:
+    for it in sc.as_list(raw, MAX_RAW):
+        if not isinstance(it, dict) or it.get("tipo") not in allowed:
             continue
         d = it.get("datos") if isinstance(it.get("datos"), dict) else {}
         assert isinstance(d, dict)
         seg = sc.seg_ref(it.get("seg"), n)
         p: dict[str, Any] = {
-            "grupo": "crm",
+            "grupo": sc.PROPOSAL_GROUP.get(str(it["tipo"]), "crm"),
             "tipo": it["tipo"],
             "titulo": sc.clean_text(it.get("titulo"), 160),
             "motivo": sc.clean_text(it.get("motivo"), 240),
@@ -216,17 +243,264 @@ def build_crm(raw: object, transcript: Transcript, odoo: Any | None) -> list[dic
             "checked": False,
             "aviso": None,
         }
+        if p["tipo"] == "registrar_horas":
+            hours = sum(1 for x in out if x["tipo"] == "registrar_horas")
+            if hours < MAX_HOUR_LINES:
+                out += _expand_hours(p, d, ctx)[: MAX_HOUR_LINES - hours]
+            continue
         try:
-            ok = _validate_crm(p, d, blob, odoo, stages_cache)
+            if p["tipo"] in _BUSINESS or _business_target(d):
+                ok = _validate_business(p, d, ctx)
+            else:
+                ok = _validate_crm(p, d, blob, odoo, stages_cache)
+                datos = p.get("datos") or {}
+                if ok and p["tipo"] in ("nota_en_historial", "programar_actividad"):
+                    ok = datos.get("modelo") in targets
         except Exception as exc:  # Odoo caido a mitad: se ensena sin marcar
             log.warning("could not verify a proposal: %s", getattr(exc, "kind", type(exc)))
             p["aviso"] = "sin_comprobar"
+            p["checked"] = False
             ok = p.get("datos") is not None
         if ok and p["titulo"]:
+            if p["tipo"] == "nota_en_historial" and (p["datos"] or {}).get("modelo") in (
+                "res.partner",
+                "crm.lead",
+            ):
+                p["grupo"] = "crm"
             out.append(p)
 
+    groups = {g: i for i, g in enumerate(("horas", "agenda", "crm"))}
     order = {t: i for i, t in enumerate(sc.PROPOSAL_TYPES)}
-    out.sort(key=lambda p: (order[p["tipo"]], -p["confianza"]))
+    out.sort(
+        key=lambda p: (
+            groups.get(p["grupo"], 9),
+            order[p["tipo"]],
+            str((p.get("datos") or {}).get("fecha") or ""),
+            -p["confianza"],
+        )
+    )
+    return out
+
+
+# ============================================================================== negocio
+
+_BUSINESS = ("crear_tarea", "crear_evento", "crear_gasto")
+_HHMM = re.compile(r"^([01]?\d|2[0-3]):([0-5]\d)$")
+
+
+class _Ctx:
+    def __init__(self, odoo: Any | None, today: date, targets: list[str], blob: str) -> None:
+        self.odoo = odoo
+        self.today = today
+        self.targets = targets
+        self.blob = blob
+        self._book: Any = None
+
+    def book(self) -> Any:
+        from micnaga.brain.horas import HoursBook
+
+        if self._book is None:
+            self._book = HoursBook(self.odoo, self.today)
+        return self._book
+
+
+def _business_target(d: dict[str, Any]) -> bool:
+    return bool(_int(d.get("tarea_id")) or _int(d.get("proyecto_id")))
+
+
+def _record(ctx: _Ctx, model: str, rid: int) -> dict[str, Any] | None:
+    """El registro (con ``nombre``) o ``None`` si no existe / no es legible."""
+    o = ctx.odoo
+    if model == "project.task":
+        return o.read_task(rid)  # type: ignore[no-any-return]
+    if model == "project.project":
+        return o.read_project(rid)  # type: ignore[no-any-return]
+    if model == "crm.lead":
+        return o.read_lead(rid)  # type: ignore[no-any-return]
+    rows = o.read(model, [rid], ["id", "name"])
+    return {"id": rid, "nombre": rows[0].get("name")} if rows else None
+
+
+def _resolve_target(d: dict[str, Any], ctx: _Ctx) -> tuple[str, int] | None:
+    """Registro de la nota/actividad: tarea > oportunidad > proyecto > contacto, entre los que el
+    usuario puede escribir (si el contacto es de solo lectura, se usa la tarea o el proyecto)."""
+    order = (
+        ("project.task", "tarea_id"),
+        ("crm.lead", "oportunidad_id"),
+        ("project.project", "proyecto_id"),
+        ("res.partner", "partner_id"),
+    )
+    for model, key in order:
+        rid = _int(d.get(key))
+        if rid and model in ctx.targets:
+            return model, rid
+    return None
+
+
+def _validate_business(p: dict[str, Any], d: dict[str, Any], ctx: _Ctx) -> bool:
+    kind = p["tipo"]
+    if kind in ("nota_en_historial", "programar_actividad"):
+        target = _resolve_target(d, ctx)
+        if target is None:
+            return False
+        datos: dict[str, Any] = {"modelo": target[0], "id": target[1]}
+        if kind == "programar_actividad":
+            fecha = sc.iso_date(d.get("fecha"))
+            resumen = sc.clean_text(d.get("resumen"), 160)
+            if not fecha or not resumen:
+                return False
+            datos.update(fecha=fecha, resumen=resumen)
+        p["datos"] = datos
+        if ctx.odoo is None:
+            return True
+        rec = _record(ctx, target[0], target[1])
+        if rec is None:
+            return False
+        datos["nombre"] = rec.get("nombre")
+        if kind == "programar_actividad":
+            pending = ctx.odoo.pending_activities(target[1], model=target[0])
+            if _similar_activity(datos["resumen"], pending):
+                p["aviso"] = "parecida_pendiente"
+                return True
+        p["checked"] = True
+        return True
+    if kind == "crear_tarea":
+        pid = _int(d.get("proyecto_id"))
+        name = sc.clean_text(d.get("nombre") or d.get("resumen"), 160)
+        if not pid or not name:
+            return False
+        datos = {
+            "proyecto_id": pid,
+            "nombre": name,
+            "fecha": sc.iso_date(d.get("fecha")),
+            "descripcion": sc.clean_text(d.get("descripcion"), 600) or None,
+        }
+        p["datos"] = datos
+        if ctx.odoo is None:
+            return True
+        proj = ctx.odoo.read_project(pid)
+        if proj is None or not proj.get("activo", True):
+            return False
+        datos["proyecto"] = proj.get("nombre")
+        from rapidfuzz import fuzz
+
+        similar = [
+            t
+            for t in ctx.odoo.tasks(project_id=pid, mine=False, open_only=True, text=None, limit=80)
+            if fuzz.token_set_ratio(name.casefold(), str(t.get("nombre") or "").casefold())
+            >= TASK_SIMILAR
+        ]
+        if similar:
+            datos["parecidas"] = [{"id": t["id"], "nombre": t["nombre"]} for t in similar[:3]]
+            p["aviso"] = "tarea_parecida"
+        else:
+            p["checked"] = True
+        return True
+    if kind == "crear_evento":
+        name = sc.clean_text(d.get("nombre") or d.get("resumen"), 160)
+        fecha = sc.iso_date(d.get("fecha"))
+        if not name or not fecha or date.fromisoformat(fecha) < ctx.today:
+            return False
+        start = d.get("hora_inicio")
+        hhmm = None
+        if isinstance(start, str) and _HHMM.match(start.strip()):
+            h, m = start.strip().split(":")
+            hhmm = f"{int(h):02d}:{m}"
+        dur = _num(d.get("duracion_h"))
+        dur = 1.0 if dur is None else max(0.25, min(12.0, round(dur * 4) / 4))
+        datos = {
+            "nombre": name,
+            "fecha": fecha,
+            "hora_inicio": hhmm,
+            "duracion_h": dur,
+            "invitados": [],
+            "tarea_id": _int(d.get("tarea_id")),
+            "proyecto_id": _int(d.get("proyecto_id")),
+        }
+        p["datos"] = datos
+        ids = [i for i in sc.as_list(d.get("asistentes_ids"), 10) if _int(i)]
+        if ctx.odoo is None:
+            return True
+        if ids:
+            rows = ctx.odoo.read("res.partner", ids, ["id", "name"])
+            # invitados: SIEMPRE apagados; el usuario los activa uno a uno (no se envia correo)
+            datos["invitados"] = [
+                {"id": r["id"], "nombre": r.get("name"), "on": False} for r in rows
+            ]
+        clash = [
+            e
+            for e in ctx.odoo.calendar_events(fecha, fecha)
+            if _similar_text(name, str(e.get("nombre") or ""))
+        ]
+        if clash:
+            p["aviso"] = "evento_parecido"
+        else:
+            p["checked"] = hhmm is not None
+        return True
+    if kind == "crear_gasto":
+        name = sc.clean_text(d.get("nombre") or d.get("descripcion"), 160)
+        amount = _num(d.get("importe"))
+        fecha = sc.iso_date(d.get("fecha")) or ctx.today.isoformat()
+        if not name or amount is None or amount <= 0 or date.fromisoformat(fecha) > ctx.today:
+            return False
+        p["datos"] = {"nombre": name, "importe": round(amount, 2), "fecha": fecha}
+        return True  # nunca marcado: el importe lo revisa el usuario
+    return False
+
+
+def _similar_text(a: str, b: str) -> bool:
+    from rapidfuzz import fuzz
+
+    return fuzz.token_set_ratio(a.casefold(), b.casefold()) >= 85
+
+
+def _expand_hours(p: dict[str, Any], d: dict[str, Any], ctx: _Ctx) -> list[dict[str, Any]]:
+    """Una propuesta ``registrar_horas`` del modelo -> una linea validada por dia."""
+    from micnaga.brain.timesheets import LineError
+
+    dates = [x for x in sc.as_list(d.get("fechas"), 60) if isinstance(x, str)]
+    if not dates and isinstance(d.get("fecha"), str):
+        dates = [str(d["fecha"])]
+    explicit = d.get("explicito") is True
+    out: list[dict[str, Any]] = []
+    for day in dict.fromkeys(dates):
+        raw = {
+            "fecha": day,
+            "proyecto_id": _int(d.get("proyecto_id")),
+            "tarea_id": _int(d.get("tarea_id")),
+            "horas": d.get("horas"),
+            "descripcion": sc.clean_text(d.get("descripcion"), 200),
+        }
+        line = dict(p)
+        line["aviso"] = None
+        if ctx.odoo is None:
+            if sc.iso_date(day) is None or not raw["proyecto_id"]:
+                continue
+            line["datos"] = {**raw, "explicito": explicit}
+            line["checked"] = False
+            out.append(line)
+            continue
+        book = ctx.book()
+        try:
+            v = book.validate(raw, explicit=explicit)
+        except LineError as exc:
+            log.info("hours line dropped: %s", exc)
+            continue
+        except Exception as exc:
+            log.warning("could not verify an hours line: %s", getattr(exc, "kind", type(exc)))
+            line["datos"] = {**raw, "explicito": explicit}
+            line["aviso"] = "sin_comprobar"
+            line["checked"] = False
+            out.append(line)
+            continue
+        if book.exists(v):
+            continue  # ya esta en Odoo
+        book.accept(v)
+        v["explicito"] = explicit
+        v["ya_en_el_dia"] = round(book.day_total(v["fecha"]) - v["horas"], 2)
+        line["datos"] = v
+        line["checked"] = bool(explicit and len(dates) == 1 and p.get("seg") is not None)
+        out.append(line)
     return out
 
 

@@ -8,16 +8,26 @@
   (nota interna con el acta: ``message_post`` subtipo nota), ``actualizar_oportunidad``
   (``write`` de esos campos tras **releer** el registro: si cambio en Odoo desde la propuesta, se
   avisa en vez de pisar) y ``programar_actividad`` (``mail.activity`` para el usuario).
+* Negocio: ``nota_en_historial`` tambien sobre tareas/proyectos; ``crear_tarea``
+  (``project.task`` asignada al usuario), ``programar_actividad`` sobre cualquier registro
+  permitido, ``crear_evento`` (``calendar.event`` con contexto ``no_mail_to_attendees``: no se
+  envia ninguna invitacion; los invitados externos solo si el usuario los activa),
+  ``registrar_horas`` (``account.analytic.line``, revalidada con ``horas.HoursBook`` justo antes)
+  y ``crear_gasto`` (``hr.expense`` en borrador). Todo con «Deshacer» (``unlink`` de lo creado).
 * Cada propuesta guarda en ``acta.json`` su estado y lo necesario para deshacer (id creado o
   valores anteriores). Reaplicar no duplica: lo ya ``aplicada`` se salta.
+* ``edit``: cambios del usuario en una propuesta pendiente (horas, proyecto y descripcion de una
+  linea de horas; nombre y fecha de una tarea; invitados de un evento), validados en Python.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import html
 import logging
 import re
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -113,11 +123,14 @@ class Executor:
         *,
         odoo: OdooGetter | None = None,
         db: Any = None,
+        today: date | None = None,
     ) -> None:
         self.folder = folder
         self._odoo_getter = odoo
         self._odoo: Any = None
         self._db = db
+        self.today = today or date.today()
+        self._book: Any = None
 
     def odoo(self) -> Any:
         if self._odoo is None:
@@ -236,7 +249,114 @@ class Executor:
                 values["res_model"] = d["modelo"]
             new_id = o.create("mail.activity", values)
             return {"modelo": "mail.activity", "creado": new_id}
+        if kind == "crear_tarea":
+            values = {
+                "name": d["nombre"],
+                "project_id": d["proyecto_id"],
+                "user_ids": [(6, 0, [o.uid])],
+            }
+            if d.get("fecha"):
+                values["date_deadline"] = f"{d['fecha']} 12:00:00"  # datetime en Odoo 19
+            if d.get("descripcion"):
+                values["description"] = f"<p>{html.escape(str(d['descripcion']))}</p>"
+            new_id = o.create("project.task", values)
+            return {"modelo": "project.task", "creado": new_id}
+        if kind == "crear_evento":
+            return self._create_event(o, d)
+        if kind == "registrar_horas":
+            from micnaga.brain import horas
+
+            book = self._hours_book(o)
+            line = book.validate(d, explicit=bool(d.get("explicito")))
+            if book.exists(line):
+                raise ApplyError("duplicate")
+            new_id = o.create(horas.TIMESHEET_MODEL, horas.create_values(line))
+            book.accept(line)
+            return {"modelo": horas.TIMESHEET_MODEL, "creado": new_id}
+        if kind == "crear_gasto":
+            values = {
+                "name": d["nombre"],
+                "date": d["fecha"],
+                "total_amount_currency": d["importe"],
+                "payment_mode": "own_account",
+            }
+            new_id = o.create("hr.expense", values)  # borrador; sin verificar en un 19 real
+            return {"modelo": "hr.expense", "creado": new_id}
         return None
+
+    def _hours_book(self, o: Any) -> Any:
+        from micnaga.brain.horas import HoursBook
+
+        if self._book is None:
+            self._book = HoursBook(o, self.today)
+        return self._book
+
+    def _create_event(self, o: Any, d: dict[str, Any]) -> dict[str, Any]:
+        """Evento propio; los invitados solo si el usuario los activo y **sin correo**."""
+        from micnaga.brain.odoo import add_hours, local_tz, to_utc
+
+        me = o.user_info()
+        partners = [me["partner_id"]] if me.get("partner_id") else []
+        partners += [int(i["id"]) for i in d.get("invitados") or [] if i.get("on")]
+        values: dict[str, Any] = {
+            "name": d["nombre"],
+            "user_id": o.uid,
+            "partner_ids": [(6, 0, partners)],
+        }
+        if d.get("hora_inicio"):
+            tz = local_tz(me.get("tz"))
+            start = f"{d['fecha']} {d['hora_inicio']}"
+            values["start"] = to_utc(start, tz)
+            values["stop"] = to_utc(add_hours(start, float(d.get("duracion_h") or 1.0)), tz)
+        else:
+            values.update(
+                allday=True, start=f"{d['fecha']} 08:00:00", stop=f"{d['fecha']} 18:00:00"
+            )
+        new_id = o.create("calendar.event", values, context={"no_mail_to_attendees": True})
+        return {"modelo": "calendar.event", "creado": new_id}
+
+    # ------------------------------------------------------------------ editar
+
+    def edit(self, pid: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Cambios del usuario en una propuesta pendiente (validados aqui, nunca en JS)."""
+        acta = acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        p = next((x for x in acta.get("propuestas") or [] if x.get("id") == pid), None)
+        if p is None or p.get("estado") != "pendiente":
+            raise ApplyError("not_editable")
+        d = dict(p.get("datos") or {})
+        kind = p.get("tipo")
+        if kind == "registrar_horas":
+            from micnaga.brain.horas import HoursBook
+
+            raw = {**d}
+            for key in ("horas", "proyecto_id", "descripcion", "tarea_id", "fecha"):
+                if key in changes:
+                    raw[key] = changes[key]
+            if "proyecto_id" in changes and "tarea_id" not in changes:
+                raw["tarea_id"] = None
+            book = HoursBook(self.odoo(), self.today)
+            # el total del dia se cuenta sin esta misma linea (ya_en_el_dia = lo de Odoo)
+            line = book.validate(raw, explicit=bool(d.get("explicito")))
+            p["datos"] = {**d, **line}
+            p["checked"] = True
+        elif kind == "crear_tarea":
+            if isinstance(changes.get("nombre"), str) and changes["nombre"].strip():
+                d["nombre"] = " ".join(changes["nombre"].split())[:160]
+            if "fecha" in changes:
+                from micnaga.brain.schema import iso_date
+
+                d["fecha"] = iso_date(changes["fecha"])
+            p["datos"] = d
+        elif kind == "crear_evento":
+            on = {int(i) for i in changes.get("invitados_on") or [] if isinstance(i, int)}
+            d["invitados"] = [{**i, "on": int(i["id"]) in on} for i in d.get("invitados") or []]
+            p["datos"] = d
+        else:
+            raise ApplyError("not_editable")
+        acta_io.write_acta(self.folder, acta)
+        return acta
 
     # ------------------------------------------------------------------ deshacer
 
