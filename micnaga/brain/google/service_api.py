@@ -89,9 +89,11 @@ class GoogleApiMixin:
         return {"ok": True}
 
     def _api_open_link(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Abre en el navegador un enlace de Google del acta (solo dominios de Google)."""
+        """Abre en el navegador un enlace del acta: Google o el Odoo configurado, nada mas."""
         url = args.get("url")
-        if not isinstance(url, str) or not url.startswith(LINK_HOSTS) or len(url) > 2000:
+        odoo = self.config.secretaria.odoo_url.rstrip("/")
+        hosts = (*LINK_HOSTS, f"{odoo}/web#") if odoo.startswith("http") else LINK_HOSTS
+        if not isinstance(url, str) or not url.startswith(hosts) or len(url) > 2000:
             return {"ok": False, "error": "secretaria.err.invalid"}
         webbrowser.open(url)
         return {"ok": True}

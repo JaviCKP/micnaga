@@ -199,6 +199,8 @@ def test_tools_are_filtered_by_the_allow_list(fake_odoo: FakeOdoo) -> None:
         "proyectos",
         "tareas",
         "buscar_en_reuniones",
+        "reuniones_con",
+        "leer_acta",
     ]
     bad = server.handle(
         {

@@ -57,6 +57,8 @@ def test_full_pass_with_odoo(fake_claude: FakeClaude, fake_odoo: FakeOdoo, meeti
         "mis_actividades",
         "mis_gastos",
         "buscar_en_reuniones",
+        "reuniones_con",
+        "leer_acta",
     ]
     assert all(r["isError"] is False for r in data["mcp_results"])
     assert data["mcp_exit"] == 0
@@ -141,7 +143,7 @@ def test_without_odoo_there_are_no_crm_proposals(
     schema = json.loads(data["argv"][data["argv"].index("--json-schema") + 1])
     assert "propuestas" not in schema["properties"]
     assert "Sin conexión a Odoo" in data["stdin"]
-    assert data["mcp_tools"] == ["buscar_en_reuniones"]
+    assert data["mcp_tools"] == ["buscar_en_reuniones", "reuniones_con", "leer_acta"]
     assert all(p["grupo"] == "correcciones" for p in res.acta["propuestas"])
     assert res.acta["odoo"] == {"estado": "sin_configurar"}
 

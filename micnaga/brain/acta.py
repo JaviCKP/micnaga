@@ -63,6 +63,8 @@ def _when(t: object) -> str:
 
 def render_markdown(acta: dict[str, Any]) -> str:
     lines = [f"# {acta.get('titulo') or 'Acta'}", ""]
+    if acta.get("contexto"):
+        lines += [f"_{acta['contexto']}_", ""]
     for s in acta.get("resumen") or []:
         lines.append(s)
     lines.append("")
@@ -75,6 +77,18 @@ def render_markdown(acta: dict[str, Any]) -> str:
             lines.append(f"- {it.get('texto', '')}{_when(it.get('t'))}")
         lines.append("")
 
+    since = acta.get("desde_la_ultima") or []
+    if since:
+        lines.append("## Desde la última vez")
+        mark = {"hecho": "[x]", "abierto": "[ ]", "desconocido": "[?]"}
+        for it in since:
+            ev = it.get("evidencia") or {}
+            proof = f" · {_link(ev)}" if ev else ""
+            lines.append(
+                f"- {mark.get(it.get('estado', ''), '[?]')} {it.get('texto', '')}"
+                f"{_when(it.get('t'))}{proof}"
+            )
+        lines.append("")
     block("Decisiones", acta.get("decisiones") or [])
     tareas = acta.get("tareas") or []
     if tareas:
@@ -96,12 +110,39 @@ def render_markdown(acta: dict[str, Any]) -> str:
                 f"{c.get('escrito', '')} ({src})"
             )
         lines.append("")
-    links = acta.get("enlaces") or []
-    if links:
-        lines.append("## Enlaces")
-        lines += [f"- [{x.get('titulo', '')}]({x.get('url', '')})" for x in links]
+    sources = sources_of(acta)
+    if sources:
+        lines.append("## Fuentes")
+        lines += [f"- {_link(s)}" for s in sources]
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+SOURCE_LABEL = {"acta": "Acta", "gmail": "Gmail", "drive": "Drive", "calendar": "Calendar"}
+
+
+def sources_of(acta: dict[str, Any]) -> list[dict[str, Any]]:
+    """``fuentes`` (investigacion) + ``enlaces`` (Google), sin repetir."""
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for s in acta.get("fuentes") or []:
+        key = str(s.get("url") or s.get("ref"))
+        if key not in seen:
+            seen.add(key)
+            out.append(s)
+    for x in acta.get("enlaces") or []:
+        if x.get("url") and x["url"] not in seen:
+            seen.add(x["url"])
+            out.append({"tipo": x.get("fuente") or "drive", "titulo": x.get("titulo"), **x})
+    return out
+
+
+def _link(s: dict[str, Any]) -> str:
+    label = SOURCE_LABEL.get(str(s.get("tipo")), "Odoo")
+    title = s.get("titulo") or s.get("ref") or ""
+    if s.get("tipo") == "acta":
+        return f"{label} {str(s.get('ref', ''))[:10]}: {title}"
+    return f"{label}: [{title}]({s['url']})" if s.get("url") else f"{label}: {title}"
 
 
 def render_note_html(acta: dict[str, Any]) -> str:

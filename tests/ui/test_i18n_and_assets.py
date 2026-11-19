@@ -62,6 +62,9 @@ def _dynamic_keys() -> set[str]:
             "history",
             "activities",
             "meetings",
+            "prev",
+            "gmail",
+            "drive",
         )
     }
     keys |= {f"secretaria.w.{w}" for w in ("similar", "changed", "dup_activity", "unchecked")}
@@ -120,6 +123,9 @@ def _dynamic_keys() -> set[str]:
     from micnaga.brain.google.items import SCHEMAS as GOOGLE_FIELDS
 
     keys |= {f["etiqueta"] for fs in GOOGLE_FIELDS.values() for f in fs}
+    # investigacion: fuente y estado de «Desde la ultima vez» (items.js, por mapa)
+    keys |= {f"items.src.{s}" for s in ("acta", "gmail", "drive", "calendar", "odoo")}
+    keys |= {f"items.state.{s}" for s in ("hecho", "abierto", "desconocido")}
     return keys
 
 

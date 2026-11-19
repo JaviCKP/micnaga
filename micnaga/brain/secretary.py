@@ -239,6 +239,23 @@ class Secretary:
             log.exception("google preparation failed: analysing without Google")
         return None
 
+    def _candidates(self, folder: Path, transcript: Transcript) -> list[dict[str, Any]]:
+        """Reuniones anteriores con los mismos participantes (``micnaga.brain.research``)."""
+        try:
+            from micnaga.brain import research
+
+            people = research.people_for(transcript, folder)
+            if not people:
+                return []
+            root = paths.meetings_root(self.config)
+            found: list[dict[str, Any]] = self._with_db(
+                lambda db: research.related(db, root, people, exclude=folder.name)
+            )
+            return found
+        except Exception:
+            log.exception("previous meetings lookup failed")
+            return []
+
     def _profile(self, client: Any) -> dict[str, Any] | None:
         """Perfil de capacidades (guardado si es de hoy). Sin el, solo lo de CRM de siempre."""
         if not hasattr(client, "cfg"):
@@ -300,6 +317,7 @@ class Secretary:
         }
         allowed = mcp_allowed_tools(MCP_SERVER)
         extra, extra_allowed = extra_mcp_servers(self.config)
+        servers[MCP_SERVER]["env"]["MICNAGA_CURRENT"] = folder.name  # no es «anterior»
         servers.update(extra)
         allowed += extra_allowed
         odoo_text = odoo_brief(profile, day) if with_crm else None
@@ -315,10 +333,22 @@ class Secretary:
             schema=acta_schema(with_crm=with_crm, types=types),
             mcp_servers=servers,
             allowed_tools=allowed,
-            max_turns=30 if with_crm else 12,
+            max_turns=40 if with_crm else 20,  # investigar primero cuesta turnos
             timeout_s=self.timeout_s,
         )
+        from micnaga.brain import research
+
+        candidates = self._candidates(folder, transcript)
         gplan = self._google(folder)  # Google (solo lectura): micnaga.brain.google.analysis
+        research.extend(
+            req,
+            research.brief(
+                candidates,
+                odoo=with_crm,
+                google=list(gplan.services) if gplan else [],
+                mail=bool(extra),
+            ),
+        )
         if gplan is not None:
             gplan.extend(req, today=today or datetime.now().date().isoformat())
 
@@ -345,6 +375,14 @@ class Secretary:
             data = {**data, "propuestas": []}
         status({"fase": "comprobando"})
         acta = plan.build_acta(data, transcript)
+        seen = research.Seen(
+            [r.text for r in result.tool_results],
+            root=paths.meetings_root(self.config),
+            current=folder.name,
+            candidates=candidates,
+            odoo_url=self.config.secretaria.odoo_url if with_crm else "",
+        )
+        acta.update(research.validate(data, transcript, seen))
         proposals = plan.build_corrections(data.get("correcciones"), transcript)
         if odoo is not None and odoo_info.get("estado") == "conectado":
             proposals += plan.build_crm(

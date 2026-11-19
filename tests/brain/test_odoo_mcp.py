@@ -85,7 +85,7 @@ def test_mcp_exposes_exactly_the_read_only_tools(fake_odoo: FakeOdoo) -> None:
     assert init["serverInfo"]["name"] == "micnaga" and "tools" in init["capabilities"]
     tools = rpc(server, "tools/list")["result"]["tools"]
     assert [t["name"] for t in tools] == list(mcp.ALL_TOOLS)
-    assert len(tools) == 8 and all(t["annotations"]["readOnlyHint"] for t in tools)
+    assert len(tools) == 10 and all(t["annotations"]["readOnlyHint"] for t in tools)
     out = rpc(server, "tools/call", {"name": "buscar_contactos", "arguments": {"texto": "Carlos"}})
     data = json.loads(out["result"]["content"][0]["text"])
     assert data[0]["id"] == 57 and out["result"]["isError"] is False
@@ -101,7 +101,7 @@ def test_mcp_exposes_exactly_the_read_only_tools(fake_odoo: FakeOdoo) -> None:
 def test_mcp_without_odoo_only_has_the_library_tool() -> None:
     server = mcp.Server(mcp.Tools(None))
     tools = rpc(server, "tools/list")["result"]["tools"]
-    assert [t["name"] for t in tools] == ["buscar_en_reuniones"]
+    assert [t["name"] for t in tools] == ["buscar_en_reuniones", "reuniones_con", "leer_acta"]
 
 
 def test_odoo_down_mid_call_is_a_tool_error_not_a_crash(fake_odoo: FakeOdoo) -> None:
@@ -145,7 +145,7 @@ def test_mcp_stdio_process_reads_key_itself_and_exits_on_eof(
     replies = [json.loads(line) for line in out.decode("utf-8").splitlines()]
     assert proc.returncode == 0
     assert [r["id"] for r in replies] == [1, 2, 3, 4, None]
-    assert len(replies[1]["result"]["tools"]) == 8
+    assert len(replies[1]["result"]["tools"]) == 10
     lead = json.loads(replies[2]["result"]["content"][0]["text"])
     assert lead["nombre"].startswith("CRM + recordatorios")
     found = json.loads(replies[3]["result"]["content"][0]["text"])

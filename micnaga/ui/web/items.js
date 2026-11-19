@@ -162,16 +162,75 @@
       box.append(ul);
       out.push(box);
     }
-    const ls = a.enlaces || [];
-    if (ls.length) {
-      const box = el("div", "sec-block");
-      box.append(el("h4", "caps", mic.t("items.links")));
-      const row = el("div", "it-links");
-      ls.forEach((l) => row.append(link(l.url, l.titulo, call)));
-      box.append(row);
-      out.push(box);
-    }
     return out;
+  }
+
+  // ------------------------------------------------------------------ research
+  const MARK = { hecho: "✓", abierto: "○", desconocido: "?" };
+  const SRC = { acta: "items.src.acta", gmail: "items.src.gmail", drive: "items.src.drive", calendar: "items.src.calendar", odoo: "items.src.odoo" };
+  const fmtDay = (iso) => {
+    const d = new Date(String(iso).slice(0, 10) + "T12:00:00");
+    return isNaN(d) ? String(iso) : d.toLocaleDateString("es-ES", { day: "numeric", month: "short" });
+  };
+
+  function sourceLink(s, call, textValue) {
+    if (s.tipo === "acta") {
+      const b = el("button", "it-link", textValue);
+      b.type = "button";
+      b.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const lib = window.micnaga && window.micnaga.library;
+        if (lib) lib.open(s.ref);
+      });
+      return b;
+    }
+    return s.url ? link(s.url, textValue, call) : el("span", "it-src", textValue);
+  }
+
+  /** «Desde la última vez»: what the previous meeting left open, with its proof. */
+  function since(a, call, stamp) {
+    const items = a.desde_la_ultima || [];
+    if (!items.length) return null;
+    const box = el("div", "sec-block it-since");
+    box.append(el("h4", "caps", mic.t("items.since")));
+    const ul = el("ul", "sec-list");
+    items.forEach((it) => {
+      const li = el("li", "sec-li");
+      li.dataset.state = it.estado;
+      const g = el("span", "sec-g", MARK[it.estado] || "?");
+      g.title = mic.t("items.state." + it.estado);
+      const x = el("span", "sec-x", it.texto + " ");
+      if (it.evidencia) x.append(sourceLink(it.evidencia, call, it.evidencia.titulo));
+      li.append(g, x);
+      const s = stamp(it.t);
+      if (s) li.append(s);
+      ul.append(li);
+    });
+    box.append(ul);
+    return box;
+  }
+
+  /** «Fuentes»: one small row (Acta 12 nov · Gmail · Odoo), each one opens its source. */
+  function sources(a, call) {
+    const seen = new Set();
+    const all = [];
+    for (const s of a.fuentes || []) {
+      const k = s.url || s.ref;
+      if (!seen.has(k)) { seen.add(k); all.push(s); }
+    }
+    for (const l of a.enlaces || []) {
+      if (l.url && !seen.has(l.url)) { seen.add(l.url); all.push({ tipo: l.fuente || "drive", titulo: l.titulo, url: l.url }); }
+    }
+    if (!all.length) return null;
+    const row = el("div", "it-sources");
+    row.append(el("span", "it-sources-l caps", mic.t("items.sources")));
+    all.forEach((s) => {
+      const label = mic.t(SRC[s.tipo] || "items.src.odoo") + (s.tipo === "acta" ? " " + fmtDay(s.ref) : "");
+      const b = sourceLink(s, call, label);
+      b.title = s.titulo || "";
+      row.append(b);
+    });
+    return row;
   }
 
   const ERR = {
@@ -186,5 +245,5 @@
   const errorText = (key) => (ERR[key] ? ERR[key]() : null);
 
   window.micnaga = window.micnaga || {};
-  window.micnaga.items = { text, notice, control, result, actaExtras, errorText };
+  window.micnaga.items = { text, notice, control, result, actaExtras, since, sources, errorText };
 })();

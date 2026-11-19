@@ -41,6 +41,8 @@
     historial_reciente: "secretaria.st.history",
     actividades_pendientes: "secretaria.st.activities",
     buscar_en_reuniones: "secretaria.st.meetings",
+    reuniones_con: "secretaria.st.prev",
+    leer_acta: "secretaria.st.prev",
     mis_partes_de_horas: "secretaria.st.hours",
     proyectos: "secretaria.st.projects",
     tareas: "secretaria.st.tasks",
@@ -48,10 +50,15 @@
     mis_actividades: "secretaria.st.my_activities",
     mis_gastos: "secretaria.st.expenses",
   };
+  const SERVER_KEY = {   // Google connectors: one calm line per service
+    claude_ai_Gmail: "secretaria.st.gmail",
+    claude_ai_Google_Calendar: "secretaria.st.calendar",
+    claude_ai_Google_Drive: "secretaria.st.drive",
+  };
   function statusText(st) {
     if (!st) return mic.t("secretaria.st.reading");
     if (st.fase === "herramienta") {
-      const key = TOOL_KEY[st.tool];
+      const key = TOOL_KEY[st.tool] || SERVER_KEY[st.servidor];
       if (key) return mic.t(key, { arg: st.arg || "" }).replace("  ", " ");
       return mic.t("secretaria.st.other", { server: st.servidor || "" });
     }
@@ -90,6 +97,7 @@
     redo.addEventListener("click", analyze);
     head.append(redo);
     box.append(head);
+    if (a.contexto) box.append(el("p", "sec-ctx", a.contexto));
     if (a.resumen && a.resumen.length) box.append(el("p", "sec-sum", a.resumen.join(" ")));
     const blocks = [
       section(mic.t("secretaria.decisions"), a.decisiones, (it) => line(it, "·")),
@@ -107,12 +115,18 @@
       section(mic.t("secretaria.open"), a.preguntas_abiertas, (it) => line(it, "?")),
       section(mic.t("secretaria.next"), a.proximos_pasos, (it) => line(it, "→")),
     ].filter(Boolean);
-    if (IT()) blocks.push(...IT().actaExtras(a, call, stamp));
+    if (IT()) {
+      const since = IT().since(a, call, stamp);
+      if (since) blocks.unshift(since);
+      blocks.push(...IT().actaExtras(a, call, stamp));
+    }
     if (blocks.length) {
       const grid = el("div", "sec-grid");
       blocks.forEach((b) => grid.append(b));
       box.append(grid);
     }
+    const src = IT() && IT().sources(a, call);
+    if (src) box.append(src);
     return box;
   }
 

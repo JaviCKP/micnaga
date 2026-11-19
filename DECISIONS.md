@@ -904,3 +904,60 @@ Código nuevo en `micnaga/brain/google/`; cambios pequeños y aditivos en el run
     - La lista de servidores ajenos que se deniegan explícitamente sale de la última
       «Comprobar» (Ajustes la lanza sola la primera vez). Mientras tanto la lista blanca ya
       impide que se carguen.
+
+## 21. Investigar primero y un acta más lista (`micnaga/brain/research.py`)
+
+La Secretaria investiga antes de escribir, siempre en solo lectura y con topes, y el acta cita lo
+que trae de fuera. El prompt pasa a la v3.
+
+1. **Herramientas locales nuevas** en el servidor `micnaga`, siempre disponibles, también sin Odoo:
+   - `reuniones_con(texto)`: reuniones anteriores con esa persona o empresa (por participantes,
+     título o acta), de la más reciente a la más antigua, con cuántos pendientes dejó su acta.
+   - `leer_acta(carpeta)`: el acta completa de una de ellas: resumen, decisiones, tareas,
+     próximos pasos, lo que seguía abierto y las propuestas aplicadas, con el id creado en Odoo.
+   - La reunión en análisis nunca cuenta como anterior (`MICNAGA_CURRENT`). `leer_acta` solo lee
+     carpetas que cuelgan directamente de la biblioteca.
+2. **Candidatas calculadas en Python** (`related`): las reuniones con acta que comparten
+   participantes con esta. Los participantes salen de los hablantes con nombre y de los
+   asistentes del evento de Calendar. Van en la sección «Investigación» del pedido, con un
+   orden de trabajo:
+   - Primer turno, todo a la vez: `leer_acta`, la empresa en Odoo y una búsqueda de correo.
+   - Después: las tareas abiertas del proyecto, el historial y la oportunidad.
+   - En total, 2-3 turnos. `max_turns` sube a 40 con Odoo y a 20 sin él.
+3. **Acta**:
+   - `contexto`: una línea, solo si aporta.
+   - `desde_la_ultima`: cada pendiente de la reunión anterior con su estado (hecho, abierto o
+     desconocido) y su prueba (frase de esta reunión o fuente).
+   - `fuentes`.
+   - En la vista, una fila discreta «Fuentes» (Acta 12 nov · Gmail · Odoo · Drive), que también
+     recoge los `enlaces` de Google: un solo sitio para todo.
+4. **Nada de fuera sin fuente** (`validate` con `Seen`):
+   - Un acta se cita solo si existe, no es la actual y el modelo la vio (en un resultado de
+     herramienta o entre las candidatas).
+   - Las URLs de Gmail, Drive y Calendar tienen que aparecer tal cual en un resultado.
+   - Un registro de Odoo (`modelo:id`) solo si su `"id"` salió en un resultado; su enlace va al
+     Odoo configurado.
+   - «Hecho» o «abierto» sin prueba pasa a «desconocido».
+   - Un `contexto` sin ninguna fuente válida se descarta.
+   - `open_link` abre solo Google o el Odoo configurado.
+5. **Tareas**:
+   - Antes de `crear_tarea`, el modelo mira las tareas abiertas y las propuestas de la reunión
+     anterior. Si la tarea ya existe, propone una nota en esa tarea en lugar de duplicarla.
+   - La tarea va en el proyecto del cliente o del tema, con una descripción breve (qué, por qué y
+     de dónde sale) y la fecha que se dijo en la reunión o en un correo.
+   - Lo abierto de la vez anterior se arrastra.
+   - Sigue funcionando el aviso de tarea parecida de §19.
+6. **Progreso**: los `tool_use` del stream ya llegaban a la vista. Ahora se muestran como
+   «Revisando actas anteriores…», «Leyendo Gmail…», «Buscando en Drive…» y «Mirando el
+   calendario…», además de los textos de Odoo de siempre.
+7. **Evaluación real** (`tests/brain/test_real_research.py`, `MICNAGA_RUN_CLAUDE=1`), todo
+   sintético: el acta anterior con dos pendientes, el Odoo falso con la tarea de plantillas
+   abierta y un correo falso (servidor MCP stub, sin Gmail real).
+   - El resultado: el acta cita la reunión anterior y marca el presupuesto como «hecho», con el
+     correo como prueba. Deja las plantillas «abierto», con la tarea de Odoo como prueba.
+   - No duplica la tarea existente: propone una nota en ella. Crea la acción nueva en el proyecto
+     del cliente, con fecha y descripción.
+   - Medido: 12,8-14,3 s de `claude`, 6-7 turnos, unos 0,03-0,07 $ equivalentes, salida de unos
+     1,7-1,9 k tokens.
+   - Hasta que el brief no dijo «**siempre** una búsqueda de correo», el modelo no buscaba en el
+     correo.

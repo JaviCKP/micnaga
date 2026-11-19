@@ -8,7 +8,9 @@ usuario (``MICNAGA_TOOLS``, ver ``micnaga.brain.capabilities``): CRM y contactos
 (``buscar_contactos``, ``buscar_empresas``, ``buscar_oportunidades``, ``leer_oportunidad``,
 ``listar_etapas``, ``historial_reciente``, ``actividades_pendientes``) y negocio
 (``mis_partes_de_horas``, ``proyectos``, ``tareas``, ``calendario``, ``mis_actividades``,
-``mis_gastos``). Siempre: ``buscar_en_reuniones`` (biblioteca local: FTS de frases y actas).
+``mis_gastos``). Siempre, de la biblioteca local: ``buscar_en_reuniones`` (FTS de frases y
+actas), ``reuniones_con`` (reuniones anteriores por participante o empresa) y ``leer_acta``
+(el acta completa de una de ellas; ver ``micnaga.brain.research``).
 
 * La clave de Odoo la lee este proceso del Administrador de credenciales: **nunca pasa por
   Claude** (ni por su linea de comandos ni por su entorno).
@@ -19,7 +21,8 @@ usuario (``MICNAGA_TOOLS``, ver ``micnaga.brain.capabilities``): CRM y contactos
 Configuracion por entorno (la pone ``micnaga.brain.secretary`` en el ``--mcp-config``):
 ``MICNAGA_ODOO_URL``, ``MICNAGA_ODOO_DB``, ``MICNAGA_ODOO_LOGIN``, ``MICNAGA_TOOLS`` (lista
 separada por comas; sin ella, las de CRM de siempre), ``MICNAGA_TODAY`` (solo pruebas) (+
-``MICNAGA_HOME``, ``MICNAGA_STORAGE`` para la biblioteca). El cliente de Odoo de este proceso es
+``MICNAGA_HOME``, ``MICNAGA_STORAGE`` para la biblioteca, ``MICNAGA_CURRENT`` = la reunion en
+analisis, que no cuenta como anterior). El cliente de Odoo de este proceso es
 de **solo lectura**: un metodo de escritura falla antes de salir a la red.
 """
 
@@ -31,6 +34,7 @@ import os
 import sys
 from collections.abc import Callable
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any, BinaryIO
 
 from micnaga import __version__
@@ -57,7 +61,7 @@ BUSINESS_TOOLS = (
     "mis_actividades",
     "mis_gastos",
 )
-LOCAL_TOOLS = ("buscar_en_reuniones",)
+LOCAL_TOOLS = ("buscar_en_reuniones", "reuniones_con", "leer_acta")
 ALL_TOOLS = (*ODOO_TOOLS, *LOCAL_TOOLS)
 EVERY_ODOO_TOOL = (*ODOO_TOOLS, *BUSINESS_TOOLS)
 MAX_RANGE_DAYS = 92
@@ -123,6 +127,21 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Busca en las reuniones anteriores del usuario (frases y actas).",
         "inputSchema": _schema({"texto": {"type": "string"}}, ["texto"]),
     },
+    "reuniones_con": {
+        "description": "Reuniones anteriores con una persona o empresa (por participantes, "
+        "titulo o acta), las mas recientes primero: carpeta, fecha, titulo, participantes y "
+        "cuantos pendientes dejo su acta.",
+        "inputSchema": _schema(
+            {"texto": {"type": "string", "description": "nombre de persona o empresa"}},
+            ["texto"],
+        ),
+    },
+    "leer_acta": {
+        "description": "Acta completa de una reunion anterior (por su carpeta): resumen, "
+        "decisiones, tareas, proximos pasos, lo que seguia abierto y las propuestas aplicadas "
+        "(con el id creado en Odoo).",
+        "inputSchema": _schema({"carpeta": {"type": "string"}}, ["carpeta"]),
+    },
     "mis_partes_de_horas": {
         "description": "Partes de horas del usuario (account.analytic.line) entre dos fechas: "
         "horas por dia, dias laborables que FALTAN o estan incompletos, festivos, y su PATRON "
@@ -186,11 +205,17 @@ class Tools:
         *,
         allowed: list[str] | None = None,
         today: date | None = None,
+        root: Path | None = None,
+        current: str | None = None,
     ) -> None:
         self.odoo = odoo
         self._db_factory = db_factory
         self.allowed = allowed
         self.today = today
+        self.root = root
+        """Carpeta de las reuniones (para ``leer_acta``)."""
+        self.current = current
+        """La reunion que se esta analizando: no cuenta como «anterior»."""
 
     def names(self) -> list[str]:
         if self.odoo is None:
@@ -207,6 +232,8 @@ class Tools:
             raise ToolError(f"herramienta desconocida: {name}")
         if name == "buscar_en_reuniones":
             return self.buscar_en_reuniones(_str(args, "texto"))
+        if name in ("reuniones_con", "leer_acta"):
+            return self._past(name, args)
         o = self.odoo
         if name == "buscar_contactos":
             return o.search_partners(_str(args, "texto"), companies=None)
@@ -299,6 +326,19 @@ class Tools:
                 for s in pattern
             ],
         }
+
+    def _past(self, name: str, args: dict[str, Any]) -> Any:
+        from micnaga.brain import research
+
+        if self.root is None or self._db_factory is None:
+            return [] if name == "reuniones_con" else {"error": "sin biblioteca"}
+        if name == "leer_acta":
+            return research.read_acta(self.root, _str(args, "carpeta"), exclude=self.current)
+        db = self._db_factory()
+        try:
+            return research.meetings_with(db, self.root, _str(args, "texto"), exclude=self.current)
+        finally:
+            db.close()
 
     def buscar_en_reuniones(self, text: str) -> Any:
         if self._db_factory is None:
@@ -465,7 +505,16 @@ def tools_from_env() -> Tools:
 
         return open_database()
 
-    return Tools(odoo, db_factory, allowed=allowed, today=today)
+    from micnaga import paths
+
+    return Tools(
+        odoo,
+        db_factory,
+        allowed=allowed,
+        today=today,
+        root=paths.meetings_root(),
+        current=os.environ.get("MICNAGA_CURRENT") or None,
+    )
 
 
 def run(argv: list[str] | None = None) -> int:

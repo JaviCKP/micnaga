@@ -24,3 +24,16 @@
 .it-contrasts .sec-g { color: var(--amber); }
 .it-src { color: var(--text-3); }
 
+/* Research: context line, «Desde la última vez» and the small «Fuentes» row */
+.sec-ctx { position: relative; margin-top: 6px; font-size: 12.5px; color: var(--text-3); }
+.it-since .sec-li[data-state="hecho"] .sec-g { color: var(--accent); }
+.it-since .sec-li[data-state="hecho"] .sec-x { color: var(--text-2); }
+.it-since .sec-li[data-state="desconocido"] .sec-g { color: var(--text-3); }
+.it-since .it-link { font-weight: 500; }
+.it-sources {
+  position: relative; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px;
+  margin-top: 12px; padding-top: 10px; box-shadow: inset 0 1px 0 var(--line);
+}
+.it-sources-l { margin-right: 2px; color: var(--text-3); }
+.it-sources .it-link, .it-sources .it-src { font-weight: 500; color: var(--text-2); }
+.it-sources .it-link:hover { color: var(--accent); }

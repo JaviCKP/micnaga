@@ -991,6 +991,8 @@ def test_edit_api_and_google_status(tmp_path: Path, meeting: Path) -> None:
     st = svc.api("google_status", {})
     assert st["ok"] and st["services"]["calendar"] == {"state": "unknown", "enabled": True}
     assert svc.api("open_link", {"url": "https://evil.example.com"})["ok"] is False
+    cfg.secretaria.odoo_url = "https://odoo.example.com"
+    assert svc.api("open_link", {"url": "https://odoo.example.com.evil.io/web#id=1"})["ok"] is False
 
 
 def test_a_failed_google_item_can_be_reviewed_and_retried(
