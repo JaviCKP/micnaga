@@ -391,9 +391,19 @@ def test_settings_and_wizard_windows() -> None:
     r = Rig()
     r.host.open_settings()
     r.host.open_wizard()
-    assert {s.key for s in r.fac.created} >= {"settings", "wizard"}
+    # Ajustes vive dentro de la biblioteca (misma ventana, vista «settings»)
+    assert {s.key for s in r.fac.created} >= {"library", "wizard"}
+    assert "settings" not in r.fac.windows
+    assert r.fac.windows["library"].spec.params["view"] == "settings"
     assert r.fac.windows["wizard"].spec.resizable is False
-    assert r.fac.windows["settings"].spec.js_api is not None
+    assert hasattr(r.fac.windows["library"].spec.js_api, "settings_call")
+
+
+def test_open_settings_again_switches_the_open_library_to_settings() -> None:
+    r = Rig()
+    r.host.open_library()
+    r.host.open_settings()
+    assert any("showSettings()" in js for js in r.fac.windows["library"].js_calls())
 
 
 def test_apply_config_pushes_theme_to_every_window() -> None:
@@ -410,14 +420,14 @@ def test_system_theme_param_follows_the_registry_value() -> None:
     r = Rig()
     r.w32.hkcu[(winapi.PERSONALIZE_KEY, "AppsUseLightTheme")] = 0
     r.host.open_settings()
-    assert r.fac.windows["settings"].spec.params["theme"] == "dark"
-    assert r.fac.windows["settings"].spec.background == "#050507"
+    assert r.fac.windows["library"].spec.params["theme"] == "dark"
+    assert r.fac.windows["library"].spec.background == "#050507"
 
 
 def test_motion_param_when_windows_animations_off() -> None:
     r = Rig()
     r.host.open_settings()
-    assert r.fac.windows["settings"].spec.params.get("motion") == "off"
+    assert r.fac.windows["library"].spec.params.get("motion") == "off"
 
 
 def test_toast_open_navigates_library_and_notifies_integrator() -> None:

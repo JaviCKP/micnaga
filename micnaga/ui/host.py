@@ -1138,6 +1138,7 @@ class UiHost:
             held=self._held_ops,
             brain=self._brain,
             open_settings=self.open_settings,
+            settings=self.settings_api,
         )
 
     def open_library(
@@ -1151,8 +1152,8 @@ class UiHost:
             params["folder"] = folder
             if seek_s is not None:
                 params["t"] = f"{seek_s:.2f}"
-        if view == "horas":
-            params["view"] = "horas"
+        if view in ("horas", "settings"):
+            params["view"] = view
         spec = self._normal_spec(
             "library", "library.html", t, 1120, 720, self.library_api(), params, min_size=(820, 540)
         )
@@ -1164,6 +1165,8 @@ class UiHost:
         )
         if view == "horas":
             js = "window.micnaga && micnaga.horas && micnaga.horas.open()"
+        elif view == "settings":
+            js = "window.micnaga && micnaga.library && micnaga.library.showSettings()"
         self._open_normal(spec, js=js)
 
     def settings_api(self) -> SettingsApi:
@@ -1179,11 +1182,8 @@ class UiHost:
         )
 
     def open_settings(self) -> None:
-        t = i18n.t("settings.window_title", self._config.ui.language)
-        spec = self._normal_spec(
-            "settings", "settings.html", t, 800, 760, self.settings_api(), min_size=(640, 520)
-        )
-        self._open_normal(spec)
+        """Ajustes vive dentro de la ventana de la biblioteca (misma ventana, vista «Ajustes»)."""
+        self.open_library(view="settings")
 
     def open_wizard(self) -> None:
         """Asistente de primer arranque (3 pasos)."""
@@ -1217,7 +1217,7 @@ class UiHost:
 
     def _pick_folder(self, current: str) -> str | None:
         with self._lock:
-            win = self._windows.get("settings")
+            win = self._windows.get("settings") or self._windows.get("library")
         return win.pick_folder(current) if win is not None else None
 
     def set_held_ops(self, ops: HeldOps | None) -> None:

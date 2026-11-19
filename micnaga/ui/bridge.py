@@ -260,9 +260,12 @@ class LibraryApi:
         held: HeldOps | None = None,
         brain: BrainPort | None = None,
         open_settings: Callable[[], None] | None = None,
+        settings: Callable[[], SettingsApi] | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._open_settings = open_settings
+        self._settings_factory = settings
+        self._settings_api: SettingsApi | None = None
         self._root = meetings_root
         self._audio_url = audio_url
         self._config = config
@@ -292,6 +295,17 @@ class LibraryApi:
             log.exception("open_settings failed")
             return fail("library.err.not_found")
         return ok()
+
+    def settings_call(self, name: str, args: list[Any] | None = None) -> Any:
+        """Ajustes embebido en esta ventana: delega en ``SettingsApi`` (solo metodos publicos)."""
+        if self._settings_factory is None or not isinstance(name, str) or name.startswith("_"):
+            return fail("library.err.not_found")
+        if self._settings_api is None:
+            self._settings_api = self._settings_factory()
+        fn = getattr(self._settings_api, name, None)
+        if not callable(fn):
+            return fail("library.err.not_found")
+        return fn(*(args if isinstance(args, list) else []))
 
     # ------------------------------------------------------------- «Descartadas»
 

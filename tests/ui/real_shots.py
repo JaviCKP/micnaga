@@ -454,6 +454,7 @@ def run(out: Path, only: set[str] | None = None) -> list[Path]:
         ops=ops,
         opener=lambda p: None,
         brain=brain,
+        settings=lambda: settings,
     )
     settings = SettingsApi(
         store=store,
@@ -607,6 +608,24 @@ def run(out: Path, only: set[str] | None = None) -> list[Path]:
                     d.until("document.querySelector('.hx-day')", 20)
                     shots.append(d.shot("horas", theme, out, 0.7))
                     d.js("micnaga.horas.close()")
+                if want("embedded"):
+                    d.js("micnaga.library.showSettings()")
+                    d.until(
+                        "(() => { const f = document.querySelector('#settings-view iframe');"
+                        " return f && f.contentDocument && f.contentDocument.querySelector('.tab'); })()",
+                        30,
+                    )
+                    d.js(
+                        "document.querySelector('#settings-view iframe').contentWindow.mic.setTheme("
+                        f"'{theme}')"
+                    )
+                    shots.append(d.shot("settings_embedded", theme, out, 1.0))
+                    d.js(
+                        "document.querySelector('#settings-view iframe').contentDocument"
+                        ".getElementById('nav-back').click()"
+                    )
+                    d.until("document.getElementById('settings-view').hidden", 5)
+                    shots.append(d.shot("settings_back", theme, out, 0.4))
             if want("settings"):
                 ds = Driver(sw, set_title)
                 ds.until(

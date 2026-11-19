@@ -693,3 +693,15 @@
   }
   init();
 })();
+
+// ---- inside the library window: «‹ Biblioteca» and Esc go back ---------------------------
+(function () {
+  "use strict";
+  if (!window.mic || !mic.embedded) return;
+  const back = () => window.parent.micnaga && window.parent.micnaga.library.hideSettings();
+  const btn = document.getElementById("nav-back");
+  if (btn) { btn.hidden = false; btn.addEventListener("click", back); }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open]")) back();
+  });
+})();

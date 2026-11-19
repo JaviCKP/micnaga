@@ -557,3 +557,32 @@ def test_open_settings_from_library(env: Env) -> None:
     assert api.open_settings()["ok"] is True
     assert opened == [True]
     assert lib(env).open_settings()["ok"] is False  # sin callback: no rompe
+
+
+def test_settings_call_delegates_only_public_methods(env: Env) -> None:
+    class FakeSettings:
+        def get(self) -> dict[str, object]:
+            return {"ok": True, "v": 1}
+
+        def _secret(self) -> str:
+            return "no"
+
+    made: list[int] = []
+
+    def factory() -> FakeSettings:
+        made.append(1)
+        return FakeSettings()
+
+    api = LibraryApi(
+        db_factory=lambda: Database(env.root / "micnaga.db"),
+        meetings_root=lambda: env.root,
+        audio_url=lambda f, t: "",
+        config=lambda: env.cfg,
+        settings=factory,  # type: ignore[arg-type]
+    )
+    assert api.settings_call("get", []) == {"ok": True, "v": 1}
+    assert api.settings_call("get") == {"ok": True, "v": 1}
+    assert made == [1]  # una sola instancia
+    assert api.settings_call("_secret", [])["ok"] is False
+    assert api.settings_call("nope", [])["ok"] is False
+    assert lib(env).settings_call("get", [])["ok"] is False

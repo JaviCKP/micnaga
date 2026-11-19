@@ -651,7 +651,7 @@
     else if (e.key === "ArrowLeft" && e.target.id !== "scrub") { player.seek(player.time - 5); }
   });
   $("q").addEventListener("input", onQuery);
-  $("settings-btn").addEventListener("click", () => { mic.call("open_settings"); });
+  $("settings-btn").addEventListener("click", () => showSettings());
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
   // ------------------------------------------------------------------ «Descartadas»
@@ -700,6 +700,51 @@
     }
   }
 
+  // ------------------------------------------------------------------ Ajustes in this window
+  function settingsFrame() {
+    const v = $("settings-view");
+    let f = v.querySelector("iframe");
+    if (!f) {
+      const root = document.documentElement;
+      const p = new URLSearchParams({ embed: "1" });
+      if (root.dataset.theme) p.set("theme", root.dataset.theme);
+      if (root.dataset.motion === "off") p.set("motion", "off");
+      if (root.dataset.backdrop) p.set("backdrop", root.dataset.backdrop);
+      f = document.createElement("iframe");
+      f.src = "settings.html?" + p.toString();
+      f.title = mic.t("library.open_settings");
+      v.append(f);
+    }
+    return f;
+  }
+  function showSettings() {
+    const v = $("settings-view");
+    const f = settingsFrame();
+    const app = document.querySelector(".app");
+    v.hidden = false;
+    app.inert = true;
+    app.classList.add("behind");
+    setTimeout(() => {
+      v.classList.add("on");
+      try { f.contentWindow.focus(); } catch (e) { /* not loaded yet */ }
+    }, 16);
+  }
+  function hideSettings() {
+    const v = $("settings-view");
+    const app = document.querySelector(".app");
+    v.classList.remove("on");
+    app.inert = false;
+    app.classList.remove("behind");
+    setTimeout(() => { if (!v.classList.contains("on")) v.hidden = true; }, mic.dur(200));
+    $("settings-btn").focus({ preventScroll: true, focusVisible: false });
+  }
+  // the host pushes theme/motion to this window only: mirror them into the embedded Ajustes
+  document.addEventListener("mic:theme", () => {
+    const f = $("settings-view").querySelector("iframe");
+    const w = f && f.contentWindow;
+    if (w && w.mic) w.mic.setTheme(document.documentElement.dataset.theme);
+  });
+
   // ------------------------------------------------------------------ boot
   const api = (window.micnaga = window.micnaga || {});
   api.library = {
@@ -712,6 +757,8 @@
       if (r && r.ok) { applyUpdate(r); renderMarkers(); refreshListEntry(); }
     },
     refreshList: refreshListEntry,
+    showSettings,
+    hideSettings,
   };
 
   (async () => {
@@ -728,6 +775,7 @@
     const q = mic.params;
     if (q.get("folder")) await openMeeting(q.get("folder"), q.get("t") ? parseFloat(q.get("t")) : undefined);
     else if (q.get("select") === "first" && S.meetings.length) await openMeeting(S.meetings[0].folder);
+    if (q.get("view") === "settings") showSettings();
     if (q.get("q")) { $("q").value = q.get("q"); onQuery(); }
   })();
 })();

@@ -46,7 +46,7 @@ _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
 CSP = (
     "default-src 'self'; img-src 'self' data:; media-src 'self'; "
     "style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; "
-    "object-src 'none'; base-uri 'none'; frame-ancestors 'none'"
+    "object-src 'none'; base-uri 'none'; frame-ancestors 'self'"
 )
 
 mimetypes.add_type("text/javascript", ".js")

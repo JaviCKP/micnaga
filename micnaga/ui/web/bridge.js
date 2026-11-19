@@ -35,11 +35,16 @@
   });
   mic.dur = (ms) => (mic.motion ? ms : 0);
   mic.isHost = !!(window.chrome && window.chrome.webview);
+  // Embedded surface (Ajustes inside the library window): same origin, so every call goes through
+  // the parent's pywebview bridge (LibraryApi.settings_call).
+  mic.embedded = params.get("embed") === "1" && window.parent !== window && !!window.parent.mic;
 
   // ---- python <-> js ----------------------------------------------------------------
   let readyResolve;
   mic.ready = new Promise((r) => { readyResolve = r; });
-  if (mic.isHost) {
+  if (mic.embedded) {
+    readyResolve();
+  } else if (mic.isHost) {
     if (window.pywebview && window.pywebview.api) readyResolve();
     else window.addEventListener("pywebviewready", () => readyResolve());
   } else {
@@ -47,6 +52,7 @@
   }
   mic.call = async function (name, ...args) {
     await mic.ready;
+    if (mic.embedded) return window.parent.mic.call("settings_call", name, args);
     if (mic.isHost && window.pywebview && window.pywebview.api && window.pywebview.api[name]) {
       return window.pywebview.api[name](...args);
     }
