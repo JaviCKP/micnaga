@@ -16,13 +16,14 @@ from __future__ import annotations
 import argparse
 import contextlib
 import ctypes
+import faulthandler
 import hashlib
 import logging
 import os
 import threading
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import IO, Any
 
 log = logging.getLogger("micnaga.app")
 
@@ -134,6 +135,22 @@ class ConsoleGuard:
             self._handler = None
 
 
+def _enable_crash_traces() -> IO[str] | None:
+    """Un cierre nativo (access violation en WebView2/PortAudio...) mata el proceso sin pasar
+    por ``logging``: ``faulthandler`` deja la pila de cada hilo en ``logs/crash.log``."""
+    try:
+        from micnaga import paths
+
+        f = open(paths.logs_dir() / "crash.log", "a", encoding="utf-8")  # noqa: SIM115
+        f.write(f"--- app start {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
+        f.flush()
+        faulthandler.enable(file=f, all_threads=True)
+        return f
+    except Exception:
+        log.exception("could not enable crash traces")
+        return None
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="micnaga app", description="Bandeja, vigilante y ventanas.")
     p.add_argument("--exit-after", type=float, default=0.0, metavar="S", help="salir tras S s")
@@ -151,6 +168,7 @@ def run(argv: list[str]) -> int:
     from micnaga.logging_setup import setup_logging
 
     setup_logging("app")
+    crash_log = _enable_crash_traces()
     guard = SingleInstance()
     if not args.no_single_instance and not guard.acquire():
         log.info("another instance is already running; exiting")
@@ -188,3 +206,7 @@ def run(argv: list[str]) -> int:
         return 0
     finally:
         guard.release()
+        if crash_log is not None:
+            with contextlib.suppress(Exception):
+                faulthandler.disable()
+                crash_log.close()
