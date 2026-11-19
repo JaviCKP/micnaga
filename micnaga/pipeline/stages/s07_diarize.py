@@ -4,17 +4,25 @@ Un unico diarizador cargado (``processing.diarization``). Si es ademas un ``Spea
 las huellas estan activadas (``privacy.voiceprints_enabled``), se calculan aqui los embeddings de
 cada hablante (el modelo solo esta cargado ahora) para la etapa 10.
 
+Los embeddings son datos biometricos: se escriben **cifrados con DPAPI** desde el primer byte
+(``store.voiceprints.write_protected_json``; ni el temporal va en claro). Si DPAPI falla se avisa
+y la etapa sigue sin embeddings; nunca se escriben en claro. Las versiones antiguas dejaban
+``work/07_embeddings.json`` en claro: se borra al empezar esta etapa (y el runner lo borra al
+arrancar, lo que fuerza a repetir esta etapa en un trabajo reanudado).
+
 Degradacion: si no hay diarizador instalado (``EngineUnavailableError``) la etapa termina sin
 turnos y la etapa 8 etiqueta toda la pista remota como ``S1`` («sin diarizacion», F1);
 ``info.diarizer`` es ``None`` y ``info.skipped`` dice por que. Sin palabras remotas no se carga
 ningun modelo.
 
-Salidas: ``work/07_turns.json`` y, si procede, ``work/07_embeddings.json``.
+Salidas: ``work/07_turns.json`` y, si procede, ``work/07_embeddings.dpapi``.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+from pathlib import Path
 from typing import Any
 
 from micnaga.pipeline.engines.diar.base import SpeakerEmbedder
@@ -24,10 +32,44 @@ from micnaga.registry import EngineUnavailableError
 log = logging.getLogger(__name__)
 
 TURNS = "07_turns.json"
-EMBEDDINGS = "07_embeddings.json"
+EMBEDDINGS = "07_embeddings.dpapi"
+LEGACY_EMBEDDINGS = "07_embeddings.json"
+"""Embeddings en claro de versiones antiguas: nunca se leen, solo se borran."""
+
+
+def remove_legacy_embeddings(work: Path) -> bool:
+    """Borra ``work/07_embeddings.json`` (en claro, versiones antiguas). ``True`` si existia."""
+    legacy = work / LEGACY_EMBEDDINGS
+    if not legacy.is_file():
+        return False
+    try:
+        legacy.unlink()
+    except OSError as exc:
+        log.warning("could not delete legacy plaintext speaker embeddings: %s", exc)
+        return False
+    log.info("deleted legacy plaintext speaker embeddings")
+    return True
+
+
+def _write_embeddings(ctx: StageContext, embeddings: dict[str, list[float]]) -> bool:
+    """Escribe los embeddings cifrados; ``False`` (y aviso) si no se pudo cifrar o escribir."""
+    from micnaga.store.voiceprints import VoiceprintError, write_protected_json
+
+    try:
+        write_protected_json(ctx.path(EMBEDDINGS), embeddings)
+    except (VoiceprintError, ImportError, OSError) as exc:  # ImportError: sin win32crypt
+        log.warning("speaker embeddings skipped, could not store them encrypted: %s", exc)
+        with contextlib.suppress(OSError):
+            ctx.path(EMBEDDINGS).unlink(missing_ok=True)
+        return False
+    return True
 
 
 def run(ctx: StageContext) -> StageResult:
+    # nada de una ejecucion anterior: ni en claro (versiones antiguas) ni cifrado obsoleto
+    remove_legacy_embeddings(ctx.work)
+    with contextlib.suppress(OSError):
+        ctx.path(EMBEDDINGS).unlink(missing_ok=True)
     words: list[Any] = ctx.read_json("06_words_remote.json")
     if not words:
         ctx.write_json(TURNS, [])
@@ -58,14 +100,15 @@ def run(ctx: StageContext) -> StageResult:
         del audio
     del diarizer
     ctx.write_json(TURNS, [{"speaker": t.speaker, "start": t.start, "end": t.end} for t in turns])
-    if embeddings_out:
-        ctx.write_json(EMBEDDINGS, embeddings_out)
+    has_embeddings = bool(embeddings_out) and _write_embeddings(ctx, embeddings_out)
+    embeddings_out.clear()
+    if has_embeddings:
         outputs.append(EMBEDDINGS)
     return StageResult(
         outputs,
         {
             "diarizer": name,
             "n_speakers": len({t.speaker for t in turns}),
-            "has_embeddings": bool(embeddings_out),
+            "has_embeddings": has_embeddings,
         },
     )

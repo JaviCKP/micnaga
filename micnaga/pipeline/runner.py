@@ -15,6 +15,9 @@
 * **Fallo**: ``fail_job`` con el error; los ficheros se conservan para reintentar. Las
   excepciones que no son ``Exception`` (``KeyboardInterrupt``, cierre brusco) no se capturan: el
   trabajo queda ``processing`` y ``requeue_stale`` lo recupera al arrancar el worker.
+* **Huellas en ``work/``**: los embeddings de hablante (etapa 7) solo se guardan cifrados con
+  DPAPI. Al arrancar se borran el ``07_embeddings.json`` en claro de versiones antiguas (la etapa
+  7 se repite) y los temporales ``.tmp-*.json`` huerfanos de un cierre brusco.
 * **Cierre** (tras la etapa 11, lo ultimo que se toca del sistema de ficheros): renombra la
   carpeta a ``YYYY-MM-DD_HHMM_slug`` (``jobs.session_dir`` se actualiza *antes* del renombrado; si
   el proceso muere entremedias, ``_locate`` encuentra la carpeta antigua gracias a
@@ -26,6 +29,7 @@ Memoria: cada etapa libera su modelo antes de la siguiente (``stages.base.engine
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import logging
@@ -173,6 +177,15 @@ class PipelineRunner:
             work.mkdir(parents=True, exist_ok=True)
             deps = self._deps(session)
             stages = get_stages()
+            # embeddings en claro de versiones antiguas: se borran antes de nada (la marca de la
+            # etapa 7 los lista como salida, asi que la etapa 7 se repite y los escribe cifrados)
+            from micnaga.pipeline.stages.s07_diarize import remove_legacy_embeddings
+
+            remove_legacy_embeddings(work)
+            # temporales JSON huerfanos de un cierre brusco (podian llevar esos embeddings)
+            for orphan in work.glob(".tmp-*.json"):
+                with contextlib.suppress(OSError):
+                    orphan.unlink()
             total = float(sum(STAGE_WEIGHTS))
             for stage in stages:
                 before = sum(STAGE_WEIGHTS[: stage.index - 1]) / total

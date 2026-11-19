@@ -10,7 +10,7 @@ import numpy as np
 import pytest
 
 from micnaga import paths
-from micnaga.bench.fakes import FakeAsr, fake_deps_for_session, load_script
+from micnaga.bench.fakes import FakeAsr, FakeDiarizer, fake_deps_for_session, load_script
 from micnaga.bench.synthetic import SyntheticSpec
 from micnaga.config import Config, save_config
 from micnaga.events import (
@@ -23,11 +23,14 @@ from micnaga.events import (
 )
 from micnaga.pipeline import output
 from micnaga.pipeline.runner import FINALIZE_FILE, PipelineRunner
-from micnaga.pipeline.stages.base import Deps, Stage
+from micnaga.pipeline.stages import base as stages_base
+from micnaga.pipeline.stages import s07_diarize, s10_names
+from micnaga.pipeline.stages.base import Deps, Stage, StageContext
 from micnaga.registry import EngineUnavailableError
+from micnaga.store import voiceprints as vp
 from micnaga.store.db import Database, JobState
 from micnaga.store.voiceprints import VoiceprintStore
-from micnaga.types import PIPELINE_STAGES, Transcript
+from micnaga.types import PIPELINE_STAGES, CaptureMeta, Transcript
 from tests.pipeline.helpers import (
     SimulatedCrash,
     make_session,
@@ -431,6 +434,207 @@ def test_voiceprints_stay_off_by_default(db: Database) -> None:
     assert result.transcript is not None
     assert all(s.voiceprint_match is None for s in result.transcript.speakers)
     assert not (result.session_dir / "speaker_embeddings.dpapi").exists()
+
+
+# ------------------------------------------------------------------ huellas: nada en claro en disco
+
+EMB_BASE = 0.0371337  # valores raros: si aparecen en claro en un fichero, es una fuga
+EMB_PEAK = 0.9876543
+LEAK_TOKENS = (b"0.0371337", b"0.987654")
+
+
+class DistinctDiarizer(FakeDiarizer):
+    """Como ``FakeDiarizer`` pero con embeddings de valores reconocibles."""
+
+    def embed(self, audio, sr, turns):  # type: ignore[no-untyped-def]
+        return {
+            sid: np.where(v == 1.0, EMB_PEAK, EMB_BASE).astype(np.float32)
+            for sid, v in super().embed(audio, sr, turns).items()
+        }
+
+
+def voiceprint_setup(session: Path) -> tuple[Config, Deps]:
+    cfg = relaxed_config()
+    cfg.privacy.voiceprints_enabled = True
+    store = VoiceprintStore(threshold=0.75)
+    laura = np.full(8, EMB_BASE, dtype=np.float32)
+    laura[1] = EMB_PEAK  # el embedding que ``DistinctDiarizer`` da a S1
+    store.save("Laura", laura, engine="fake-diarizer")
+    base = fake_deps_for_session(session)
+    script = load_script(session)
+    deps = Deps(
+        **{
+            **base.__dict__,
+            "create_diarizer": lambda _c: DistinctDiarizer(script),
+            "voiceprints": store,
+        }
+    )
+    return cfg, deps
+
+
+def assert_no_plaintext_vectors(root: Path) -> None:
+    files = [p for p in root.rglob("*") if p.is_file()]
+    assert files
+    for file in files:
+        data = file.read_bytes()
+        for token in LEAK_TOKENS:
+            assert token not in data, f"plaintext speaker vector in {file.relative_to(root)}"
+    assert not list(root.rglob(s07_diarize.LEGACY_EMBEDDINGS))
+
+
+def spy_disk_writes(monkeypatch: pytest.MonkeyPatch) -> list[bytes]:
+    """Captura todo lo que las etapas y el almacen de huellas mandan al disco (temporales incl.)."""
+    written: list[bytes] = []
+    real_bytes, real_vp = stages_base.atomic_write_bytes, vp._atomic_write
+
+    def bytes_spy(path: Path, data: bytes) -> None:
+        written.append(data)
+        real_bytes(path, data)
+
+    def vp_spy(path: Path, data: bytes) -> None:
+        written.append(data)
+        real_vp(path, data)
+
+    monkeypatch.setattr(stages_base, "atomic_write_bytes", bytes_spy)
+    monkeypatch.setattr(vp, "_atomic_write", vp_spy)
+    return written
+
+
+def diarize_marker(session: Path) -> dict:  # type: ignore[type-arg]
+    marker = session / paths.WORK_DIRNAME / "07_diarize.done.json"
+    return json.loads(marker.read_text(encoding="utf-8"))  # type: ignore[no-any-return]
+
+
+def named_speakers(transcript: Transcript | None) -> dict[str, str]:
+    assert transcript is not None
+    return {s.id: s.name for s in transcript.speakers}
+
+
+def test_speaker_embeddings_are_written_encrypted_from_the_first_byte(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)
+    written = spy_disk_writes(monkeypatch)
+    result = runner_for(config=cfg, deps=deps, db=db, keep_work=True, rename=False).run(session)
+    assert result.status == "done", result.reason
+    assert written  # el espia vio las escrituras (temporales incluidos)
+    for data in written:
+        assert all(token not in data for token in LEAK_TOKENS), "plaintext vector written"
+    assert_no_plaintext_vectors(session)
+    work = session / paths.WORK_DIRNAME
+    assert (work / s07_diarize.EMBEDDINGS).is_file()
+    marker = diarize_marker(session)
+    assert marker["info"]["has_embeddings"] is True
+    assert s07_diarize.EMBEDDINGS in marker["outputs"]
+    assert named_speakers(result.transcript)["S1"] == "Laura"
+    # se puede descifrar y son los vectores del diarizador
+    loaded = vp.read_protected_json(work / s07_diarize.EMBEDDINGS)
+    assert np.isclose(loaded["S1"][1], EMB_PEAK) and np.isclose(loaded["S1"][0], EMB_BASE)
+
+
+def test_failure_after_diarization_leaves_no_plaintext_vectors_and_retry_names(
+    db: Database,
+) -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)
+
+    def fail_at_assign(stage: Stage) -> None:
+        if stage.index == 8:
+            raise RuntimeError("boom after diarization")
+
+    job = claim(db, session)
+    failed = runner_for(config=cfg, deps=deps, db=db, on_stage_start=fail_at_assign).run(
+        session, job
+    )
+    assert failed.status == "failed" and "boom" in (failed.reason or "")
+    work = session / paths.WORK_DIRNAME
+    assert (work / "07_diarize.done.json").is_file()
+    assert (work / s07_diarize.EMBEDDINGS).is_file()  # se conserva para reintentar, cifrado
+    assert_no_plaintext_vectors(session)
+
+    db.retry_job(job.id)
+    retry = db.claim_next_job()
+    assert retry is not None
+    ok = runner_for(config=cfg, deps=deps, db=db).run(session, retry)
+    assert ok.status == "done", ok.reason
+    assert ok.skipped == list(PIPELINE_STAGES[:7])
+    assert named_speakers(ok.transcript)["S1"] == "Laura"
+
+
+def test_legacy_plaintext_embeddings_are_deleted_and_diarization_reruns(db: Database) -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)
+    first = runner_for(config=cfg, deps=deps, keep_work=True, rename=False).run(session)
+    assert first.status == "done", first.reason
+    work = session / paths.WORK_DIRNAME
+    # estado que dejaba una version antigua: embeddings en claro, listados en la marca de la 7
+    (work / s07_diarize.EMBEDDINGS).unlink()
+    legacy = work / s07_diarize.LEGACY_EMBEDDINGS
+    legacy.write_text(json.dumps({"S1": [EMB_BASE, EMB_PEAK]}), encoding="utf-8")
+    orphan = work / ".tmp-abc123.json"  # temporal huerfano de un cierre brusco
+    orphan.write_text(json.dumps({"S2": [EMB_PEAK, EMB_BASE]}), encoding="utf-8")
+    marker_file = work / "07_diarize.done.json"
+    marker = json.loads(marker_file.read_text(encoding="utf-8"))
+    marker["outputs"] = [s07_diarize.TURNS, s07_diarize.LEGACY_EMBEDDINGS]
+    marker_file.write_text(json.dumps(marker), encoding="utf-8")
+
+    result = runner_for(config=cfg, deps=deps, db=db, keep_work=True, rename=False).run(session)
+    assert result.status == "done", result.reason
+    assert result.skipped == list(PIPELINE_STAGES[:6])  # la diarizacion se repite
+    assert not legacy.exists() and not orphan.exists()
+    assert (work / s07_diarize.EMBEDDINGS).is_file()
+    assert named_speakers(result.transcript)["S1"] == "Laura"
+    assert_no_plaintext_vectors(session)
+
+
+def test_names_stage_never_reads_legacy_plaintext_embeddings() -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)
+    runner_for(config=cfg, deps=deps, keep_work=True, rename=False).run(session)
+    work = session / paths.WORK_DIRNAME
+    (work / s07_diarize.EMBEDDINGS).unlink()
+    legacy = work / s07_diarize.LEGACY_EMBEDDINGS
+    legacy.write_text(json.dumps({"S1": [EMB_BASE, EMB_PEAK] + [EMB_BASE] * 6}), encoding="utf-8")
+    meta = CaptureMeta.from_json((session / paths.CAPTURE_JSON).read_text(encoding="utf-8"))
+    ctx = StageContext(session, cfg, deps, meta)
+    assert s10_names.match_voiceprints(ctx, {"S1", "S2"}) == ({}, 0)
+    assert not legacy.exists()
+
+
+def test_dpapi_failure_skips_embeddings_and_never_writes_them_in_clear(
+    db: Database, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)  # guarda la huella de Laura antes de romper DPAPI
+
+    def no_dpapi(_data: bytes) -> bytes:
+        raise vp.VoiceprintError("DPAPI encryption failed: test")
+
+    monkeypatch.setattr(vp, "_protect", no_dpapi)
+    with caplog.at_level(logging.WARNING):
+        result = runner_for(config=cfg, deps=deps, db=db, keep_work=True, rename=False).run(session)
+    assert result.status == "done", result.reason
+    assert "speaker embeddings skipped" in caplog.text
+    work = session / paths.WORK_DIRNAME
+    assert not (work / s07_diarize.EMBEDDINGS).exists()
+    marker = diarize_marker(session)
+    assert marker["info"]["has_embeddings"] is False
+    assert marker["outputs"] == [s07_diarize.TURNS]
+    assert named_speakers(result.transcript)["S1"] == "Hablante 1"
+    assert_no_plaintext_vectors(session)
+
+
+def test_unreadable_encrypted_embeddings_skip_voiceprints_without_failing(db: Database) -> None:
+    session = make_session()
+    cfg, deps = voiceprint_setup(session)
+    runner_for(config=cfg, deps=deps, keep_work=True, rename=False).run(session)
+    work = session / paths.WORK_DIRNAME
+    (work / s07_diarize.EMBEDDINGS).write_bytes(b"not a dpapi blob")
+    (work / "10_names.done.json").unlink()
+    result = runner_for(config=cfg, deps=deps, db=db, keep_work=True, rename=False).run(session)
+    assert result.status == "done", result.reason
+    assert named_speakers(result.transcript)["S1"] == "Hablante 1"
 
 
 # ------------------------------------------------------------------ cierre

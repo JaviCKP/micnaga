@@ -1,10 +1,13 @@
 """Etapa 10: nombres (huellas de voz, MIC-11) y glosario personal (MIC-16) (spec 8.10).
 
 * Huellas: solo si ``privacy.voiceprints_enabled``. Se compara el embedding de cada hablante
-  (``07_embeddings.json``) con las huellas guardadas (coseno >= ``privacy.voiceprint_threshold``);
-  si coincide, el hablante toma el nombre y ``voiceprint_match`` la similitud. Si dos hablantes
-  casan con la misma persona gana el de mayor similitud. Los embeddings de la reunion se guardan
-  cifrados (DPAPI) en su carpeta para poder aprender la huella al renombrar (``output``).
+  (``07_embeddings.dpapi``, cifrado con DPAPI) con las huellas guardadas
+  (coseno >= ``privacy.voiceprint_threshold``); si coincide, el hablante toma el nombre y
+  ``voiceprint_match`` la similitud. Si dos hablantes casan con la misma persona gana el de
+  mayor similitud. Los embeddings de la reunion se guardan
+  cifrados (DPAPI) en su carpeta para poder aprender la huella al renombrar (``output``). El
+  ``07_embeddings.json`` en claro de versiones antiguas nunca se lee: se borra. Si el fichero
+  cifrado no se puede descifrar se avisa y se sigue sin huellas.
 * Glosario: ``Glossary.load`` (``glossary.txt`` + ``processing.glossary``) aplicado a las palabras
   de cada frase; el texto de la frase se reconstruye con las palabras corregidas.
 
@@ -22,6 +25,7 @@ import numpy as np
 from micnaga.glossary import Glossary
 from micnaga.pipeline.stages.base import StageContext, StageResult
 from micnaga.pipeline.stages.phrases import words_text
+from micnaga.pipeline.stages.s07_diarize import EMBEDDINGS, remove_legacy_embeddings
 from micnaga.types import Segment
 
 log = logging.getLogger(__name__)
@@ -34,13 +38,22 @@ def match_voiceprints(
     ctx: StageContext, speakers: set[str]
 ) -> tuple[dict[str, dict[str, Any]], int]:
     """``({speaker_id: {"name", "voiceprint_match"}}, n_embeddings)``."""
-    if not ctx.config.privacy.voiceprints_enabled or not ctx.exists("07_embeddings.json"):
+    remove_legacy_embeddings(ctx.work)  # en claro (versiones antiguas): nunca se lee
+    if not ctx.config.privacy.voiceprints_enabled or not ctx.exists(EMBEDDINGS):
         return {}, 0
-    from micnaga.store.voiceprints import VoiceprintError, VoiceprintStore, save_meeting_embeddings
+    from micnaga.store.voiceprints import (
+        VoiceprintError,
+        VoiceprintStore,
+        read_protected_json,
+        save_meeting_embeddings,
+    )
 
-    embeddings = {
-        k: np.asarray(v, dtype=np.float32) for k, v in ctx.read_json("07_embeddings.json").items()
-    }
+    try:
+        raw = read_protected_json(ctx.path(EMBEDDINGS))
+        embeddings = {str(k): np.asarray(v, dtype=np.float32) for k, v in dict(raw).items()}
+    except (VoiceprintError, OSError, TypeError, ValueError) as exc:
+        log.warning("speaker embeddings unreadable, skipping voiceprints: %s", exc)
+        return {}, 0
     engine = str(ctx.stage_info("diarize").get("diarizer") or "")
     store = ctx.deps.voiceprints or VoiceprintStore()
     threshold = ctx.config.privacy.voiceprint_threshold

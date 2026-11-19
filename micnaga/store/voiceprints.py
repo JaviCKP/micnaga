@@ -15,6 +15,9 @@ Ademas, ``save_meeting_embeddings`` / ``load_meeting_embeddings`` guardan (cifra
 de los hablantes de una reunion dentro de su carpeta, para poder aprender la huella cuando el
 usuario renombre a un hablante (``rename_speaker(..., learn_voiceprint=True)``). Solo se escriben
 si las huellas estan activadas.
+
+``write_protected_json`` / ``read_protected_json`` sirven para cualquier otro fichero con vectores
+de voz (p. ej. ``work/07_embeddings.dpapi`` del pipeline): nunca llegan al disco en claro.
 """
 
 from __future__ import annotations
@@ -75,6 +78,28 @@ def _atomic_write(path: Path, data: bytes) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def write_protected_json(path: Path, obj: Any) -> None:
+    """Escribe ``obj`` como JSON cifrado con DPAPI, de forma atomica.
+
+    El cifrado se hace en memoria antes de tocar el disco: ni el fichero final ni el temporal
+    contienen nunca el JSON en claro. Lanza ``VoiceprintError`` si DPAPI falla (y entonces no
+    escribe nada).
+    """
+    _atomic_write(path, _protect(json.dumps(obj).encode("utf-8")))
+
+
+def read_protected_json(path: Path) -> Any:
+    """Lee un fichero escrito con ``write_protected_json``.
+
+    Lanza ``VoiceprintError`` si no se puede descifrar (otra cuenta, corrupto) o no es JSON y
+    ``OSError`` si no se puede leer.
+    """
+    try:
+        return json.loads(_unprotect(path.read_bytes()).decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise VoiceprintError(f"corrupt protected file: {exc}") from exc
 
 
 def _unit(vec: NDArray[np.float32] | Any) -> NDArray[np.float32]:
