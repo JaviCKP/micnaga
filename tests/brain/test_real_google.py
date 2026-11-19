@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import time
 from datetime import datetime, timedelta
@@ -89,6 +90,35 @@ def test_real_hook_denies_in_print_mode(connected: list[str]) -> None:
     assert res.tools == [tool]
     assert tool in res.denials
     assert mine and all(r.is_error and "micnaga-guard" in r.text for r in mine)
+
+
+def test_real_broken_hook_means_denied(connected: list[str]) -> None:
+    """Un gancho roto (sale con 1) deja pasar la llamada si la herramienta esta en
+    --allowedTools; por eso las llamadas de Google NO la ponen ahi: solo autoriza el guardian."""
+    need(connected, "calendar")
+    tool = CAL + "list_calendars"
+    pol = policy.single_call("calendar", "list_calendars")
+    assert pol.allowed == [] and pol.tool == tool
+    broken = '"' + sys.executable.replace("\\", "/") + '" -c "import sys; sys.exit(1)"'
+    settings = dict(pol.settings)
+    settings["hooks"] = {
+        "PreToolUse": [{"matcher": "*", "hooks": [{"type": "command", "command": broken}]}]
+    }
+    req = ClaudeRequest(
+        prompt="Llama una vez a list_calendars. Si te lo deniegan, responde solo DENEGADO.",
+        system_prompt="Eres un ejecutor mecánico.",
+        model="haiku",
+        max_turns=3,
+        disallowed_tools=pol.disallowed,
+        settings=settings,
+        extra_env=pol.env,
+        strict_mcp=False,
+    )
+    res = ClaudeRunner().run_once(req)
+    mine = [r for r in res.tool_results if r.name == tool]
+    _report("broken_hook", denials=res.denials, results=[r.is_error for r in mine])
+    assert tool in res.denials
+    assert all(r.is_error for r in mine)
 
 
 def test_real_guarded_reads_and_latency(connected: list[str]) -> None:

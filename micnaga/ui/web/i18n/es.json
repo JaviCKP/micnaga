@@ -512,5 +512,6 @@
   "items.err.timeout": "Google tardó demasiado · comprueba antes de reintentar",
   "items.err.offline": "Sin conexión",
   "items.err.unguarded": "Ejecutado sin protección · revísalo",
-  "items.err.not_undoable": "Un correo enviado no se puede deshacer"
+  "items.err.not_undoable": "Un correo enviado no se puede deshacer",
+  "items.err.unknown_outcome": "Puede que ya esté hecho · revísalo en Google antes de reintentar"
 }

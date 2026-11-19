@@ -76,6 +76,15 @@ SCHEMAS: dict[str, list[dict[str, Any]]] = {
 }
 
 
+DERIVED: dict[str, tuple[str, ...]] = {
+    "vincular_a_oportunidad": ("nombre",),
+    "nota_en_historial": ("nombre",),
+    "actualizar_oportunidad": ("etapa",),
+    "crear_contacto": ("empresa", "parecidos"),
+}
+"""Datos que Micnaga leyo del registro al comprobar la propuesta (se borran si cambia el id)."""
+
+
 def _generic(datos: dict[str, Any]) -> list[dict[str, Any]]:
     out = []
     for k, v in datos.items():
@@ -226,6 +235,14 @@ def edit(p: dict[str, Any], values: dict[str, Any]) -> dict[str, Any]:
     for k, spec in specs.items():
         if spec.get("req") and datos.get(k) in (None, "", []):
             raise EditError(k)
+    before = p.get("datos") or {}
+    moved = [k for k in specs if (k == "id" or k.endswith("_id")) and datos.get(k) != before.get(k)]
+    if moved and p.get("grupo") != "google":
+        # otro registro: lo que Micnaga comprobo (nombre, etapa...) ya no vale
+        for k in DERIVED.get(str(p.get("tipo")), ()):
+            datos.pop(k, None)
+        p["checked"] = False
+        p["aviso"] = "sin_comprobar"
     p["datos"] = datos
     p["estado"] = "pendiente"
     p["error"] = None

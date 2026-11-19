@@ -182,15 +182,17 @@ def test_analysis_policy_allows_reads_and_denies_every_write_and_foreign_server(
     pol = policy.analysis(
         ["gmail", "calendar", "drive"],
         stdio_names=["micnaga"],
-        foreign=["whatsapp-business-tools", "claude.ai Claude Docs", "n8n-mcp", "claude.ai Gmail"],
+        foreign=["otro-servidor", "claude.ai Otro", "servidor-local", "claude.ai Gmail"],
     )
     assert pol.allowed and all(not g.is_write(t) for t in pol.allowed)
     for s in g.SERVICES:
         for t in g.write_tools(s):
             assert t in pol.disallowed
-    assert "mcp__whatsapp-business-tools" in pol.disallowed
-    assert "mcp__n8n-mcp" in pol.disallowed
-    assert "mcp__claude_ai_Claude_Docs" in pol.disallowed
+    assert "mcp__otro-servidor" in pol.disallowed
+    assert "mcp__servidor-local" in pol.disallowed
+    assert (
+        "mcp__claude_ai_Claude_Docs" in pol.disallowed and "mcp__claude_ai_Otro" in pol.disallowed
+    )
     assert not any(
         t.startswith("mcp__claude_ai_Gmail") and t in pol.allowed for t in pol.disallowed
     )
@@ -292,12 +294,12 @@ def test_detect_parses_mcp_list_and_init() -> None:
         "Checking MCP server health…\n\n"
         "claude.ai Gmail: https://gmailmcp.googleapis.com/mcp/v1 - ✔ Connected\n"
         "claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 - ✘ Failed to connect\n"
-        "n8n-mcp: npx n8n-mcp - ✘ Failed to connect — CONNECTION_CLOSED\n"
+        "servidor-local: npx servidor-local - ✘ Failed to connect — CONNECTION_CLOSED\n"
     )
     assert detect.parse_mcp_list(text) == [
         ("claude.ai Gmail", "connected"),
         ("claude.ai Google Drive", "failed"),
-        ("n8n-mcp", "failed"),
+        ("servidor-local", "failed"),
     ]
     init = {
         "mcp_servers": [
@@ -664,7 +666,9 @@ def test_event_is_created_with_meet_and_no_notifications_without_attendees(tmp_p
     )
     req = runner.requests[0]
     assert (
-        req.allowed_tools == [CAL + "create_event"] and CAL + "delete_event" in req.disallowed_tools
+        req.allowed_tools == []
+        and f"`{CAL}create_event`" in req.prompt
+        and CAL + "delete_event" in req.disallowed_tools
     )
     assert req.settings["allowedMcpServers"] == [{"serverUrl": g.URL["calendar"]}]
 
@@ -1034,3 +1038,76 @@ def test_analysis_pass_with_google_uses_the_read_only_flag_set(
     assert ev["datos"]["asistentes"] == [
         {"nombre": "Marta Gil", "email": "marta@dentaltriana.es", "on": False}
     ]
+
+
+# ============================================================================== resultado dudoso
+
+
+@pytest.mark.parametrize("mode", ["draft", "send"])
+def test_unknown_mail_outcome_is_never_retried_blindly(tmp_path: Path, mode: str) -> None:
+    """Tiempo agotado DESPUES de que el guardian dejara pasar la llamada: el correo pudo salir.
+    Reintentar no lo repite; editar la propuesta (otra revision) si permite un reintento."""
+    from micnaga.brain.claude import ClaudeTimeoutError
+
+    google = FakeGoogle()
+    p = {
+        "id": "p2",
+        "grupo": "google",
+        "tipo": "correo_google",
+        "estado": "pendiente",
+        "datos": {"modo": mode, "para": ["ana@cliente.com"], "asunto": "R", "cuerpo": "Hola"},
+    }
+    slow = applier(tmp_path, FakeGoogleRunner(google, raise_after_call=ClaudeTimeoutError("x")))
+    with pytest.raises(apply.GoogleApplyError, match="google_timeout"):
+        slow.apply(p, {})
+    with pytest.raises(apply.GoogleApplyError, match="google_unknown_outcome"):
+        applier(tmp_path, FakeGoogleRunner(google)).apply(p, {})
+    assert len(google.calls) == 1
+    items.edit(p, {"asunto": "R2"})  # el usuario lo revisa y decide reintentar
+    applier(tmp_path, FakeGoogleRunner(google)).apply(p, {})
+    assert len(google.calls) == 2
+
+
+def test_an_event_confirmed_absent_is_created_again(tmp_path: Path) -> None:
+    from micnaga.brain.claude import ClaudeTimeoutError
+
+    google = FakeGoogle()
+    p = event_proposal()
+    with pytest.raises(apply.GoogleApplyError):
+        applier(tmp_path, FakeGoogleRunner(google, raise_after_call=ClaudeTimeoutError("x"))).apply(
+            p, {}
+        )
+    google.events.clear()  # no llego a crearse (o se borro)
+    undo = applier(tmp_path, FakeGoogleRunner(google)).apply(p, {})
+    names = [c[0].split("__")[-1] for c in google.calls]
+    assert names == ["create_event", "list_events", "create_event"]
+    assert undo["event_id"] in google.events
+
+
+def test_a_converted_odoo_event_does_not_duplicate_the_google_one() -> None:
+    run = analysis.prepare(google_config(google_gmail=False, google_drive=False))
+    assert run is not None
+    mine = event_proposal()
+    odoo = {
+        "id": "p3",
+        "grupo": "agenda",
+        "tipo": "crear_evento",
+        "datos": {"nombre": "Lo mismo", "fecha": "2026-11-24", "hora_inicio": "10:00"},
+    }
+    out = analysis.route_odoo_events([mine, odoo], run, {})
+    assert out == [mine]
+
+
+def test_editing_a_crm_record_id_drops_what_micnaga_had_checked() -> None:
+    p = {
+        "id": "p5",
+        "grupo": "crm",
+        "tipo": "nota_en_historial",
+        "estado": "pendiente",
+        "checked": True,
+        "aviso": None,
+        "datos": {"modelo": "crm.lead", "id": 205, "nombre": "CRM Dental Triana"},
+    }
+    items.edit(p, {"id": 206})
+    assert p["datos"] == {"modelo": "crm.lead", "id": 206}
+    assert p["checked"] is False and p["aviso"] == "sin_comprobar"

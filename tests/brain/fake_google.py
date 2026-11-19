@@ -138,8 +138,8 @@ class FakeGoogleRunner:
 
     def run_once(self, req: ClaudeRequest, on_event: Any = None) -> ClaudeResult:
         self.requests.append(req)
-        assert not req.strict_mcp and len(req.allowed_tools) == 1
-        tool = req.allowed_tools[0]
+        assert not req.strict_mcp and req.allowed_tools == []  # solo el guardian autoriza
+        tool = re.search(r"`([^`]+)`", req.prompt).group(1)  # type: ignore[union-attr]
         exact = exact_from_prompt(req.prompt)
         results: list[ToolResult] = []
         denials: list[str] = []

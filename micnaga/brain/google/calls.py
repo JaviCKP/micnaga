@@ -3,7 +3,8 @@
 Micnaga no tiene tokens de Google: para leer un evento o crear un borrador pide a ``claude -p``
 (Haiku, barato) que llame a UNA herramienta con una entrada exacta. Garantias:
 
-* ``--allowedTools`` solo esa herramienta; el resto de Google y todo servidor ajeno, denegado;
+* La herramienta NO va en ``--allowedTools``: solo la autoriza el guardian (si el gancho falla,
+  ``dontAsk`` la deniega). El resto de Google y todo servidor ajeno, denegado;
   lista blanca de servidores por URL (solo ese conector se carga).
 * Gancho ``PreToolUse`` (``guard``) con el plan de esta llamada: si el nombre o la entrada no
   coinciden, se deniega; si coinciden, se ejecuta la entrada aprobada exacta (``updatedInput``).

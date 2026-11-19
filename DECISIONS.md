@@ -726,8 +726,8 @@ el runner, `secretary`, `executor`, `service`, `bridge`, la configuración y la 
      `--setting-sources project`: así no se cargan los ganchos ni los servidores MCP del usuario.
    - **Lista blanca real**, `--settings {"allowedMcpServers": [...]}`: los conectores por URL
      (`https://gmailmcp.googleapis.com/*`, `calendarmcp`, `drivemcp`) y los servidores propios por
-     nombre (`micnaga` y los de `secretaria.mcp_servers`). El resto no se carga: Claude Docs,
-     whatsapp-business-tools, n8n-mcp, iphone-local… (comprobado en `system/init`).
+     nombre (`micnaga` y los de `secretaria.mcp_servers`). El resto no se carga: otros conectores
+     de claude.ai y los servidores MCP del usuario, locales o remotos (comprobado en `system/init`).
    - `--disallowedTools` quita la herramienta de la sesión, también por servidor (`mcp__<servidor>`).
      Se deniegan todas las escrituras de Google, las lecturas que el análisis no usa, los servicios
      desactivados y los servidores ajenos vistos en la última detección.
@@ -760,8 +760,9 @@ el runner, `secretary`, `executor`, `service`, `bridge`, la configuración y la 
      **Al unir:** basta con que `Secretary.analyze` siga llamando a `gplan.finish(...)` después de
      construir las propuestas de Odoo.
 7. **Escrituras tras «Aplicar»** (`google/apply.py`, `calls.py`, `guard.py`):
-   - Una ejecución `claude -p` (Haiku) por propuesta, con **solo esa herramienta** en
-     `--allowedTools` y la lista blanca de ese conector.
+   - Una ejecución `claude -p` (Haiku) por propuesta, con la lista blanca de ese conector y el
+     resto de sus herramientas denegadas. La herramienta **no** va en `--allowedTools`: el único
+     permiso lo da el guardián (`allow` del gancho).
    - La entrada exacta se construye en Python desde los datos ya editados, nunca desde la salida
      del modelo.
    - **Gancho `PreToolUse`** en `--settings`: `micnaga hook-guard --plan <json>`.
@@ -771,15 +772,24 @@ el runner, `secretary`, `executor`, `service`, `bridge`, la configuración y la 
        dejarla pasar devuelve `updatedInput` = la entrada aprobada (medido: se ejecuta la del
        gancho, no la del modelo).
      - Cada aprobación es de un solo uso (recibo `O_EXCL`).
-     - Medido: Claude Code deja **pasar** la llamada si el gancho sale con 1, no existe (127) o se
-       pasa de tiempo. Por eso el guardián sale con 2 ante cualquier error, se prueba antes de
-       cada ejecución (`self_test`) y toda escritura con éxito sin recibo se marca `unguarded`.
+     - Medido: si la herramienta está en `--allowedTools`, Claude Code deja **pasar** la llamada
+       cuando el gancho sale con 1, no existe (127) o se pasa de tiempo. Sin `--allowedTools`, esos
+       mismos fallos dejan la llamada **denegada** (`dontAsk`) y un `allow` del gancho sí la
+       ejecuta: por eso solo autoriza el guardián (falla cerrado; prueba real con un gancho roto).
+       Además el guardián sale con 2 ante cualquier error, se prueba antes de cada ejecución
+       (`self_test`) y toda escritura con éxito sin recibo se marca `unguarded`.
      - En Windows lo ejecuta Git Bash: rutas con `/` y entre comillas (con espacios, probado). Su
        salida es JSON solo ASCII: en `cp1252` un «·» rompía el `updatedInput` (bug encontrado en
        las pruebas).
    - **Idempotencia**: `google_writes` en `micnaga.db` (`intent` antes de lanzar, `done` con ids y
-     enlaces, `unknown` si se agotó el tiempo). Antes de repetir un evento dudoso se busca su marca
-     `ref` (`list_events` + `fullText`). Con los recibos del guardián, reintentar no duplica.
+     enlaces, `unknown` si la llamada salió y no se supo el resultado). El recibo del guardián
+     decide: sin recibo, la llamada no llegó a ejecutarse y se puede repetir. Con recibo, solo se
+     repite si se **comprueba** que no existe: eventos, buscando su marca `ref` (`list_events` +
+     `fullText`). Borradores, correos y ficheros no se pueden comprobar: se paran con «Puede que
+     ya esté hecho · revísalo». Editar la propuesta (otra `revision`, otra clave) permite
+     reintentar a propósito.
+   - Si la misma reunión llega como `reunion_siguiente` y como `crear_evento` de Odoo (misma
+     hora), solo queda la de Google.
    - Ids y enlaces salen de `tool_use_result.structuredContent` del stream.
 8. **Espejo en Odoo** (`google/mirror.py`): `calendar.event` con el mismo título y hora (UTC), el Meet
    en `videocall_location` (o en la descripción si el campo no existe), el enlace de Google y
@@ -794,13 +804,24 @@ el runner, `secretary`, `executor`, `service`, `bridge`, la configuración y la 
    - `edit` valida y **conserva el id** (sube `revision`); `replace` admite una versión revisada
      con el mismo id, pensada para «corrígelo con un mensaje».
    - Los `campos` se añaden al responder a la interfaz y no se guardan.
+   - Si se edita el id de un registro de Odoo, se borra lo que Micnaga comprobó de él (nombre,
+     etapa…) y la propuesta queda desmarcada, «sin comprobar».
 10. **Medidas reales** (sesión Max de este PC):
     - `list_events` 0,6 s, `search_threads` 1,0 s, `search_files` 0,8 s dentro de una ejecución.
-    - Una llamada guardada entera: 3,4-3,7 s.
+    - Una llamada guardada entera: 3,2-3,7 s.
     - Pasada sobre una reunión sintética con los tres servicios: 11,5 s, 4 turnos, 2 lecturas
       (Gmail y Drive), unos 0,04 $ equivalentes.
-11. **Sin verificar**:
+    - Sin hora acordada: 12,2 s, 5 turnos, más `suggest_time`, que devolvió 3 huecos.
+11. **Escrituras reales autorizadas** (una vez, por el camino de «Aplicar» con el guardián): un
+    evento de prueba sin invitados (`NONE`, con Meet, comprobado con `get_event`, borrado), su
+    espejo en Odoo (con `unlink` permitido: creado, comprobado, borrado) y un borrador a la propia
+    dirección (comprobado con `get_draft`, borrado). Se hicieron con la herramienta aún en
+    `--allowedTools`. El cambio a «solo autoriza el guardián» se verificó después con lecturas
+    reales por el mismo camino y con la prueba del gancho roto.
+12. **Sin verificar**:
     - Con token o clave de API.
-    - El espejo contra un Odoo 19 real (solo con un Odoo falso), salvo lo que se probó al final.
     - Un «Contraste» real: no había documento discrepante y no se crean documentos de prueba.
     - El modo congelado `micnaga-cli.exe hook-guard`.
+    - La lista de servidores ajenos que se deniegan explícitamente sale de la última
+      «Comprobar» (Ajustes la lanza sola la primera vez). Mientras tanto la lista blanca ya
+      impide que se carguen.

@@ -532,6 +532,9 @@ def route_odoo_events(
     Los ``asistentes_ids`` (partners de Odoo) no tienen correo aqui: quedan en ``odoo_partner_ids``
     para el espejo, sin invitar a nadie."""
     out: list[dict[str, Any]] = []
+    starts = {
+        (p.get("datos") or {}).get("inicio") for p in proposals if p.get("tipo") == "evento_google"
+    }
     for p in proposals:
         if p.get("tipo") != "crear_evento" or p.get("grupo") == GROUP:
             out.append(p)
@@ -543,6 +546,9 @@ def route_odoo_events(
         if start is None:
             out.append(p)
             continue
+        if start in starts:
+            continue  # la misma reunion ya esta propuesta en Google: no se duplica
+        starts.add(start)
         hours = d.get("duracion_h")
         minutes = (
             round(float(hours) * 60)

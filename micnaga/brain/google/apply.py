@@ -203,14 +203,20 @@ class GoogleApplier:
             out = calls.CallOutcome(ok=True, tool=tool, input=tool_input)
             out.extra = {"stored": prior.result, "key": key}
             return out
-        if prior is not None and prior.state in ("intent", "unknown"):
-            found = self._recover(service, op, tool_input, key)
-            if found is not None:
+        if calls.receipt_path(key).is_file():
+            # El guardian ya dejo pasar esta llamada una vez y no sabemos si se ejecuto (tiempo
+            # agotado, proceso muerto...). Solo se repite si se COMPRUEBA que no existe; si no,
+            # se para: «revisa antes de reintentar» (editar la propuesta crea otra clave).
+            state, found = self._recover(service, op, tool_input, key)
+            if state == "found" and found is not None:
                 self._put(key, p, op, tool, "done", **found)
                 out = calls.CallOutcome(ok=True, tool=tool, input=tool_input)
                 out.extra = {"stored": found, "key": key}
                 return out
-            calls.forget_receipt(key)  # no hay rastro en Google: no llego a ejecutarse
+            if state != "absent":
+                self._put(key, p, op, tool, "unknown", error="unknown_outcome")
+                raise GoogleApplyError("google_unknown_outcome")
+            calls.forget_receipt(key)  # comprobado: no esta en Google
         self._put(key, p, op, tool, "intent")
         try:
             outcome = calls.run_tool(
@@ -221,7 +227,8 @@ class GoogleApplier:
             raise GoogleApplyError("google_guard") from None
         except Exception as exc:
             kind = str(getattr(exc, "kind", "failed"))
-            state = "unknown" if kind in ("timeout", "output", "offline") else "failed"
+            # con recibo, la llamada salio: resultado desconocido, nunca «fallida»
+            state = "unknown" if calls.receipt_path(key).is_file() else "failed"
             self._put(key, p, op, tool, state, error=kind)
             raise GoogleApplyError(f"google_{kind}") from exc
         outcome.extra["key"] = key
@@ -235,10 +242,11 @@ class GoogleApplier:
 
     def _recover(
         self, service: str, op: str, tool_input: dict[str, Any], key: str
-    ) -> dict[str, Any] | None:
-        """¿Se ejecuto la vez anterior? Solo para crear eventos: buscar la marca ``ref``."""
+    ) -> tuple[str, dict[str, Any] | None]:
+        """¿Se ejecuto la vez anterior? ``("found", enlaces)``, ``("absent", None)`` (buscado y no
+        esta) o ``("unknown", None)``. Solo se puede comprobar al crear eventos (marca ``ref``)."""
         if service != "calendar" or op != "create":
-            return None
+            return "unknown", None
         start = datetime.fromisoformat(str(tool_input["startTime"]))
         q: dict[str, Any] = {
             "fullText": ref_of(key),
@@ -251,11 +259,13 @@ class GoogleApplier:
         try:
             res = calls.run_tool(self.runner, "calendar", "list_events", q)
         except Exception:
-            return None
+            return "unknown", None
+        if not res.ok:
+            return "unknown", None
         for ev in res.structured.get("events") or []:
             if isinstance(ev, dict) and ref_of(key) in str(ev.get("description") or ""):
-                return event_links(ev)
-        return None
+                return "found", event_links(ev)
+        return "absent", None
 
     # ------------------------------------------------------------------ por tipo
 

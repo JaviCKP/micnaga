@@ -34,6 +34,8 @@ class Policy:
     disallowed: list[str] = field(default_factory=list)
     settings: dict[str, Any] = field(default_factory=dict)
     env: dict[str, str] = field(default_factory=lambda: dict(ENV))
+    tool: str | None = None
+    """La herramienta de una llamada concreta (la autoriza solo el guardian)."""
 
 
 def server_allowlist(services: list[str], stdio_names: list[str]) -> list[dict[str, str]]:
@@ -71,15 +73,20 @@ def analysis(
 
 
 def single_call(service: str, tool_name: str, *, foreign: list[str] | None = None) -> Policy:
-    """Una llamada concreta (lectura puntual o escritura aprobada): solo esa herramienta."""
+    """Una llamada concreta (lectura puntual o escritura aprobada): solo esa herramienta.
+
+    La herramienta NO va en ``--allowedTools``: el unico permiso lo da el guardian (``allow``
+    del gancho). Medido: si el gancho falla (sale con 1, no existe), ``dontAsk`` la deniega;
+    con ``--allowedTools`` se ejecutaria igualmente. Asi un guardian roto = nada se ejecuta."""
     full = g.tool(service, tool_name)
     disallowed = [t for s in g.SERVICES for t in g.all_tools(s) if t != full and s == service]
     disallowed += foreign_denials([service], foreign or [])
     return Policy(
         services=[service],
-        allowed=[full],
+        allowed=[],
         disallowed=disallowed,
         settings={"allowedMcpServers": server_allowlist([service], [])},
+        tool=full,
     )
 
 
