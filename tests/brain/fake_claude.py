@@ -103,6 +103,9 @@ def main(argv: list[str]) -> int:
     if cfg_path:
         servers = json.loads(Path(cfg_path).read_text(encoding="utf-8"))["mcpServers"]
         log["mcp_config"] = servers
+    settings_path = arg(argv, "--settings")
+    if settings_path:
+        log["settings"] = json.loads(Path(settings_path).read_text(encoding="utf-8"))
     status = dict.fromkeys(servers, "connected")
     status.update(sc.get("mcp_status", {}))
     emit(

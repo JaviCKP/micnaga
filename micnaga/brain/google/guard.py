@@ -119,7 +119,8 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("bad input")
         if event.get("hook_event_name", "PreToolUse") != "PreToolUse":
             return 0
-        sys.stdout.write(json.dumps(decide(event, plan), ensure_ascii=False) + "\n")
+        # JSON solo ASCII: no depende de la pagina de codigos de la consola (cp1252 en Windows)
+        sys.stdout.write(json.dumps(decide(event, plan), ensure_ascii=True) + "\n")
         sys.stdout.flush()
         return 0
     except BaseException as exc:  # falla cerrado: 2 = bloquear
