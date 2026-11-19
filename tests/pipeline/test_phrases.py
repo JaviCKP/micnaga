@@ -158,13 +158,21 @@ def test_text_similarity_normalizes() -> None:
 
 
 def test_build_speakers_orders_me_first_and_names() -> None:
-    segs = [seg("S2", 0, 1, "a"), seg("S1", 1, 2, "b")]
+    segs = [seg("S2", 0, 1, "a"), seg("S1", 1, 2, "b"), seg("me", 2, 3, "c")]
     speakers = build_speakers(segs, {"S1": ("Laura", 0.84)})
     assert [(s.id, s.name, s.voiceprint_match) for s in speakers] == [
         ("me", "Yo", None),
         ("S1", "Laura", 0.84),
         ("S2", "Hablante 2", None),
     ]
+
+
+def test_build_speakers_lists_only_speakers_with_segments() -> None:
+    # micro callado (video de YouTube): «Yo» no es participante; un nombre sin segmentos tampoco
+    segs = [seg("S1", 0, 1, "a"), seg("S2", 1, 2, "b")]
+    speakers = build_speakers(segs, {"S3": ("Marta", 0.9)})
+    assert [s.id for s in speakers] == ["S1", "S2"]
+    assert build_speakers([]) == []
     assert default_speaker_name("S10") == "Hablante 10"
 
 

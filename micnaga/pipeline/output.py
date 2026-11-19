@@ -12,6 +12,7 @@ Formato Markdown (decisiones donde la spec no lo fija)
   duracion = ``round(duration_s / 60)`` minutos, minimo 1.
 * ``## Marcadores`` solo aparece si hay marcadores; ``[mm:ss]`` con los minutos totales (pasada la
   hora sigue contando: ``[72:05]``); una etiqueta vacia se muestra como ``Marcador``.
+* ``Participantes`` lista solo los hablantes con algun segmento (``—`` si no hay ninguno).
 * El pasaje marcado se resalta con la sintaxis ``==texto==``: es el segmento que contiene el
   instante del marcador o, si cae en un hueco, el mas cercano (en empate, el anterior).
 * Texto con saltos ``\\n`` y sin BOM, UTF-8.
@@ -97,7 +98,9 @@ def _header(transcript: Transcript) -> str:
 def render_markdown(transcript: Transcript) -> str:
     names = speaker_names(transcript)
     lines = [_header(transcript), ""]
-    lines.append("Participantes: " + ", ".join(s.name for s in transcript.speakers))
+    speaking = {seg.speaker for seg in transcript.segments}
+    participants = [s.name for s in transcript.speakers if s.id in speaking]
+    lines.append("Participantes: " + (", ".join(participants) or "—"))
     lines.append("")
     highlighted: set[int] = set()
     if transcript.markers:

@@ -133,6 +133,20 @@ def test_capture_title_names_the_transcript_and_the_final_folder(db: Database) -
     assert renamed.session_dir.name == f"{name}-2"
 
 
+def test_silent_mic_does_not_list_me_as_participant(db: Database) -> None:
+    # como el podcast real: solo habla la pista del sistema y el micro esta callado
+    spec = SyntheticSpec(kind="youtube", duration_s=45.0, confirmed=True)
+    result = runner_for(db=db).run(make_session("yt", spec))
+    t = result.transcript
+    assert result.status == "done" and t is not None, result.reason
+    assert all(s.speaker != "me" for s in t.segments)
+    assert "me" not in {s.id for s in t.speakers}
+    assert {s.id for s in t.speakers} == {s.speaker for s in t.segments}
+    md = (result.session_dir / paths.TRANSCRIPT_MD).read_text(encoding="utf-8")
+    participants = next(line for line in md.splitlines() if line.startswith("Participantes:"))
+    assert "Yo" not in participants
+
+
 def test_second_meeting_with_the_same_title_gets_a_suffix(db: Database) -> None:
     first = runner_for(db=db).run(make_session("a"))
     second = runner_for(db=db).run(make_session("b"))

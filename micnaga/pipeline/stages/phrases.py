@@ -125,9 +125,13 @@ def speaker_sort_key(speaker_id: str) -> tuple[int, int, str]:
 def build_speakers(
     segments: Sequence[Segment], names: dict[str, tuple[str, float | None]] | None = None
 ) -> list[Speaker]:
-    """``me`` primero (siempre) y despues los hablantes que aparecen, por orden de ``S<n>``."""
+    """Hablantes con al menos un segmento: ``me`` primero y despues ``S<n>`` por numero.
+
+    ``me`` (Yo) solo aparece si habla: un micro callado (YouTube, reunion solo escuchada) no
+    lo lista como participante.
+    """
     names = names or {}
-    ids = {s.speaker for s in segments} | {SPEAKER_ME}
+    ids = {s.speaker for s in segments}
     speakers: list[Speaker] = []
     for sid in sorted(ids, key=speaker_sort_key):
         if sid in names:
