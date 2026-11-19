@@ -7,119 +7,95 @@
 
 ## Estados
 
-Hay siete **fases base** y dos **solapamientos**. `WatcherStateMachine.state` devuelve el estado
+> **Flujo revisado a petición del usuario (rama `fix/review-findings`, ver `DECISIONS.md` §18).**
+> Resumen «sota, caballo y rey»: *micro en uso → se graba provisional; se pregunta; «Sí» guarda,
+> «No» aparta (recuperable 7 días), sin respuesta se decide al final; nada se borra sin un «No».*
+
+Hay nueve **fases base** y dos **solapamientos**. `WatcherStateMachine.state` devuelve el estado
 observable (para el icono de bandeja y el diagnóstico); `.phase` devuelve la fase base.
 
 | Estado | Qué significa | Tray |
 | --- | --- | --- |
 | `IDLE` | Vigilando. Sin reunión elegible. | gris |
-| `CANDIDATE` | Aún no se graba. O bien Meet (micro + pestaña) lleva `< confirm_after_s` (5 s) estable, o bien alguna app lleva `< mic_grace_s` (20 s) con el micro de forma continua. | gris |
-| `RECORDING_PRE_POPUP` | **Ruta genérica**: grabación provisional en marcha y pastilla visible, popup aún no. | rojo |
-| `PROMPTING` | Popup visible **y** grabación provisional ya en marcha. | rojo |
-| `RECORDING_CONFIRMED` | El usuario dijo «Grabar» (o «Grabar ahora»). Solo exigirá la compuerta 1. | rojo |
-| `RECORDING_PROVISIONAL` | El popup caducó sin respuesta (`on_timeout = provisional`). Las compuertas deciden. | rojo |
+| `CANDIDATE` | Aún no se graba. Meet (micro + pestaña) lleva `< confirm_after_s` (5 s) estable, o alguna app lleva `< mic_grace_s` (20 s) con el micro de forma continua. | gris |
+| `RECORDING_PRE_POPUP` | Grabación provisional en marcha y pastilla visible; popup aún no (ruta genérica). | rojo |
+| `PROMPTING` | Popup «¿Estás en una reu?» visible **y** grabación provisional en marcha. | rojo |
+| `RECORDING_CONFIRMED` | «Sí» (o «Grabar ahora»). Solo exige la duración mínima (`gates.min_duration_s`, 30 s). | rojo |
+| `RECORDING_PROVISIONAL` | El popup caducó sin respuesta: se sigue grabando; la pastilla ofrece «¿Guardar?». Se decide al final. | rojo |
+| `END_PROMPT` | El micro se soltó `end_confirm_s` (2 s): popup de fin. Confirmada: «¿Ha terminado?» (Terminar / Seguir grabando; sin respuesta en `end_popup_timeout_s` = 10 s, termina). Sin confirmar: «¿La guardo?» (Guardar / Descartar; sin respuesta, se aparta). La grabación sigue mientras tanto y luego se recorta al momento en que se soltó el micro. | rojo |
+| `DISCARD_PENDING` | Tras un «No»/«Descartar»: la grabación está en pausa (nada se graba) y la pastilla muestra «Descartada · Deshacer» durante `undo_s` (8 s). Sin deshacer → `_descartadas`. | rojo |
 | `SUSPENDED` | «Pausar vigilancia 1 h». No se evalúan señales. | gris |
 | `PAUSED` *(solapamiento)* | Pausa privada activa sobre `PROMPTING` / `RECORDING_*`. | ámbar |
-| `ENDING` *(solapamiento)* | Una señal obligatoria cayó; cuenta atrás de `end_after_s` (15 s) sobre `PROMPTING` / `RECORDING_*`. | rojo |
-| `IGNORED` *(derivado)* | Fase `IDLE` con algún código ignorado por «Ahora no» hasta colgar. | gris |
-
-`PAUSED` tiene prioridad sobre `ENDING`. «Ignorado» no es una fase: es un diccionario
-`código → desde cuándo no se ve`, porque varias reuniones pueden estar ignoradas a la vez y
-conviven con un `CANDIDATE` de otra sala.
+| `ENDING` *(solapamiento)* | La señal cayó y aún no han pasado `end_confirm_s`. | rojo |
+| `IGNORED` *(derivado)* | Fase `IDLE` con alguna reunión/app ignorada por «No» hasta colgar (`end_after_s`). | gris |
 
 ## Dos rutas de detección
 
-1. **Ruta genérica** (`detection.generic_apps = true`, por defecto). *Cualquier* app que use el
-   micro —apps de escritorio (`ConsentStore\microphone\NonPackaged\*`) y apps empaquetadas
-   (`ConsentStore\microphone\<PackageFamilyName>`: Teams nuevo, WhatsApp, Zoom de la Store...)—
-   dispara la detección:
+1. **Ruta genérica** (núcleo; `detection.generic_apps = true`). *Cualquier* app que use el micro
+   (escritorio o empaquetada; sin listas blancas) dispara la detección:
    * uso **continuo** del micro durante `mic_grace_s` (20 s) → `start_recording(provisional=True)` +
-     `show_pill(provisional=True)`, **sin popup**;
-   * `popup_after_recording_s` (20 s) después de empezar a grabar (la cuenta se congela en pausa
-     privada y con la señal caída) → popup «¿Estás en una reu?» con el nombre amigable de la app;
-   * «Grabar» → confirmada; «Ahora no» → se descarta todo, se oculta la pastilla y se ignora esa
-     sesión de micro de la app hasta que suelte el micro 15 s; sin respuesta en `popup_timeout_s`
-     → sigue provisional (o se descarta si `on_timeout = discard`) y deciden las compuertas.
-   * Fin: la app suelta el micro `end_after_s` (15 s). Si el popup seguía **sin responder**, la
-     sesión genérica se **finaliza como provisional** (compuertas) y no se descarta: para entonces
-     ya hay >= 40 s de llamada grabada.
-   * Exclusiones: el propio Micnaga (el intérprete de Python que lo ejecuta, sus variantes
-     `pythonw.exe` y `micnaga.exe`) y `detection.exclude_apps` (basename del exe, ruta completa,
-     `PackageFamilyName` o su nombre sin sufijo). Los navegadores excluidos siguen en la ruta Meet.
-   * `MeetingInfo` genérico: `title` = nombre amigable (tabla pequeña: Teams, WhatsApp, Zoom,
-     Discord, Slack, Skype, Webex, «navegador»; si no, el nombre del exe), `code = None`,
-     `generic_app = "app:<exe o paquete>"` (clave de ignorado), `browser` solo si es un navegador.
-2. **Ruta rápida de Meet** (sin cambios): el navegador con el micro **y** su pestaña de Meet
-   estables `confirm_after_s` (5 s) → `start_recording(provisional=True)` + `show_popup` a la vez.
-   Si hay una sesión genérica del *mismo navegador* en marcha y aparece su pestaña de Meet, se
-   **mejora** a la ruta Meet sin reiniciar la grabación: adopta título/código/monitor y, si el popup
-   aún no había salido, lo muestra ya (si ya salió, no se repite). Desde ese momento vive de la
-   pestaña de Meet.
+     `show_pill(provisional=True)`, sin popup;
+   * `popup_after_recording_s` (20 s) grabando (la cuenta se congela en pausa privada y con la
+     señal caída) → popup «¿Estás en una reu?» con el nombre amigable de la app;
+   * Exclusiones: el propio Micnaga (su intérprete/exe y su pid) y `detection.exclude_apps`.
+2. **Ruta rápida de Meet**: navegador con el micro **y** su pestaña de Meet estables
+   `confirm_after_s` (5 s) → `start_recording(provisional=True)` + `show_popup` a la vez. Una
+   sesión genérica del mismo navegador se **mejora** a Meet sin reiniciar la grabación.
 
 ## Diagrama
 
 ```mermaid
 stateDiagram-v2
     [*] --> IDLE
-
-    IDLE --> CANDIDATE: señales obligatorias OK<br/>(micro del navegador + pestaña Meet no ignorada)
-    CANDIDATE --> IDLE: cae cualquiera (sin tolerancia)
+    IDLE --> CANDIDATE: micro en uso / Meet visible
+    CANDIDATE --> IDLE: cae la señal
+    CANDIDATE --> RECORDING_PRE_POPUP: app con el micro ≥ mic_grace_s<br/>[start_recording(provisional) + show_pill(provisional)]
     CANDIDATE --> PROMPTING: Meet estable ≥ confirm_after_s<br/>[start_recording(provisional) + show_popup]
-    CANDIDATE --> RECORDING_PRE_POPUP: app con el micro ≥ mic_grace_s (ruta genérica)<br/>[start_recording(provisional) + show_pill(provisional)]
-    RECORDING_PRE_POPUP --> PROMPTING: popup_after_recording_s grabando<br/>[show_popup] (o al aparecer su pestaña de Meet)
-    RECORDING_PRE_POPUP --> RECORDING_CONFIRMED: «Grabar ahora»<br/>[confirm + show_pill]
-    RECORDING_PRE_POPUP --> IDLE: la app suelta el micro ≥ end_after_s / parar<br/>[stop_and_finalize(False) + hide_pill]
-    CANDIDATE --> RECORDING_CONFIRMED: «Grabar ahora» (adopta la reunión)
+    RECORDING_PRE_POPUP --> PROMPTING: popup_after_recording_s grabando [show_popup]
+    RECORDING_PRE_POPUP --> IDLE: micro libre ≥ end_confirm_s (nunca se preguntó)<br/>[hold_recording(unanswered, trim)]
 
-    PROMPTING --> RECORDING_CONFIRMED: «Grabar» / Enter / «Grabar ahora»<br/>[confirm + close_popup + show_pill]
-    PROMPTING --> IDLE: «Ahora no» / Esc / parar<br/>[discard + close_popup + hide_pill si ya estaba] y se ignora
-    PROMPTING --> RECORDING_PROVISIONAL: popup_timeout_s sin respuesta<br/>(on_timeout = provisional)<br/>[close_popup + show_pill(provisional)]
-    PROMPTING --> IDLE: on_timeout = discard<br/>[discard] y se ignora el código
-    PROMPTING --> IDLE: señal caída ≥ end_after_s<br/>Meet: [close_popup + discard]<br/>genérica: [close_popup + stop_and_finalize(False) + hide_pill]
-    PROMPTING --> SUSPENDED: «Pausar vigilancia»<br/>[discard + close_popup]
+    PROMPTING --> RECORDING_CONFIRMED: «Sí» [confirm + close_popup + show_pill]
+    PROMPTING --> DISCARD_PENDING: «No» [close_popup + begin_discard(undo_s)] y se ignora
+    PROMPTING --> RECORDING_PROVISIONAL: popup_timeout_s sin respuesta<br/>[close_popup + show_pill(provisional) → «¿Guardar?»]
+    RECORDING_PROVISIONAL --> RECORDING_CONFIRMED: «¿Guardar?» / «Grabar ahora» [confirm]
 
-    RECORDING_PROVISIONAL --> RECORDING_CONFIRMED: «Grabar ahora» / confirmar en pastilla<br/>[confirm + show_pill]
-    RECORDING_PROVISIONAL --> IDLE: señal caída ≥ end_after_s<br/>[stop_and_finalize(confirmed=False) + hide_pill]
-    RECORDING_CONFIRMED --> IDLE: señal caída ≥ end_after_s<br/>[stop_and_finalize(confirmed=True) + hide_pill]
-    RECORDING_PROVISIONAL --> IDLE: parar (pastilla)<br/>[stop_and_finalize(False) + hide_pill] y se ignora
-    RECORDING_CONFIRMED --> IDLE: parar (pastilla)<br/>[stop_and_finalize(True) + hide_pill] y se ignora
+    PROMPTING --> END_PROMPT: micro libre ≥ end_confirm_s [close_popup + mark_end + show_end_popup]
+    RECORDING_CONFIRMED --> END_PROMPT: micro libre ≥ end_confirm_s [mark_end + show_end_popup(confirmed)]
+    RECORDING_PROVISIONAL --> END_PROMPT: micro libre ≥ end_confirm_s / parar<br/>[mark_end + show_end_popup(unconfirmed)]
 
-    IDLE --> RECORDING_CONFIRMED: «Grabar ahora» sin reunión (manual)<br/>[start_recording(confirmed) + show_pill]
+    END_PROMPT --> IDLE: Terminar / Guardar / timeout (confirmada)<br/>[stop_and_finalize(confirmed, trim)]
+    END_PROMPT --> IDLE: timeout sin confirmar [hold_recording(unanswered, trim)]
+    END_PROMPT --> RECORDING_CONFIRMED: Seguir grabando [clear_end (+ confirm)]
+    END_PROMPT --> DISCARD_PENDING: Descartar [begin_discard]
+    END_PROMPT --> RECORDING_CONFIRMED: vuelve la señal [close_end_popup(resumed) + clear_end]
 
+    DISCARD_PENDING --> RECORDING_CONFIRMED: Deshacer tras «No» [cancel_discard + confirm + show_pill]
+    DISCARD_PENDING --> IDLE: Deshacer tras «Descartar» [cancel_discard + stop_and_finalize(confirmed, trim)]
+    DISCARD_PENDING --> IDLE: pasan undo_s [hold_recording(declined)] → «Descartadas»
+
+    RECORDING_CONFIRMED --> IDLE: parar (pastilla) [stop_and_finalize(confirmed)]
+    IDLE --> RECORDING_CONFIRMED: «Grabar ahora» [start_recording(confirmed) + show_pill]
     IDLE --> SUSPENDED: «Pausar vigilancia 1 h»
-    CANDIDATE --> SUSPENDED: «Pausar vigilancia 1 h»
-    SUSPENDED --> IDLE: pasa 1 h o «Reanudar»<br/>(los 5 s de estabilidad empiezan de cero)
-    SUSPENDED --> RECORDING_CONFIRMED: «Grabar ahora» (al acabar vuelve a SUSPENDED)
+    SUSPENDED --> IDLE: pasa 1 h o «Reanudar»
 ```
 
-Solapamientos (no son transiciones de fase; se activan sobre `PROMPTING`, `RECORDING_*`):
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    state "RECORDING_* / PROMPTING" as REC
-    REC --> PAUSED: atajo ctrl+alt+p [pause_recording]
-    PAUSED --> REC: atajo ctrl+alt+p [resume_recording]
-    REC --> ENDING: cae una señal obligatoria
-    ENDING --> REC: vuelve la señal (antes de end_after_s)
-    ENDING --> [*]: 15 s seguidos sin señal → fin de sesión
-```
+`END_PROMPT` vuelve a la fase previa (no necesariamente `RECORDING_CONFIRMED`) si la señal vuelve
+antes de responder; si venía de `PROMPTING`, se vuelve a preguntar.
 
 ### La decisión
 
-La única decisión de la máquina es **¿qué hacer al cerrar?**, y depende solo de la fase en que
-estaba la sesión cuando acabó:
+| Cómo acaba la sesión | Resultado |
+| --- | --- |
+| «Sí» y luego Terminar / timeout del popup de fin | se transcribe (recortada al soltar el micro) |
+| Sin respuesta y «Guardar» al final (o «¿Guardar?» en la pastilla) | se transcribe |
+| Sin respuesta al principio **ni** al final | `_descartadas` (`unanswered`), recuperable |
+| «No» / «Descartar» sin «Deshacer» | `_descartadas` (`declined`), recuperable |
+| Llamada que acaba antes del popup (< ~40 s) | `_descartadas` (`unanswered`), recuperable |
+| La app se cierra con una sesión sin confirmar | `_descartadas` (`interrupted`) al cerrar o al arrancar |
 
-| Fase al acabar | Acciones | Quién decide después |
-| --- | --- | --- |
-| `PROMPTING` (ruta Meet) | `close_popup(meeting_ended)`, `discard_recording` | nadie: se descarta todo |
-| `PROMPTING` (origen genérico) | `close_popup(meeting_ended)`, `stop_and_finalize(confirmed=False)`, `hide_pill` | las compuertas (ya hay >= 40 s grabados) |
-| `RECORDING_PRE_POPUP` | `stop_and_finalize(confirmed=False)`, `hide_pill` | las compuertas |
-| `RECORDING_PROVISIONAL` | `stop_and_finalize(confirmed=False)`, `hide_pill` | las tres compuertas (etapa 1 del pipeline) |
-| `RECORDING_CONFIRMED` | `stop_and_finalize(confirmed=True)`, `hide_pill` | solo la compuerta de duración |
-
-El vigilante **no evalúa compuertas**: la decisión sobre el audio la toma la etapa 1 del
-pipeline (`micnaga.gates`). Pasa `confirmed` y el `MeetingInfo` definitivo al controlador.
+`_descartadas` se purga a los `storage.discarded_keep_days` (7) días. «Recuperar» en la
+biblioteca devuelve la carpeta, la marca confirmada y la encola. El vigilante no evalúa
+compuertas: la etapa 1 del pipeline aparta (no borra) lo que no las pasa.
 
 ## Reglas y decisiones (cubren lo no escrito en la spec)
 
@@ -136,7 +112,7 @@ pipeline (`micnaga.gates`). Pasa `confirmed` y el `MeetingInfo` definitivo al co
 * **Uso continuo**: cualquier corte del micro de una app reinicia su cuenta de `mic_grace_s`. Gana la app con más tiempo continuo; mientras hay sesión, otras apps no abren otra.
 * **Tras parar** (`user_stop`) se ignoran también todas las apps que tengan el micro en ese momento.
 * **Liveness del micro**: «en uso» exige un proceso vivo cuyo `create_time` sea anterior a `LastUsedTimeStart` (+10 s); así una entrada obsoleta (`Stop = 0` de un cuelgue) no cuenta ni tras reiniciar la app.
-* **«Ahora no»** ignora la clave de la reunión (`código`, o `nocode:<navegador>` si no hay código:
+* **«No»** (antes «Ahora no») ignora la clave de la reunión (`código`, o `nocode:<navegador>` si no hay código:
   el título no entra en la clave porque los nombres de pestaña de UIA llevan decoraciones
   localizadas y la misma pestana saldría con dos claves) hasta colgar. «Colgar» = esa clave sin señal ≥ `end_after_s` (un parpadeo no la olvida). Un
   código distinto sí vuelve a preguntar, incluso con el ignorado aún abierto.
@@ -172,12 +148,17 @@ lock, en orden, tolerando excepciones y reentradas.
 | `ShowPopup` | `show_popup(title, code, monitor_hint, timeout_s)` |
 | `ClosePopup` | `close_popup(reason: confirmed \| declined \| timeout \| meeting_ended \| suspended)` |
 | `ConfirmRecording` | `confirm_recording()` |
-| `DiscardRecording` | `discard_recording()` |
-| `StopAndFinalize` | `stop_and_finalize(confirmed: bool, meeting: MeetingInfo)` |
-| `ShowPill` | `show_pill(provisional: bool, paused: bool)` (en la ruta genérica sale **antes** del popup y es idempotente) |
+| `MarkEnd` / `ClearEnd` | `mark_end()` / `clear_end()` (punto de recorte = cuando se soltó el micro) |
+| `ShowEndPopup` | `show_end_popup(confirmed, title, monitor_hint, timeout_s)` |
+| `CloseEndPopup` | `close_end_popup(reason: answered \| timeout \| resumed)` |
+| `BeginDiscard` / `CancelDiscard` | `begin_discard(undo_s)` (marca en disco síncrona + pausa + chip «Deshacer») / `cancel_discard()` |
+| `HoldRecording` | `hold_recording(reason, trim)` → parar, FLAC y mover a `_descartadas` |
+| `StopAndFinalize` | `stop_and_finalize(confirmed, meeting, trim)` → parar, FLAC y encolar |
+| `ShowPill` | `show_pill(provisional: bool, paused: bool)` |
 | `HidePill` | `hide_pill()` |
 | `PauseRecording` / `ResumeRecording` | `pause_recording()` / `resume_recording()` |
 
 Entradas hacia el vigilante (hilo-seguras): `Watcher.popup_answer(accept)`, `popup_hover(bool)`,
+`end_answer(finish|keep|save|discard)`, `undo()`, `recording_failed()`,
 `record_now()`, `user_stop()`, `toggle_private_pause()`, `set_private_pause(bool)`,
 `suspend(duration_s=3600)`, `resume_watching()`.

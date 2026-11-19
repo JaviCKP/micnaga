@@ -609,3 +609,47 @@ hablantes cuando hay pocos**.
    palabra con una referencia aproximada por tono sube de 85,1 % a 88,6 %.
 7. **Huellas:** la etapa 7 anota `info.embedder` (`embedding_name` del motor o su `name`) y la etapa 10 compara
    las huellas en ese espacio; para los motores actuales es el mismo nombre que antes (compatibles).
+
+## 18. Flujo Sí/No recuperable, popup de fin y «Descartadas» (rama `fix/review-findings`)
+
+**Desviación de la spec §5 pedida expresamente por el usuario** tras una prueba real (el popup no
+le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/state_machine.md`.
+
+1. **Flujo** (cualquier app con el micro, sin listas blancas): 20 s de micro en uso → grabación
+   provisional + pastilla → popup a los 20 s. «Sí» = confirmada (solo la compuerta de duración,
+   `gates.min_duration_s = 30`). «No» = se pausa al instante, chip «Descartada · Deshacer» 8 s
+   (`detection.undo_s`) y, sin deshacer, la carpeta va a `_descartadas`. Sin respuesta = sigue
+   grabando en provisional (la pastilla ofrece «¿Guardar?») y se decide al final.
+2. **Popup de fin** (mismo cristal que el popup): el micro libre `detection.end_confirm_s` (2 s)
+   abre «¿Ha terminado?» (Terminar / Seguir grabando; termina solo a los
+   `detection.end_popup_timeout_s` = 10 s) o, sin confirmar, «¿La guardo?» (Guardar / Descartar; sin
+   respuesta se aparta). La grabación sigue mientras se decide y luego se **recorta** al momento en
+   que se soltó el micro (`capture.json → trim_end_samples`, aplicado e idempotente en
+   `finalize_session`). `detection.end_after_s` queda solo como tiempo de olvido de lo ignorado.
+3. **Compuertas relajadas por defecto**: `min_remote_speech_s = 0`, `min_turns = 0` (antes 30 s y
+   6 turnos), y `gates.require_confirmed = true`: la etapa 1 no transcribe nada sin un «Sí»/«Guardar».
+   Lo que no pasa una compuerta se **aparta**, no se borra. Migración de config v1 → v2
+   (`[meta] version`): solo se cambian los valores que seguían en los defaults antiguos; los que el
+   usuario tocó se respetan.
+4. **«Descartadas» y privacidad.** Nada se borra sin un «No» explícito, y el «No» es recuperable:
+   `<reuniones>/_descartadas/<carpeta>/` con `held.json` (motivo `declined` / `unanswered` /
+   `unconfirmed` / `gates` / `interrupted` / `suspended` / `failed` y fecha). Se purga a los
+   `storage.discarded_keep_days` (7, mínimo 1) días al arrancar; la biblioteca lista, recupera
+   (vuelve a la raíz, `confirmed = true`, se encola) o borra ya. **Coste de privacidad asumido por
+   el usuario**: el audio de algo que dijo «No» existe en disco hasta 7 días (local, nunca
+   transcrito, nunca sale del equipo). Se documenta en el README.
+5. **Durabilidad del «No»**: al pulsarlo se escribe de forma síncrona (fsync) la marca
+   `.micnaga-discard.json` en la carpeta; si la app muere durante el «Deshacer» o antes de apartar,
+   el arranque la aparta en vez de transcribirla. Una sesión sin confirmar al salir con «Salir» también
+   se aparta (`unanswered`; `interrupted` si la app murió); una confirmada se encola.
+6. **Popup que no salía (A)**: no se reprodujo en este PC; se corrigieron las causas plausibles:
+   overlays visibles al arrancar (pywebview hace `form.Show()` al navegar en ventanas
+   transparentes), revelado con `requestAnimationFrame` (no corre en un WebView2 ocluido → ahora
+   `setTimeout`), y una comprobación a 1,2 s de que la ventana está visible (si no, se re-presenta y
+   queda en el log). Un fallo al abrir la captura ya no deja el vigilante colgado (aviso + vuelta a
+   vigilar).
+7. **Salida de la app**: solo «Salir», el fin de sesión de Windows o el instalador. La salida
+   inexplicada era un Ctrl+C de la consola que llegaba al manejador SIGINT de pywebview;
+   `app.ConsoleGuard` lo ignora (y lo registra). Si el bucle de la GUI termina por cualquier otra
+   cosa se registra el motivo y se recrean las ventanas sin tocar la grabación (máx. 5 en 10 min).
+   Toda salida deja `shutting down (reason: …)` en el log.
