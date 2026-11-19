@@ -13,7 +13,10 @@ Definiciones
   respuesta de ``S2``). La pista del micro (``me``) va aparte: puede solaparse con la remota.
 * **Segmento / parrafo** (etapa 11): frases consecutivas del mismo hablante con hueco
   < ``merge_gap_s`` (1,5 s) se unen; un parrafo se parte, en un fin de frase, cuando ya dura
-  ``MAX_PARAGRAPH_S`` (45 s) o ``MAX_PARAGRAPH_CHARS`` (700) caracteres.
+  ``MAX_PARAGRAPH_S`` (45 s) o ``MAX_PARAGRAPH_CHARS`` (700) caracteres. Un punto del ASR seguido
+  de una pausa < ``SENTENCE_PAUSE_S`` (0,35 s) **no** cuenta como fin de frase para partir el
+  parrafo: Parakeet pone puntos falsos a mitad de oracion y el parrafo se cortaba ahi (el texto
+  no se toca). Solo pasado el doble del limite vale cualquier punto (tope de seguridad).
 """
 
 from __future__ import annotations
@@ -29,6 +32,9 @@ from micnaga.types import SPEAKER_ME, SPEAKER_ME_NAME, Segment, Speaker, Word
 PHRASE_GAP_S = 0.8
 MAX_PARAGRAPH_S = 45.0
 MAX_PARAGRAPH_CHARS = 700
+SENTENCE_PAUSE_S = 0.35
+"""Pausa minima tras un punto para que parta un parrafo largo (los puntos falsos del ASR van
+seguidos sin pausa por el mismo hablante)."""
 ECHO_TIME_TOLERANCE_S = 0.5
 ECHO_PARTIAL_MIN_CHARS = 12
 _SENTENCE_END = re.compile(r"[.?!…]['\")\]»]*$")
@@ -90,6 +96,7 @@ def merge_segments(
     merge_gap_s: float = 1.5,
     max_paragraph_s: float = MAX_PARAGRAPH_S,
     max_paragraph_chars: int = MAX_PARAGRAPH_CHARS,
+    sentence_pause_s: float = SENTENCE_PAUSE_S,
 ) -> list[Segment]:
     """Une frases consecutivas del mismo hablante con hueco < ``merge_gap_s`` (ver modulo)."""
     out: list[Segment] = []
@@ -97,10 +104,14 @@ def merge_segments(
         if out:
             prev = out[-1]
             gap = seg.start - prev.end
-            long_enough = (
-                prev.end - prev.start >= max_paragraph_s or len(prev.text) >= max_paragraph_chars
+            duration, chars = prev.end - prev.start, len(prev.text)
+            long_enough = duration >= max_paragraph_s or chars >= max_paragraph_chars
+            far_too_long = duration >= 2 * max_paragraph_s or chars >= 2 * max_paragraph_chars
+            sentence_done = (
+                bool(prev.words)
+                and ends_sentence(prev.words[-1].w)
+                and (gap >= sentence_pause_s or far_too_long)
             )
-            sentence_done = bool(prev.words) and ends_sentence(prev.words[-1].w)
             if (
                 prev.speaker == seg.speaker
                 and gap < merge_gap_s
