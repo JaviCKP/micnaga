@@ -10,6 +10,7 @@ Inicio con ``System.AppUserModel.ID`` y pasar ese AUMID aqui (``aumid=``).
 
 from __future__ import annotations
 
+import functools
 import logging
 import sys
 from collections.abc import Callable
@@ -112,8 +113,11 @@ class ToastNotifier:
                 i18n.t("toast.ready", self._language),
                 format_ready_text(title, duration_s, speakers, self._language, proposals),
             ],
-            launch_action=ARG_PREFIX + folder,
-            on_activated=self._activated,
+            # Sin ``launch_action``: windows-toasts lo marca como activacion por protocolo y
+            # Windows intenta abrir «open:...» como enlace («Obtener una aplicacion para abrir
+            # este vinculo»). El clic en el cuerpo llega a ``on_activated`` con otros argumentos:
+            # se abre igualmente la carpeta de ESTE aviso.
+            on_activated=functools.partial(self._activated, default=folder),
         )
         toast.AddAction(ToastButton(i18n.t("toast.open", self._language), ARG_PREFIX + folder))
         self._get_toaster().show_toast(toast)
@@ -130,8 +134,8 @@ class ToastNotifier:
         )
         self._get_toaster().show_toast(toast)
 
-    def _activated(self, args: Any) -> None:
-        folder = parse_arguments(str(getattr(args, "arguments", "") or ""))
+    def _activated(self, args: Any, default: str | None = None) -> None:
+        folder = parse_arguments(str(getattr(args, "arguments", "") or "")) or default
         if folder is None:
             return
         try:
