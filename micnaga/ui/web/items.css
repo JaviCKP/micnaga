@@ -32,7 +32,7 @@
 /* state = the promo's status line: square + mono caps, coloured only when it matters */
 .it-state {
   flex: none; display: inline-flex; align-items: center; gap: 6px; min-width: 104px; height: 18px; padding: 0;
-  border-radius: 0; font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
+  border-radius: 0; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
   color: var(--text-3); background: transparent; font-variant-ligatures: none;
 }
 .it-state .ico.mini { display: none; }
@@ -47,7 +47,7 @@
 
 .it-contrasts .sec-g { color: var(--warm); }
 .it-contrast .sec-x { display: grid; gap: 2px; }
-.it-contrast b { font: 500 10px/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.it-contrast b { font: 500 11px/1.4 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
 .it-wrote { color: var(--text-2); }
 
 .it-sources {

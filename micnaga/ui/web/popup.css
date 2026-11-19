@@ -74,7 +74,7 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 .info { display: grid; gap: 8px; min-width: 0; }
 .src {
   display: flex; align-items: center; gap: 8px; min-width: 0; height: 16px;
-  font: 500 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
+  font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3);
   font-variant-ligatures: none;
 }
 .src-ico { display: none; }

@@ -9,7 +9,7 @@
 .nav-back {
   display: inline-flex; align-items: center; gap: 6px; align-self: flex-start; margin: -8px 0 12px 2px;
   padding: 5px 9px 5px 5px; border: 0; border-radius: var(--r); background: none;
-  font: 500 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); cursor: default;
+  font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); cursor: default;
   transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease);
 }
 .nav-back[hidden] { display: none; }

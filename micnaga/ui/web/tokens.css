@@ -126,7 +126,7 @@
   --font-ui: var(--font);
   --display: "Barlow Semi Condensed", "Bahnschrift SemiCondensed", "Arial Narrow", sans-serif;
   --mono: "JetBrains Mono", "Cascadia Mono", ui-monospace, Consolas, monospace;
-  --fs-micro: 10.5px;
+  --fs-micro: 11px;
   --fs-meta: 12.5px;
   --fs-body: 14px;
   --fs-em: 15px;
@@ -263,7 +263,7 @@ button { cursor: default; }
 /* ---- keycaps ------------------------------------------------------------------------ */
 kbd, .keycap {
   display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 4px;
-  font: 500 10px/1 var(--mono); letter-spacing: 0; font-variant-ligatures: none;
+  font: 500 11px/1 var(--mono); letter-spacing: 0; font-variant-ligatures: none;
   border-radius: 3px; color: var(--text-3); background: transparent;
   box-shadow: inset 0 0 0 1px var(--line-strong);
 }

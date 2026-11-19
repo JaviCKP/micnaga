@@ -17,7 +17,7 @@
 .hx-apply { gap: 8px; }
 .hx-count:not(:empty) {
   min-width: 18px; height: 18px; padding: 0 5px; border-radius: 2px; display: inline-grid; place-items: center;
-  background: light-dark(rgb(255 255 255 / 0.16), rgb(0 0 0 / 0.1)); font: 500 10.5px/1 var(--mono);
+  background: light-dark(rgb(255 255 255 / 0.16), rgb(0 0 0 / 0.1)); font: 500 11px/1 var(--mono);
 }
 .hx-apply kbd { color: inherit; opacity: 0.5; box-shadow: none; }
 .hx-close { flex: none; }
@@ -71,7 +71,7 @@
 /* day state: the promo's status line, no pill */
 .hx-state {
   display: inline-flex; align-items: center; gap: 6px; padding: 0; border-radius: 0; white-space: nowrap;
-  font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); background: transparent;
+  font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); background: transparent;
 }
 .hx-state::before { content: ""; width: 6px; height: 6px; border-radius: 1px; background: currentColor; }
 .hx-state.falta { color: var(--warm); background: transparent; }
@@ -100,7 +100,7 @@
 .hx-line .hx-h { width: 68px; padding: 0 10px; font-family: var(--mono); font-size: 12.5px; }
 .hx-line .hx-p { width: 100%; overflow: hidden; text-overflow: ellipsis; }
 .hx-line .hx-dtext { width: 100%; }
-.hx-origin { font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
+.hx-origin { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); white-space: nowrap; }
 .hx-origin:empty { width: 0; }
 .hx-origin.reunion, .hx-origin.calendario {
   height: 18px; display: inline-flex; align-items: center; gap: 6px; padding: 0; margin-right: 4px;

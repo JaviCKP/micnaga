@@ -41,7 +41,7 @@
 }
 .pill-tag {
   display: inline-flex; align-items: center; height: 18px; padding: 0;
-  font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
   color: var(--pill-dim); white-space: nowrap;
 }
 
@@ -135,8 +135,8 @@ body.pill-page { background: transparent; }
 
 /* ---- «¿Guardar?» en la pastilla provisional: la decision siempre a mano ------------------ */
 .pill-save {
-  display: none; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 6px; margin-left: auto; margin-right: 4px;
-  border: 0; border-radius: 3px; font: 500 10px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  display: none; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 8px; margin-left: auto; margin-right: 4px;
+  border: 0; border-radius: 3px; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
   color: #f4f4f7; background: transparent; box-shadow: inset 0 0 0 1px rgb(244 244 247 / 0.24);
   white-space: nowrap; flex: none;
   transition: background-color var(--dur-hover) var(--ease), box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
@@ -159,7 +159,7 @@ body.pill-page { background: transparent; }
 .pill[data-mode="undo"] { --w: 236px; opacity: 1; }
 .pill[data-mode="undo"] > :not(.undo) { visibility: hidden; }
 .pill[data-mode="undo"] .undo { display: flex; }
-.undo-text { font: 500 10.5px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pill-dim); white-space: nowrap; }
+.undo-text { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pill-dim); white-space: nowrap; }
 .undo-btn {
   margin-left: auto; height: 28px; padding: 0 11px; border: 0; border-radius: 4px;
   font: 600 13px/1 var(--font); color: #0b0b0f; background: #f4f4f7;
