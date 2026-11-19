@@ -181,6 +181,20 @@ empiezan a usarse, reglas que deduce de tus aprobaciones) en `learned.md`, y rep
 semana en solo lectura. En Ajustes → Secretaria → «Lo que ha aprendido» puedes verlo, olvidar líneas o volver
 a un día concreto.
 
+### 6.5 Lo que aprende de vuestro Odoo al conectarlo
+
+Nada más conectar Odoo (o pulsar «Probar» con una cuenta nueva) la Secretaria lee vuestro Odoo **en solo
+lectura**, en segundo plano, y lo repite cada semana (nunca mientras se graba). Con la cuenta del jefe, con
+CRM completo, aprende: las etapas del embudo en orden, los equipos de venta, los motivos de pérdida, cómo
+soléis nombrar las oportunidades, los clientes con más actividad en los últimos 90 días (solo nombres), los
+proyectos activos con su cliente, las etapas de tareas, las categorías de producto, vuestro patrón de partes
+de horas y el nombre y cargo de quien conecta. Nunca guarda correos, teléfonos, importes ni direcciones, y
+solo lee lo que esa cuenta tiene permiso para leer (con una cuenta sin CRM, simplemente se lo salta).
+
+Lo guarda en un resumen corto que usa en cada acta. Cuando aparece algo nuevo (una etapa, un proyecto, un
+cliente) lo añade a «Lo que ha aprendido», con historial y «Olvidar». En Ajustes → Secretaria → «Lo que ha
+aprendido» se ve la última lectura con sus números, «Ver» abre el resumen y «Escanear ahora» lo repite.
+
 ## 7. Conectar Google
 
 Micnaga **no guarda ninguna clave de Google**. Usa los conectores oficiales de tu cuenta de

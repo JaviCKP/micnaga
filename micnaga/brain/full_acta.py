@@ -206,14 +206,14 @@ class FullActa:
         from micnaga.brain import learn, research
         from micnaga.brain.claude import ClaudeOutputError, ClaudeRequest, mcp_allowed_tools
         from micnaga.brain.prompt import system_prompt, transcript_hash
-        from micnaga.brain.secretary import MCP_SERVER
+        from micnaga.brain.secretary import MCP_SERVER, odoo_context_key
         from micnaga.pipeline import output
 
         transcript = output.read_transcript(folder)
         acta = acta_io.read_acta(folder) or {}
         started = time.monotonic()
         req = ClaudeRequest(
-            prompt=build_input(transcript, acta, learn.load_context()),
+            prompt=build_input(transcript, acta, learn.load_context(odoo_context_key(self.config))),
             system_prompt=system_prompt("acta_completa"),
             model=self.config.secretaria.model_acta,
             mcp_servers=self._servers(folder),
