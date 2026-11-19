@@ -86,7 +86,40 @@ def _dynamic_keys() -> set[str]:
             "odoo_failed",
         )
     }
-    keys |= {"toast.proposals_one", "toast.proposals_other"}
+    keys |= {"toast.proposals_one", "toast.proposals_other", "toast.hours.body_one"}
+    keys |= {"toast.hours.body_other"}
+    # Odoo de negocio: grupos, herramientas, avisos y errores de las lineas de horas
+    keys |= {f"secretaria.group.{g}" for g in ("horas", "agenda")}
+    keys |= {
+        f"secretaria.st.{s}"
+        for s in ("hours", "projects", "tasks", "calendar", "my_activities", "expenses")
+    }
+    keys |= {f"secretaria.w.{w}" for w in ("task_similar", "event_similar")}
+    keys |= {
+        f"secretaria.err.{e}"
+        for e in ("incomplete", "readonly", "not_editable", "no_acta", "access")
+    }
+    keys |= {
+        f"secretaria.horas.err.{e}"
+        for e in (
+            "horas",
+            "futuro",
+            "dia_lleno",
+            "proyecto",
+            "tarea",
+            "fecha",
+            "ya_existe",
+            "no_access",
+        )
+    }
+    keys |= {f"secretaria.horas.o.{o}" for o in ("reunion", "calendario", "patron")}
+    # etiquetas del editor de items: una por campo editable (``plan.EDIT_FIELDS``)
+    from micnaga.brain.plan import EDIT_FIELDS
+
+    keys |= {f"secretaria.f.{f['clave']}" for fs in EDIT_FIELDS.values() for f in fs}
+    from micnaga.brain.google.items import SCHEMAS as GOOGLE_FIELDS
+
+    keys |= {f["etiqueta"] for fs in GOOGLE_FIELDS.values() for f in fs}
     return keys
 
 

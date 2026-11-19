@@ -1,10 +1,10 @@
-"""Acciones de la interfaz para Google y para editar propuestas (``BrainService`` las hereda).
+"""Acciones de la interfaz para Google (``BrainService`` las hereda).
 
 Ajustes › Secretaria › Google: ``google_status`` (cache + si hay una comprobacion en marcha),
 ``google_check`` («Comprobar», en un hilo: ``claude mcp list`` tarda ~5-10 s) y
 ``google_open`` («Conectar»: abre ``claude.ai/settings/connectors`` en el navegador).
 
-Biblioteca: ``edit`` (cualquier campo de cualquier propuesta pendiente; conserva el id).
+Biblioteca: ``open_link`` (solo enlaces de Google del acta).
 """
 
 from __future__ import annotations
@@ -15,9 +15,7 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
-from micnaga.brain import acta as acta_io
 from micnaga.brain import google as g
-from micnaga.brain import items
 
 log = logging.getLogger(__name__)
 
@@ -37,9 +35,6 @@ class GoogleApiMixin:
 
     # Lo implementa BrainService
     config: Any
-
-    def _folder_path(self, args: dict[str, Any]) -> Path | None:  # pragma: no cover
-        raise NotImplementedError
 
     def _runner(self) -> Any:  # pragma: no cover
         raise NotImplementedError
@@ -100,29 +95,6 @@ class GoogleApiMixin:
             return {"ok": False, "error": "secretaria.err.invalid"}
         webbrowser.open(url)
         return {"ok": True}
-
-    # ------------------------------------------------------------------ propuestas
-
-    def _api_edit(self, args: dict[str, Any]) -> dict[str, Any]:
-        """``{folder, id, values: {campo: valor}}`` -> acta con la propuesta editada."""
-        path = self._folder_path(args)
-        if path is None:
-            return {"ok": False, "error": "library.err.not_found"}
-        pid, values = args.get("id"), args.get("values")
-        if not isinstance(pid, str) or not isinstance(values, dict):
-            return {"ok": False, "error": "secretaria.err.invalid"}
-        acta = acta_io.read_acta(path)
-        if acta is None:
-            return {"ok": False, "error": "library.err.not_found"}
-        p = next((x for x in acta.get("propuestas") or [] if x.get("id") == pid), None)
-        if p is None:
-            return {"ok": False, "error": "library.err.not_found"}
-        try:
-            items.edit(p, values)
-        except items.EditError as exc:
-            return {"ok": False, "error": "secretaria.err.invalid", "field": str(exc)}
-        acta_io.write_acta(path, items.strip(acta))
-        return {"ok": True, "acta": acta}
 
     def _google_applier(self, path: Path) -> Any:
         from micnaga.brain.google.apply import GoogleApplier

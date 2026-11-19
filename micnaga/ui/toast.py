@@ -122,6 +122,28 @@ class ToastNotifier:
         toast.AddAction(ToastButton(i18n.t("toast.open", self._language), ARG_PREFIX + folder))
         self._get_toaster().show_toast(toast)
 
+    def show_hours(self, days: int, on_open: Callable[[], None]) -> None:
+        """Aviso semanal: «Te faltan N dias por fichar esta semana» · «Rellenar»."""
+        from windows_toasts import Toast, ToastButton
+
+        key = "toast.hours.body_one" if days == 1 else "toast.hours.body_other"
+
+        def activated(_args: Any) -> None:
+            try:
+                on_open()
+            except Exception:
+                log.exception("hours toast callback failed")
+
+        toast = Toast(
+            text_fields=[
+                i18n.t("toast.hours.title", self._language),
+                i18n.t(key, self._language, n=days),
+            ],
+            on_activated=activated,
+        )
+        toast.AddAction(ToastButton(i18n.t("toast.hours.open", self._language), "hours:"))
+        self._get_toaster().show_toast(toast)
+
     def show_error(self, key: str) -> None:
         """Aviso de error (p. ej. ``capture_failed``): titulo y texto de ``toast.error.<key>``."""
         from windows_toasts import Toast

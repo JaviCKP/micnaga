@@ -1,7 +1,6 @@
-/* Editable proposals: one uniform layer for every item type.
-   Each proposal carries `campos` ([{k, t, v, opts, req}]) from Python (micnaga/brain/items.py);
-   this file turns them into an inline editor, and adds the Google bits (invite notice, links,
-   «Contrastes»). Saving calls secretaria("edit") — the item keeps its id. */
+/* Google items in the review: their one-line text, the «what leaves your account» notice, the
+   extra field kinds for the shared editor (micnaga/brain/google/items.py sends `campos`), result
+   links and «Contrastes». Editing goes through secretaria("edit"); the item keeps its id. */
 (function () {
   "use strict";
   const el = (tag, cls, text) => {
@@ -10,32 +9,7 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const LABEL = {
-    titulo: () => mic.t("items.f.titulo"),
-    inicio: () => mic.t("items.f.inicio"),
-    duracion_min: () => mic.t("items.f.duracion_min"),
-    asistentes: () => mic.t("items.f.asistentes"),
-    descripcion: () => mic.t("items.f.descripcion"),
-    modo: () => mic.t("items.f.modo"),
-    para: () => mic.t("items.f.para"),
-    asunto: () => mic.t("items.f.asunto"),
-    cuerpo: () => mic.t("items.f.cuerpo"),
-    a: () => mic.t("items.f.a"),
-    de: () => mic.t("items.f.de"),
-    nombre: () => mic.t("items.f.nombre"),
-    email: () => mic.t("items.f.email"),
-    telefono: () => mic.t("items.f.telefono"),
-    cargo: () => mic.t("items.f.cargo"),
-    empresa_id: () => mic.t("items.f.empresa_id"),
-    etapa_id: () => mic.t("items.f.etapa_id"),
-    importe: () => mic.t("items.f.importe"),
-    fecha_cierre: () => mic.t("items.f.fecha_cierre"),
-    resumen: () => mic.t("items.f.resumen"),
-    fecha: () => mic.t("items.f.fecha"),
-    id: () => mic.t("items.f.id"),
-  };
   const OPT = { draft: () => mic.t("items.opt.draft"), send: () => mic.t("items.opt.send") };
-  const label = (k) => (LABEL[k] ? LABEL[k]() : k.replace(/_/g, " ").replace(/^\w/, (c) => c.toUpperCase()));
 
   function when(iso) {
     if (!iso) return "";
@@ -68,142 +42,81 @@
     return null;
   }
 
-  // ------------------------------------------------------------------ editor
-  function input(f) {
-    let node;
-    const v = f.v;
-    if (f.t === "textarea") {
-      node = el("textarea", "field-input it-area");
-      node.rows = 5;
-      node.value = v || "";
-    } else if (f.t === "choice") {
-      node = el("div", "seg it-seg");
-      node.setAttribute("role", "radiogroup");
-      (f.opts || []).forEach((o) => {
+  // ------------------------------------------------------------------ controls
+  // The review editor is the one in secretaria.js (fields from `campos`, saved on change). These
+  // are the extra field kinds Google items use; `save(value)` sends that one change.
+  function control(p, f, save) {
+    const v = f.valor;
+    if (f.tipo === "datetime") {
+      const box = el("div", "it-dt");
+      const c = el("input", "field-input");
+      c.type = "datetime-local";
+      c.value = v || "";
+      c.addEventListener("change", () => { if (c.value) save(c.value); });
+      box.append(c);
+      const slots = (p.datos && p.datos.huecos) || [];
+      if (slots.length > 1) {
+        const row = el("div", "it-slots");
+        slots.forEach((s) => {
+          const b = el("button", "sec-chipbtn", when(s));
+          b.type = "button";
+          b.setAttribute("aria-pressed", String(String(s).slice(0, 16) === String(v || "").slice(0, 16)));
+          b.addEventListener("click", () => save(String(s).slice(0, 16)));
+          row.append(b);
+        });
+        box.append(row);
+      }
+      return box;
+    }
+    if (f.tipo === "choice") {
+      const seg = el("div", "seg it-seg");
+      seg.setAttribute("role", "radiogroup");
+      (f.opciones_fijas || []).forEach((o) => {
         const b = el("button", "seg-b", OPT[o] ? OPT[o]() : o);
         b.type = "button";
         b.setAttribute("role", "radio");
         b.setAttribute("aria-checked", String(o === v));
-        b.addEventListener("click", () => {
-          node.querySelectorAll(".seg-b").forEach((x) => x.setAttribute("aria-checked", String(x === b)));
-          node.dataset.value = o;
-          node.dispatchEvent(new Event("change", { bubbles: true }));
-        });
-        node.append(b);
+        b.addEventListener("click", () => { if (o !== v) save(o); });
+        seg.append(b);
       });
-      node.dataset.value = v;
-      node.read = () => node.dataset.value;
-      return node;
-    } else if (f.t === "bool") {
-      node = el("input");
-      node.type = "checkbox";
-      node.checked = !!v;
-      node.read = () => node.checked;
-      return node;
-    } else if (f.t === "people") {
-      return people(v || []);
-    } else {
-      node = el("input", "field-input");
-      node.type = { number: "number", date: "date", datetime: "datetime-local" }[f.t] || "text";
-      if (f.t === "emails") node.value = (v || []).join(", ");
-      else node.value = v === null || v === undefined ? "" : v;
+      return seg;
     }
-    node.read = () => {
-      if (f.t === "number") return node.value === "" ? null : Number(node.value);
-      return node.value;
-    };
-    return node;
+    if (f.tipo === "emails") {
+      const c = el("input", "field-input");
+      c.type = "text";
+      c.spellcheck = false;
+      c.value = (v || []).join(", ");
+      c.addEventListener("change", () => save(c.value));
+      return c;
+    }
+    if (f.tipo === "people") return people(v || [], save);
+    return null;
   }
 
-  /** Attendees: unchecked by default; checking one means an invitation will be sent. */
-  function people(list) {
-    const box = el("div", "it-people");
-    const rows = [];
-    const add = (a) => {
-      const lab = el("label", "it-person");
-      const cb = el("input");
-      cb.type = "checkbox";
-      cb.checked = !!a.on;
-      cb.addEventListener("change", () => box.dispatchEvent(new Event("change", { bubbles: true })));
-      lab.append(cb, el("span", "it-pn", a.nombre || a.email));
-      if (a.nombre) lab.append(el("span", "it-pe", a.email));
-      rows.push({ a, cb });
-      box.insertBefore(lab, more);
-    };
+  /** Attendees: off by default; switching one on means Google will send them an invitation. */
+  function people(list, save) {
+    const row = el("div", "sec-inv");
+    list.forEach((a, i) => {
+      const b = el("button", "sec-chipbtn", a.nombre || a.email);
+      b.type = "button";
+      b.title = a.email;
+      b.setAttribute("aria-pressed", String(!!a.on));
+      b.addEventListener("click", () => save(list.map((x, j) => ({ ...x, on: j === i ? !x.on : !!x.on }))));
+      row.append(b);
+    });
     const more = el("input", "field-input it-add");
     more.type = "email";
+    more.spellcheck = false;
     more.placeholder = mic.t("items.add_person");
     more.addEventListener("keydown", (e) => {
       if (e.key !== "Enter") return;
       e.preventDefault();
       const email = more.value.trim();
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return;
-      add({ nombre: null, email, on: true });
-      more.value = "";
-      box.dispatchEvent(new Event("change", { bubbles: true }));
+      save([...list, { nombre: null, email, on: true }]);
     });
-    box.append(more);
-    list.forEach(add);
-    box.read = () => rows.map(({ a, cb }) => ({ nombre: a.nombre, email: a.email, on: cb.checked }));
-    return box;
-  }
-
-  function editor(p, onSave, onCancel) {
-    const form = el("form", "it-form");
-    form.noValidate = true;
-    const inputs = {};
-    for (const f of p.campos || []) {
-      const row = el("div", "it-row" + (f.t === "textarea" || f.t === "people" ? " col" : ""));
-      const lab = el("label", "it-label", label(f.k));
-      const node = input(f);
-      node.id = "it-" + p.id + "-" + f.k;
-      lab.htmlFor = node.id;
-      inputs[f.k] = node;
-      row.append(lab, node);
-      form.append(row);
-    }
-    const slots = (p.datos && p.datos.huecos) || [];
-    if (p.tipo === "evento_google" && slots.length > 1 && inputs.inicio) {
-      const row = el("div", "it-slots");
-      slots.forEach((s) => {
-        const b = el("button", "chip", when(s));
-        b.type = "button";
-        b.addEventListener("click", () => { inputs.inicio.value = s; form.dispatchEvent(new Event("change")); });
-        row.append(b);
-      });
-      inputs.inicio.closest(".it-row").after(row);
-    }
-    const note = el("p", "it-note");
-    const live = () => {
-      const draft = { ...p, datos: { ...(p.datos || {}), ...read() } };
-      const n = notice(draft);
-      note.textContent = n || "";
-      note.hidden = !n;
-      note.dataset.out = String(!!n && (draft.tipo === "correo_google" || (draft.datos.asistentes || []).some((a) => a.on)));
-    };
-    const read = () => Object.fromEntries(Object.entries(inputs).map(([k, n]) => [k, n.read()]));
-    form.addEventListener("change", live);
-    form.addEventListener("input", live);
-    const bar = el("div", "it-bar");
-    const err = el("span", "it-err");
-    const cancel = el("button", "btn btn-ghost btn-sm", mic.t("items.cancel"));
-    cancel.type = "button";
-    cancel.addEventListener("click", onCancel);
-    const save = el("button", "btn btn-primary btn-sm", mic.t("items.save"));
-    save.type = "submit";
-    bar.append(err, cancel, save);
-    form.append(note, bar);
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      save.disabled = true;
-      const r = await onSave(read());
-      save.disabled = false;
-      if (r && !r.ok) err.textContent = mic.t("items.invalid", { field: label(r.field || "") });
-    });
-    form.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); onCancel(); } });
-    live();
-    setTimeout(() => { const first = form.querySelector("input, textarea, button"); if (first) first.focus(); }, 0);
-    return form;
+    row.append(more, el("span", "sec-inv-n", mic.t("secretaria.invite_note")));
+    return row;
   }
 
   // ------------------------------------------------------------------ links and contrasts
@@ -273,5 +186,5 @@
   const errorText = (key) => (ERR[key] ? ERR[key]() : null);
 
   window.micnaga = window.micnaga || {};
-  window.micnaga.items = { text, notice, editor, result, actaExtras, errorText };
+  window.micnaga.items = { text, notice, control, result, actaExtras, errorText };
 })();

@@ -13,6 +13,7 @@
     startup: "ui", ui: "ui",
     "secretaria.odoo_url": "odoo", "secretaria.odoo_db": "odoo", "secretaria.odoo_login": "odoo",
     "secretaria.google_gmail": "google", "secretaria.google_calendar": "google", "secretaria.google_drive": "google",
+    "secretaria.horas_nudge": "odoo",
   };
 
   const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
@@ -323,7 +324,9 @@
     const otest = el("button", "btn btn-sm", mic.t("secretaria.test"));
     otest.type = "button";
     ost.right.append(otest);
-    odoo.append(okey.row, ost.row);
+    const caps = capsRow();
+    odoo.append(okey.row, ost.row, caps.row);
+    sec("caps").then((r) => caps.set(r && r.ok ? r.capacidades : []));
     otest.addEventListener("click", async () => {
       otest.disabled = true;
       ost.set("warn", mic.t("secretaria.testing"));
@@ -336,6 +339,7 @@
         const names = { "crm.lead": "CRM", "res.partner": mic.t("secretaria.contacts"), "mail.activity": mic.t("secretaria.activities") };
         const readable = Object.entries(r.readable || {}).filter(([m]) => names[m]).map(([m, v]) => names[m] + (v ? " ✓" : " ✗")).join(" · ");
         ost.set("ok", mic.t("secretaria.odoo_ok", { user: r.user || "?", version: r.version || "", readable }));
+        caps.set(r.capacidades || []);
       } else ost.set("fail", mic.t((r && r.error) || "secretaria.err.failed"));
     });
 
@@ -415,6 +419,31 @@
     }
     check.addEventListener("click", async () => { await sec("google_check"); load(); });
     load().then((r) => { if (r && r.ok && !r.checked && !r.checking) check.click(); });   // first time: detect once
+  }
+
+  /** What the Secretaria can do in this Odoo (from «Probar»): icon + short label per area. */
+  const CAP_ICON = { horas: "clock", tareas: "check", calendario: "calendar", actividades: "bell", gastos: "copy", contactos: "users", crm: "activity" };
+  function capsRow() {
+    const row = el("div", "frow sec-caps");
+    const info = el("div", "finfo");
+    info.append(el("div", "flabel", mic.t("secretaria.caps.title")));
+    const list = el("div", "sec-caplist");
+    info.append(list);
+    row.append(info);
+    return {
+      row,
+      set(items) {
+        list.replaceChildren();
+        if (!items || !items.length) { list.append(el("span", "sec-capnone", mic.t("secretaria.caps.none"))); return; }
+        for (const c of items) {
+          const chip = el("span", "sec-cap" + (c.nivel === "lectura" ? " ro" : ""));
+          chip.innerHTML = mic.icon(CAP_ICON[c.clave] || "check");
+          chip.append(el("span", "", c.etiqueta));
+          if (c.nivel === "lectura") chip.append(el("span", "sec-capro", mic.t("secretaria.caps.reading")));
+          list.append(chip);
+        }
+      },
+    };
   }
 
   function learnedCard() {

@@ -12,6 +12,10 @@
   titulo es generico.
 * ``api(action, args)``: lo que llaman la biblioteca y Ajustes (``LibraryApi.secretaria`` /
   ``SettingsApi.secretaria``). Los secretos entran por aqui y **nunca** se devuelven.
+* **Odoo**: perfil de capacidades (``capabilities``) al pulsar «Probar» y una vez al dia en el
+  tic; panel «Rellenar partes de horas» (``horas_plan`` / ``horas_apply`` / ``horas_undo`` /
+  ``horas_off``) y el aviso del viernes por la tarde si la semana tiene huecos
+  (``secretaria.horas_nudge``, apagado por defecto).
 """
 
 from __future__ import annotations
@@ -38,9 +42,12 @@ log = logging.getLogger(__name__)
 TOAST_WAIT_S = 120.0
 TICK_S = 60.0
 BOOT_WINDOW_H = 24
+ODOO_RETRY_S = 3600.0
 
 Notify = Callable[[str, str, float, int, int], None]
 """``notify(carpeta, titulo, duracion_s, hablantes, propuestas)``."""
+Nudge = Callable[[int], None]
+"""``nudge(dias_con_huecos)``: aviso «Te faltan horas esta semana»."""
 
 
 class BrainService(GoogleApiMixin):
@@ -71,6 +78,13 @@ class BrainService(GoogleApiMixin):
         self._renames: dict[str, str] = {}
         self._queued: set[str] = set()
         self._started_at = time.time()
+        self._nudge: Nudge | None = None
+        self.now: Callable[[], datetime] = datetime.now
+        self._odoo_failed_at = 0.0
+
+    def set_nudge(self, nudge: Nudge | None) -> None:
+        """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
+        self._nudge = nudge
 
     # ------------------------------------------------------------------ ciclo de vida
 
@@ -234,6 +248,37 @@ class BrainService(GoogleApiMixin):
                 self._submit(f)
         except Exception:
             log.debug("secretaria tick failed", exc_info=True)
+        self._odoo_daily()
+
+    def _odoo_daily(self) -> None:
+        """Perfil de capacidades una vez al dia y, el viernes por la tarde, el aviso de horas."""
+        cfg = self.config.secretaria
+        if not cfg.odoo_url or time.monotonic() - self._odoo_failed_at < ODOO_RETRY_S:
+            return  # sin Odoo o fallo reciente: no se reintenta el login en cada tic
+        try:
+            from micnaga.brain import capabilities, horas
+
+            now = self.now()
+            state = horas.load_state()
+            nudge = horas.should_nudge(now, enabled=cfg.horas_nudge, last=state["ultimo_aviso"])
+            client = None
+            key = capabilities.connection_key(cfg.odoo_url, cfg.odoo_db, cfg.odoo_login)
+            if capabilities.is_stale(capabilities.load(key), now=now) or nudge:
+                client = self._odoo_client()
+            if client is None:
+                return
+            profile = capabilities.ensure(client, now=now)
+            if not nudge or capabilities.features(profile).get("horas") != "escritura":
+                return
+            gaps = horas.week_gaps(client, now.date())
+            state = horas.load_state()
+            state["ultimo_aviso"] = now.date().isoformat()
+            horas.save_state(state)
+            if gaps and self._nudge is not None:
+                self._nudge(len(gaps))
+        except Exception as exc:
+            self._odoo_failed_at = time.monotonic()
+            log.info("odoo daily check skipped: %s", getattr(exc, "kind", type(exc).__name__))
 
     def _secretary(self) -> Any:
         cfg = self.config
@@ -391,10 +436,13 @@ class BrainService(GoogleApiMixin):
             return {"ok": False, "error": "secretaria.err.unknown"}
         try:
             out: dict[str, Any] = handler(args)
-            if isinstance(out.get("acta"), dict):
-                from micnaga.brain.items import decorate
+            if isinstance(out.get("acta"), dict):  # items con su esquema editable
+                from micnaga.brain.plan import decorate
 
-                decorate(out["acta"])  # campos editables (solo para la interfaz)
+                decorate(out["acta"])
+                from micnaga.brain.google.items import decorate as decorate_google
+
+                decorate_google(out["acta"])  # items de Google (su propio esquema)
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -453,11 +501,98 @@ class BrainService(GoogleApiMixin):
     def _executor(self, path: Path) -> Any:
         from micnaga.brain.executor import Executor
 
-        return Executor(path, odoo=self._odoo_client, google=lambda: self._google_applier(path))
+        return Executor(
+            path,
+            odoo=self._odoo_client,
+            today=self.now().date(),
+            google=lambda: self._google_applier(path),
+        )
+
+    # ---- partes de horas (panel fuera de las reuniones)
+
+    def _connected(self) -> Any:
+        client = self._odoo_client()
+        if client is None:
+            from micnaga.brain.odoo import OdooError
+
+            raise OdooError("odoo not configured", "incomplete")
+        client.authenticate()
+        return client
+
+    def _meeting_evidence(self, since: str) -> list[Any]:
+        """Reuniones grabadas en Micnaga desde ``since`` (titulo, hora local, duracion)."""
+        from micnaga.brain.timesheets import Evidence
+
+        out: list[Evidence] = []
+        db = self._db()
+        try:
+            records = db.list_meetings(500)
+        finally:
+            db.close()
+        for rec in records:
+            try:
+                start = datetime.fromisoformat(rec.start)
+            except ValueError:
+                continue
+            if start.tzinfo is not None:
+                start = start.astimezone()
+            day = start.date().isoformat()
+            if day < since or rec.duration_s < 300:
+                continue
+            out.append(
+                Evidence(day, rec.title, start.strftime("%H:%M"), rec.duration_s / 3600, "reunion")
+            )
+        return out
+
+    def _api_horas_plan(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import capabilities, horas
+
+        client = self._connected()
+        client.read_only = True  # preparar el plan solo lee
+        profile = capabilities.ensure(client)
+        if capabilities.features(profile).get("horas") != "escritura":
+            return {"ok": False, "error": "secretaria.horas.err.no_access"}
+        today = self.now().date()
+        since = (today - timedelta(days=horas.LOOKBACK_DAYS)).isoformat()
+        out = horas.plan(
+            client,
+            today=today,
+            meetings=self._meeting_evidence(since),
+            calendar=capabilities.can(profile, "calendar.event"),
+        )
+        return {"ok": True, **out}
+
+    def _api_horas_apply(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import horas
+
+        lines = args.get("lineas")
+        if not isinstance(lines, list) or not lines:
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        out = horas.apply(self._connected(), lines, today=self.now().date())
+        return {"ok": True, **out}
+
+    def _api_horas_undo(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import horas
+
+        batch = args.get("lote")
+        if not isinstance(batch, str):
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        return horas.undo(self._connected(), batch)
+
+    def _api_horas_off(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import horas
+
+        day = args.get("fecha")
+        if not isinstance(day, str):
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        try:
+            return {"ok": True, "libres": horas.set_off(day, args.get("libre") is not False)}
+        except ValueError:
+            return {"ok": False, "error": "secretaria.err.invalid"}
 
     def _ids(self, args: dict[str, Any]) -> list[str]:
         ids = args.get("ids")
-        return [str(i) for i in ids if isinstance(i, str)][:50] if isinstance(ids, list) else []
+        return [str(i) for i in ids if isinstance(i, str)][:200] if isinstance(ids, list) else []
 
     def _api_apply(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._folder_path(args)
@@ -469,6 +604,27 @@ class BrainService(GoogleApiMixin):
             bstore.set_proposals(db, path.name, acta_io.pending_count(acta))
         finally:
             db.close()
+        return {"ok": True, "acta": acta}
+
+    def _api_edit(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Cambios en una propuesta pendiente (horas, proyecto, descripcion, invitados...)."""
+        from micnaga.brain.executor import ApplyError
+        from micnaga.brain.timesheets import LineError
+
+        path = self._folder_path(args)
+        pid = args.get("id")
+        changes = args.get("cambios")
+        if path is None or not isinstance(pid, str) or not isinstance(changes, dict):
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        try:
+            acta = self._executor(path).edit(pid, changes)
+        except LineError as exc:
+            return {"ok": False, "error": f"secretaria.horas.err.{exc}"}
+        except ApplyError as exc:
+            key = str(exc)
+            if key.startswith("horas_"):
+                return {"ok": False, "error": f"secretaria.horas.err.{key[6:]}"}
+            return {"ok": False, "error": f"secretaria.err.{key}"}
         return {"ok": True, "acta": acta}
 
     def _api_undo(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -584,12 +740,37 @@ class BrainService(GoogleApiMixin):
         key = key or secrets.get(secrets.ODOO_KEY)
         if not (url and db and login and key):
             return {"ok": False, "error": "secretaria.err.odoo_incomplete"}
+        from micnaga.brain import capabilities
+
         try:
-            client = OdooClient(OdooConfig(url, db, login, str(key)), timeout_s=15)
+            client = OdooClient(OdooConfig(url, db, login, str(key)), timeout_s=15, read_only=True)
             info = client.probe()
+            profile = capabilities.ensure(client, refresh=True)
         except OdooError as exc:
             return {"ok": False, "error": f"secretaria.err.odoo_{exc.kind}"}
-        return {"ok": True, **info}
+        return {
+            "ok": True,
+            **info,
+            "capacidades": capabilities.summary(profile),
+            "capacidades_texto": capabilities.summary_text(profile),
+        }
+
+    def _api_caps(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Lo ultimo que se sabe de este Odoo (sin red): para Ajustes y la biblioteca."""
+        from micnaga.brain import capabilities
+
+        s = self.config.secretaria
+        if not (s.odoo_url and s.odoo_db and s.odoo_login):
+            return {"ok": True, "capacidades": [], "horas": False}
+        prof = capabilities.load(capabilities.connection_key(s.odoo_url, s.odoo_db, s.odoo_login))
+        feats = capabilities.features(prof)
+        return {
+            "ok": True,
+            "capacidades": capabilities.summary(prof),
+            "capacidades_texto": capabilities.summary_text(prof),
+            "comprobado": (prof or {}).get("checked_at"),
+            "horas": feats.get("horas") == "escritura",
+        }
 
     def _api_learned(self, args: dict[str, Any]) -> dict[str, Any]:
         return {

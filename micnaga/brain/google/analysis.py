@@ -29,8 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from micnaga.brain import google as g
-from micnaga.brain import items
-from micnaga.brain.google import detect, policy
+from micnaga.brain.google import detect, items, policy
 
 log = logging.getLogger(__name__)
 
@@ -523,14 +522,21 @@ def refresh(p: dict[str, Any]) -> None:
 # ============================================================================== Odoo -> Google
 
 
+def _partner_ids(d: dict[str, Any]) -> list[int]:
+    """Partners del ``crear_evento`` de Odoo: ``invitados`` (item ya validado) o
+    ``asistentes_ids`` (forma del modelo)."""
+    ids = [i.get("id") for i in d.get("invitados") or [] if isinstance(i, dict)]
+    ids += list(d.get("asistentes_ids") or [])
+    return [i for i in dict.fromkeys(ids) if isinstance(i, int) and not isinstance(i, bool)]
+
+
 def route_odoo_events(
     proposals: list[dict[str, Any]], run: GoogleRun, acta: dict[str, Any]
 ) -> list[dict[str, Any]]:
-    """Cualquier evento que la Secretaria fuera a crear en Odoo (``crear_evento`` de la rama de
-    Odoo: ``nombre``, ``fecha``, ``hora_inicio``, ``duracion_h``, ``asistentes_ids``) pasa por
-    Google: se convierte en ``evento_google`` (con Meet) y el espejo en Odoo lo crea ``mirror``.
-    Los ``asistentes_ids`` (partners de Odoo) no tienen correo aqui: quedan en ``odoo_partner_ids``
-    para el espejo, sin invitar a nadie."""
+    """Cualquier evento que la Secretaria fuera a crear en Odoo (``crear_evento``: ``nombre``,
+    ``fecha``, ``hora_inicio``, ``duracion_h``, ``invitados``) pasa por Google: se convierte en
+    ``evento_google`` (con Meet) y el espejo en Odoo lo crea ``mirror``. Los partners de Odoo no
+    tienen correo aqui: quedan en ``odoo_partner_ids`` (informativo), sin invitar a nadie."""
     out: list[dict[str, Any]] = []
     starts = {
         (p.get("datos") or {}).get("inicio") for p in proposals if p.get("tipo") == "evento_google"
@@ -568,9 +574,7 @@ def route_odoo_events(
                 "asistentes": [],
                 "descripcion": acta_text(acta),
                 "calendario": run.calendar_id,
-                "odoo_partner_ids": [
-                    i for i in d.get("asistentes_ids") or [] if isinstance(i, int)
-                ],
+                "odoo_partner_ids": _partner_ids(d),
             },
         }
         refresh(q)

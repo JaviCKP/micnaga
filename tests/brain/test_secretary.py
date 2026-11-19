@@ -49,6 +49,13 @@ def test_full_pass_with_odoo(fake_claude: FakeClaude, fake_odoo: FakeOdoo, meeti
         "listar_etapas",
         "historial_reciente",
         "actividades_pendientes",
+        # el Odoo falso permite todo: el perfil de capacidades ofrece tambien las de negocio
+        "mis_partes_de_horas",
+        "proyectos",
+        "tareas",
+        "calendario",
+        "mis_actividades",
+        "mis_gastos",
         "buscar_en_reuniones",
     ]
     assert all(r["isError"] is False for r in data["mcp_results"])
@@ -89,7 +96,7 @@ def test_full_pass_with_odoo(fake_claude: FakeClaude, fake_odoo: FakeOdoo, meeti
         ("palabra", "Triana"),
     ]
     assert all(p["checked"] for p in corr)
-    crm = [p for p in props if p["grupo"] == "crm"]
+    crm = [p for p in props if p["grupo"] != "correcciones"]
     link = by(crm, "vincular_a_oportunidad")
     assert len(link) == 1 and link[0]["checked"] and link[0]["datos"]["id"] == 205  # 999 fuera
     upd = by(crm, "actualizar_oportunidad")[0]

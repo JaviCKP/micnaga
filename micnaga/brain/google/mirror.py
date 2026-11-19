@@ -22,13 +22,14 @@ import logging
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
+from micnaga.brain import odoo_calendar
 from micnaga.brain.google import store
 
 log = logging.getLogger(__name__)
 
 NATIVE_MODULE = "google_calendar"
-CONTEXT = {
-    "no_mail_to_attendees": True,
+CONTEXT = {  # lo de ``odoo_calendar`` (sin correos a asistentes) y ademas sin seguimiento
+    **odoo_calendar.NO_MAIL_CONTEXT,
     "mail_create_nolog": True,
     "mail_create_nosubscribe": True,
     "mail_notrack": True,

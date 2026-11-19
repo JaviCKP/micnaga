@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="library.css">
 <link rel="stylesheet" href="secretaria.css">
 <link rel="stylesheet" href="items.css">
+<link rel="stylesheet" href="horas.css">
 </head>
 <body>
 <div class="ambient" aria-hidden="true"></div>
@@ -16,6 +17,7 @@
     <header class="side-head">
       <h1 class="display" data-i18n="library.title">Biblioteca</h1>
       <span class="count display tnum" id="count"></span>
+      <button class="icon-btn horas-btn" id="horas-btn" type="button" hidden aria-pressed="false" data-icon="clock" data-i18n-aria-label="secretaria.horas.open" data-i18n-data-tip="secretaria.horas.open"></button>
     </header>
     <div class="search">
       <span data-icon="search" aria-hidden="true"></span>
@@ -80,6 +82,7 @@
         <div class="tracks" id="tracks" role="group" data-i18n-aria-label="library.tracks"></div>
       </footer>
     </section>
+    <section class="horas" id="horas" hidden aria-labelledby="hx-title"></section>
   </main>
 </div>
 
@@ -116,5 +119,6 @@
 <script src="library.js"></script>
 <script src="items.js"></script>
 <script src="secretaria.js"></script>
+<script src="horas.js"></script>
 </body>
 </html>

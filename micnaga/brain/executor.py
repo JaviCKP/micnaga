@@ -8,16 +8,26 @@
   (nota interna con el acta: ``message_post`` subtipo nota), ``actualizar_oportunidad``
   (``write`` de esos campos tras **releer** el registro: si cambio en Odoo desde la propuesta, se
   avisa en vez de pisar) y ``programar_actividad`` (``mail.activity`` para el usuario).
+* Negocio: ``nota_en_historial`` tambien sobre tareas/proyectos; ``crear_tarea``
+  (``project.task`` asignada al usuario), ``programar_actividad`` sobre cualquier registro
+  permitido, ``crear_evento`` (``calendar.event`` con contexto ``no_mail_to_attendees``: no se
+  envia ninguna invitacion; los invitados externos solo si el usuario los activa),
+  ``registrar_horas`` (``account.analytic.line``, revalidada con ``horas.HoursBook`` justo antes)
+  y ``crear_gasto`` (``hr.expense`` en borrador). Todo con «Deshacer» (``unlink`` de lo creado).
 * Cada propuesta guarda en ``acta.json`` su estado y lo necesario para deshacer (id creado o
   valores anteriores). Reaplicar no duplica: lo ya ``aplicada`` se salta.
+* ``edit``: cambios del usuario en una propuesta pendiente (horas, proyecto y descripcion de una
+  linea de horas; nombre y fecha de una tarea; invitados de un evento), validados en Python.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import html
 import logging
 import re
 from collections.abc import Callable
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -114,12 +124,15 @@ class Executor:
         odoo: OdooGetter | None = None,
         db: Any = None,
         google: Callable[[], Any] | None = None,
+        today: date | None = None,
     ) -> None:
         self.folder = folder
         self._google_getter = google  # micnaga.brain.google.apply.GoogleApplier
         self._odoo_getter = odoo
         self._odoo: Any = None
         self._db = db
+        self.today = today or date.today()
+        self._book: Any = None
 
     def odoo(self) -> Any:
         if self._odoo is None:
@@ -206,7 +219,12 @@ class Executor:
             new_id = o.create("res.partner", values)
             return {"modelo": "res.partner", "creado": new_id}
         if kind in ("vincular_a_oportunidad", "nota_en_historial"):
-            msg_id = o.message_post(d["modelo"], d["id"], acta_io.render_note_html(acta))
+            body = (
+                acta_io.text_to_html(str(d["cuerpo"]))
+                if d.get("cuerpo")
+                else acta_io.render_note_html(acta)
+            )
+            msg_id = o.message_post(d["modelo"], d["id"], body)
             return {"modelo": "mail.message", "creado": msg_id, "registro": [d["modelo"], d["id"]]}
         if kind == "actualizar_oportunidad":
             lead = o.read_lead(d["id"])
@@ -239,6 +257,8 @@ class Executor:
                 "date_deadline": d["fecha"],
                 "user_id": o.uid,
             }
+            if d.get("tipo_actividad_id"):
+                values["activity_type_id"] = d["tipo_actividad_id"]
             model_id = o.model_id(d["modelo"])
             if model_id is not None:
                 values["res_model_id"] = model_id
@@ -246,7 +266,188 @@ class Executor:
                 values["res_model"] = d["modelo"]
             new_id = o.create("mail.activity", values)
             return {"modelo": "mail.activity", "creado": new_id}
+        if kind == "crear_tarea":
+            values = {
+                "name": d["nombre"],
+                "project_id": d["proyecto_id"],
+                "user_ids": [(6, 0, [o.uid])],
+            }
+            if d.get("fecha"):
+                values["date_deadline"] = f"{d['fecha']} 12:00:00"  # datetime en Odoo 19
+            if d.get("descripcion"):
+                values["description"] = f"<p>{html.escape(str(d['descripcion']))}</p>"
+            new_id = o.create("project.task", values)
+            return {"modelo": "project.task", "creado": new_id}
+        if kind == "crear_evento":
+            return self._create_event(o, d)
+        if kind == "registrar_horas":
+            from micnaga.brain import horas
+            from micnaga.brain.timesheets import LineError
+
+            book = self._hours_book(o)
+            try:
+                line = book.validate(d, explicit=bool(d.get("explicito")))
+            except LineError as exc:
+                raise ApplyError(
+                    "duplicate" if str(exc) == "ya_existe" else f"horas_{exc}"
+                ) from exc
+            new_id = o.create(horas.TIMESHEET_MODEL, horas.create_values(line))
+            book.accept(line)
+            return {"modelo": horas.TIMESHEET_MODEL, "creado": new_id}
+        if kind == "crear_gasto":
+            values = {
+                "name": d["nombre"],
+                "date": d["fecha"],
+                "total_amount_currency": d["importe"],
+                "payment_mode": "own_account",
+            }
+            new_id = o.create("hr.expense", values)  # borrador; sin verificar en un 19 real
+            return {"modelo": "hr.expense", "creado": new_id}
         return None
+
+    def _hours_book(self, o: Any) -> Any:
+        from micnaga.brain.horas import HoursBook
+
+        if self._book is None:
+            self._book = HoursBook(o, self.today)
+        return self._book
+
+    def _create_event(self, o: Any, d: dict[str, Any]) -> dict[str, Any]:
+        """Evento propio; los invitados solo si el usuario los activo y **sin correo**
+        (``odoo_calendar``, la misma pieza que usa la capa de Google Calendar)."""
+        from micnaga.brain import odoo_calendar
+        from micnaga.brain.odoo import local_tz
+
+        me = o.user_info()
+        partners = [me["partner_id"]] if me.get("partner_id") else []
+        partners += [int(i["id"]) for i in d.get("invitados") or [] if i.get("on")]
+        values = odoo_calendar.event_values(
+            name=d["nombre"],
+            day=d["fecha"],
+            tz=local_tz(me.get("tz")),
+            start=d.get("hora_inicio"),
+            duration_h=float(d.get("duracion_h") or 1.0),
+            partner_ids=partners,
+            user_id=o.uid,
+        )
+        new_id = odoo_calendar.create_event(o, values)
+        return {"modelo": odoo_calendar.MODEL, "creado": new_id}
+
+    # ------------------------------------------------------------------ editar
+
+    def edit(self, pid: str, changes: dict[str, Any]) -> dict[str, Any]:
+        """Cambios del usuario en cualquier campo editable de un item pendiente: se revalidan con
+        la misma logica que la propuesta original y el item se sustituye (mismo ``id``)."""
+        from micnaga.brain import plan
+
+        acta = acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        gp = next((x for x in acta.get("propuestas") or [] if x.get("id") == pid), None)
+        if gp is not None and gp.get("grupo") == "google" and gp.get("estado") == "fallida":
+            return self._edit_google(acta, gp, changes)  # revisarla es la forma de reintentar
+        p = self._pending(acta, pid)
+        if p.get("grupo") == "google":
+            return self._edit_google(acta, p, changes)
+        if p.get("grupo") == "correcciones":
+            to = " ".join(str(changes.get("a") or "").split())[:60]
+            if not to or re.search(r"\d", to):
+                raise ApplyError("invalid")
+            p["datos"] = {**(p.get("datos") or {}), "a": to}
+            p["checked"] = True
+            acta_io.write_acta(self.folder, acta)
+            return acta
+        invited = changes.get("invitados_on")
+        if p.get("tipo") == "crear_evento" and isinstance(invited, list) and len(changes) == 1:
+            on = {int(i) for i in invited if isinstance(i, int) and not isinstance(i, bool)}
+            d = dict(p.get("datos") or {})
+            d["invitados"] = [{**i, "on": int(i["id"]) in on} for i in d.get("invitados") or []]
+            p["datos"] = d
+            acta_io.write_acta(self.folder, acta)
+            return acta
+        try:
+            raw = plan.apply_changes(plan.to_input(p), changes)
+        except ValueError as exc:
+            raise ApplyError("invalid") from exc
+        return self.replace(pid, raw, acta=acta, user_edit=True)
+
+    def replace(
+        self,
+        pid: str,
+        raw: dict[str, Any],
+        *,
+        acta: dict[str, Any] | None = None,
+        user_edit: bool = False,
+    ) -> dict[str, Any]:
+        """Sustituye un item pendiente por otra version (forma de salida del modelo), p. ej. la
+        que revise la IA a partir de un mensaje del usuario. Conserva ``id``; ``LineError`` /
+        ``ApplyError`` si la nueva version no pasa la validacion."""
+        from micnaga.brain import capabilities, plan
+
+        acta = acta if acta is not None else acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        p = self._pending(acta, pid)
+        if raw.get("tipo") != p.get("tipo"):
+            raise ApplyError("invalid")
+        if p.get("grupo") == "google":
+            from micnaga.brain.google import items
+
+            try:
+                items.replace(acta, pid, raw)
+            except items.EditError as exc:
+                raise ApplyError("invalid") from exc
+            acta_io.write_acta(self.folder, acta)
+            return acta
+        o = self.odoo()
+        try:
+            profile = capabilities.ensure(o)
+        except Exception:
+            profile = None
+        transcript = output.read_transcript(self.folder)
+        try:
+            new = plan.rebuild(
+                raw, transcript, o, profile=profile, today=self.today, user_edit=user_edit
+            )
+        except ValueError as exc:
+            from micnaga.brain.timesheets import LineError
+
+            if isinstance(exc, LineError):
+                raise
+            raise ApplyError("invalid") from exc
+        if p.get("tipo") == "crear_evento":  # los invitados que el usuario ya activo siguen
+            was_on = {i["id"] for i in (p.get("datos") or {}).get("invitados") or [] if i.get("on")}
+            for i in (new.get("datos") or {}).get("invitados") or []:
+                i["on"] = i["id"] in was_on
+        keep: dict[str, Any] = {k: p[k] for k in ("id", "seg", "t") if k in p}
+        p.clear()
+        p.update(new)
+        p.update(keep, estado="pendiente", deshacer=None, error=None)
+        if user_edit:
+            p["checked"] = True
+        acta_io.write_acta(self.folder, acta)
+        return acta
+
+    def _edit_google(
+        self, acta: dict[str, Any], p: dict[str, Any], changes: dict[str, Any]
+    ) -> dict[str, Any]:
+        from micnaga.brain.google import items
+
+        try:
+            items.edit(p, changes)
+        except items.EditError as exc:
+            raise ApplyError("invalid") from exc
+        acta_io.write_acta(self.folder, acta)
+        return acta
+
+    @staticmethod
+    def _pending(acta: dict[str, Any], pid: str) -> dict[str, Any]:
+        p: dict[str, Any] | None = next(
+            (x for x in acta.get("propuestas") or [] if x.get("id") == pid), None
+        )
+        if p is None or p.get("estado") != "pendiente":
+            raise ApplyError("not_editable")
+        return p
 
     # ------------------------------------------------------------------ deshacer
 

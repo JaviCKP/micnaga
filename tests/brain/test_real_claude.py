@@ -91,7 +91,7 @@ def test_real_business_meeting_with_fake_odoo(fake_odoo: FakeOdoo) -> None:
     assert res.result.tool_calls, "the model never looked at Odoo"
     assert fake_odoo.write_calls == []  # analizar solo lee
     props = res.acta["propuestas"]
-    crm = [p for p in props if p["grupo"] == "crm"]
+    crm = [p for p in props if p["grupo"] != "correcciones"]
     assert crm, props
     assert all(p["datos"] for p in crm)
     linked = [p for p in crm if p["tipo"] in ("vincular_a_oportunidad", "actualizar_oportunidad")]

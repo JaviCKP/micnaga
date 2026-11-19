@@ -12,7 +12,6 @@ from typing import Any
 import pytest
 
 from micnaga.brain import google as g
-from micnaga.brain import items
 from micnaga.brain.claude import ClaudeRequest, ClaudeResult, ClaudeRunner, ToolResult, parse_stream
 from micnaga.brain.google import (
     analysis,
@@ -21,6 +20,7 @@ from micnaga.brain.google import (
     context,
     detect,
     guard,
+    items,
     mirror,
     policy,
     store,
@@ -511,7 +511,7 @@ def test_odoo_events_are_routed_through_google() -> None:
             "fecha": "2026-11-26",
             "hora_inicio": "16:30",
             "duracion_h": 1.5,
-            "asistentes_ids": [7],
+            "invitados": [{"id": 7, "nombre": "Obra", "on": False}],
         },
     }
     keep = {"id": "p4", "grupo": "crm", "tipo": "crear_contacto", "datos": {}}
@@ -546,7 +546,7 @@ def test_every_field_is_editable_and_the_id_is_kept() -> None:
             "huecos": [],
         },
     }
-    assert [f["k"] for f in items.fields_for(p)] == [
+    assert [f["clave"] for f in items.fields_for(p)] == [
         "titulo",
         "inicio",
         "duracion_min",
@@ -563,6 +563,7 @@ def test_every_field_is_editable_and_the_id_is_kept() -> None:
         },
     )
     assert p["id"] == "p1" and p["revision"] == 1 and "evil" not in p["datos"]
+    assert p["checked"] is True  # lo ha revisado el usuario
     assert p["datos"]["titulo"] == "Seguimiento" and p["invita"] == ["ana@cliente.com"]
     with pytest.raises(items.EditError):
         items.edit(p, {"asistentes": [{"email": "no-es-correo"}]})
@@ -571,23 +572,26 @@ def test_every_field_is_editable_and_the_id_is_kept() -> None:
         items.edit(p, {"titulo": "B"})
 
 
-def test_unknown_types_get_a_generic_editor() -> None:
-    p = {
-        "id": "p9",
-        "tipo": "registrar_horas",
-        "estado": "pendiente",
-        "datos": {
-            "horas": 2,
-            "fecha": "2026-11-19",
-            "descripcion": "Implantación",
-            "explicito": True,
-            "fechas": ["x"],
-        },
+def test_only_google_items_get_google_fields() -> None:
+    acta = {
+        "propuestas": [
+            {"id": "p1", "grupo": "google", "tipo": "acta_drive", "datos": {"titulo": "A"}},
+            {"id": "p2", "grupo": "horas", "tipo": "registrar_horas", "datos": {"horas": 2}},
+        ]
     }
-    kinds = {f["k"]: f["t"] for f in items.fields_for(p)}
-    assert kinds == {"horas": "number", "fecha": "date", "descripcion": "text", "explicito": "bool"}
-    items.edit(p, {"horas": "3,5", "fecha": "2026-11-20"})
-    assert p["datos"]["horas"] == 3.5 and p["datos"]["fecha"] == "2026-11-20"
+    items.decorate(acta)
+    one, two = acta["propuestas"]
+    assert one["campos"] == [
+        {
+            "clave": "titulo",
+            "tipo": "text",
+            "etiqueta": "items.f.titulo",
+            "req": True,
+            "largo": 160,
+            "valor": "A",
+        }
+    ]
+    assert "campos" not in two  # los de Odoo los describe plan.EDIT_FIELDS
 
 
 def test_replace_keeps_the_id_for_revised_items() -> None:
@@ -975,10 +979,10 @@ def test_edit_api_and_google_status(tmp_path: Path, meeting: Path) -> None:
     )
     svc = BrainService(lambda: cfg)
     r = svc.api("acta", {"folder": meeting.name})
-    assert r["acta"]["propuestas"][0]["campos"][0]["k"] == "titulo"
-    bad = svc.api("edit", {"folder": meeting.name, "id": "p1", "values": {"inicio": "mañana"}})
-    assert bad == {"ok": False, "error": "secretaria.err.invalid", "field": "inicio"}
-    ok = svc.api("edit", {"folder": meeting.name, "id": "p1", "values": {"titulo": "Nuevo"}})
+    assert r["acta"]["propuestas"][0]["campos"][0]["clave"] == "titulo"
+    bad = svc.api("edit", {"folder": meeting.name, "id": "p1", "cambios": {"inicio": "mañana"}})
+    assert bad == {"ok": False, "error": "secretaria.err.invalid"}
+    ok = svc.api("edit", {"folder": meeting.name, "id": "p1", "cambios": {"titulo": "Nuevo"}})
     assert ok["ok"] and ok["acta"]["propuestas"][0]["datos"]["titulo"] == "Nuevo"
     assert (
         "campos"
@@ -987,6 +991,66 @@ def test_edit_api_and_google_status(tmp_path: Path, meeting: Path) -> None:
     st = svc.api("google_status", {})
     assert st["ok"] and st["services"]["calendar"] == {"state": "unknown", "enabled": True}
     assert svc.api("open_link", {"url": "https://evil.example.com"})["ok"] is False
+
+
+def test_a_failed_google_item_can_be_reviewed_and_retried(
+    tmp_path: Path, meeting: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Por el camino real (``apply`` -> ``fallida`` -> ``edit`` -> ``apply``): revisar el item
+    es la forma deliberada de reintentar (otra ``revision``, otra clave)."""
+    from micnaga.brain import acta as acta_io
+    from micnaga.brain.claude import ClaudeTimeoutError
+    from micnaga.brain.service import BrainService
+
+    cfg = google_config()
+    cfg.secretaria.enabled = True
+    acta_io.write_acta(meeting, {"titulo": "X", "propuestas": [event_proposal()]})
+    svc = BrainService(lambda: cfg)
+    google = FakeGoogle()
+    runner = [FakeGoogleRunner(google, raise_after_call=ClaudeTimeoutError("x"))]
+
+    def make(path: Path) -> apply.GoogleApplier:
+        return apply.GoogleApplier(path, runner=runner[0], db_factory=open_database, odoo=None)
+
+    monkeypatch.setattr(svc, "_google_applier", make)
+    r = svc.api("apply", {"folder": meeting.name, "ids": ["p1"]})
+    assert r["acta"]["propuestas"][0]["estado"] == "fallida"
+    r = svc.api("edit", {"folder": meeting.name, "id": "p1", "cambios": {"titulo": "Otra"}})
+    assert r["ok"], r
+    p = r["acta"]["propuestas"][0]
+    assert (p["estado"], p["revision"], p["checked"]) == ("pendiente", 1, True)
+    runner[0] = FakeGoogleRunner(google)
+    r = svc.api("apply", {"folder": meeting.name, "ids": ["p1"]})
+    assert r["acta"]["propuestas"][0]["estado"] == "aplicada"
+
+
+def test_a_revised_version_never_opts_in_to_invites_or_sending() -> None:
+    mail = {
+        "id": "p2",
+        "grupo": "google",
+        "tipo": "correo_google",
+        "estado": "pendiente",
+        "datos": {"modo": "draft", "para": ["a@b.com"], "asunto": "x", "cuerpo": "y"},
+    }
+    acta = {"propuestas": [event_proposal(), mail]}
+    ev = items.replace(
+        acta,
+        "p1",
+        {
+            "datos": {
+                "titulo": "Mejor",
+                "asistentes": [
+                    {"nombre": "Ana", "email": "ana@cliente.com", "on": True},
+                    {"nombre": None, "email": "otro@x.com", "on": True},
+                ],
+            }
+        },
+    )
+    assert ev["datos"]["titulo"] == "Mejor" and ev["invita"] == []
+    assert [a["on"] for a in ev["datos"]["asistentes"]] == [False, False]
+    assert items.replace(acta, "p2", {"datos": {"modo": "send"}})["datos"]["modo"] == "draft"
+    with pytest.raises(items.EditError):
+        items.replace(acta, "p2", {"datos": {"para": ["no-es-correo"]}})
 
 
 def test_bridge_exposes_the_new_actions() -> None:
@@ -1096,18 +1160,3 @@ def test_a_converted_odoo_event_does_not_duplicate_the_google_one() -> None:
     }
     out = analysis.route_odoo_events([mine, odoo], run, {})
     assert out == [mine]
-
-
-def test_editing_a_crm_record_id_drops_what_micnaga_had_checked() -> None:
-    p = {
-        "id": "p5",
-        "grupo": "crm",
-        "tipo": "nota_en_historial",
-        "estado": "pendiente",
-        "checked": True,
-        "aviso": None,
-        "datos": {"modelo": "crm.lead", "id": 205, "nombre": "CRM Dental Triana"},
-    }
-    items.edit(p, {"id": 206})
-    assert p["datos"] == {"modelo": "crm.lead", "id": 206}
-    assert p["checked"] is False and p["aviso"] == "sin_comprobar"

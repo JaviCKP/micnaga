@@ -1,6 +1,6 @@
 """Que ve y que puede usar cada ``claude -p`` cuando Google esta activado.
 
-Medido con Claude Code 2.1.327 (``DECISIONS.md`` §19):
+Medido con Claude Code 2.1.327 (``DECISIONS.md`` §20):
 
 * ``--strict-mcp-config`` **oculta** los conectores de claude.ai: con Google no se usa.
 * Sin el, la conexion MCP es **no bloqueante** por defecto: con ``--setting-sources project`` el

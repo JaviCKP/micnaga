@@ -171,7 +171,20 @@ class PillApi:
 # ============================================================================ secretaria
 
 LIBRARY_BRAIN_ACTIONS = frozenset(
-    {"acta", "apply", "undo", "dismiss", "analyze", "edit", "open_link"}
+    {
+        "acta",
+        "apply",
+        "undo",
+        "dismiss",
+        "analyze",
+        "edit",
+        "open_link",
+        "caps",
+        "horas_plan",
+        "horas_apply",
+        "horas_undo",
+        "horas_off",
+    }
 )
 SETTINGS_BRAIN_ACTIONS = frozenset(
     {
@@ -180,6 +193,7 @@ SETTINGS_BRAIN_ACTIONS = frozenset(
         "claude_test",
         "set_secret",
         "odoo_test",
+        "caps",
         "learned",
         "forget",
         "restore",

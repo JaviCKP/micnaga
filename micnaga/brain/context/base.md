@@ -8,5 +8,8 @@ fichero de esta carpeta (p. ej. `bitnaga.md`, ver `docs/ONBOARDING.md` §6.2) o 
 - El usuario es una persona que vende y presta servicios; sus reuniones son con clientes,
   proveedores y su equipo.
 - Las oportunidades de Odoo suelen nombrarse «Empresa · servicio».
-- Las tareas del usuario con fecha son actividades suyas en Odoo; las de los demás, solo en el acta.
+- El trabajo se organiza en proyectos y tareas de Odoo; las acciones concretas del usuario son
+  tareas en un proyecto existente y los recordatorios con fecha, actividades. Las de los demás,
+  solo en el acta.
+- Las horas se fichan en partes de horas por proyecto, solo cuando el usuario lo pide.
 - Importes en euros; si no se dice, sin IVA.

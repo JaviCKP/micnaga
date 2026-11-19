@@ -13,12 +13,28 @@ from datetime import date
 from typing import Any
 
 PROPOSAL_TYPES = (
+    "nota_en_historial",
+    "crear_tarea",
+    "programar_actividad",
+    "crear_evento",
+    "registrar_horas",
+    "crear_gasto",
     "vincular_a_oportunidad",
     "actualizar_oportunidad",
     "crear_contacto",
-    "programar_actividad",
-    "nota_en_historial",
 )
+#: Grupo de la revision por tipo (``grupo`` de la propuesta; la UI los titula).
+PROPOSAL_GROUP = {
+    "registrar_horas": "horas",
+    "crear_tarea": "agenda",
+    "programar_actividad": "agenda",
+    "crear_evento": "agenda",
+    "crear_gasto": "agenda",
+    "nota_en_historial": "agenda",
+    "vincular_a_oportunidad": "crm",
+    "actualizar_oportunidad": "crm",
+    "crear_contacto": "crm",
+}
 CORRECTION_TYPES = ("hablante", "palabra")
 LEARN_SOURCES = ("crm", "reunion", "aprobacion")
 MAX_SUMMARY = 5
@@ -35,11 +51,19 @@ _DATOS = {
     "type": "object",
     "description": (
         "Datos de la propuesta. Usa SOLO ids que hayas leido con las herramientas. "
+        "nota_en_historial: tarea_id, proyecto_id, oportunidad_id o partner_id (el registro "
+        "del que trata la reunion). "
+        "crear_tarea: proyecto_id, nombre, fecha (limite, si se dijo), descripcion. "
+        "programar_actividad: tarea_id/proyecto_id/oportunidad_id/partner_id, resumen, fecha. "
+        "crear_evento: nombre, fecha, hora_inicio (HH:MM), duracion_h, asistentes_ids "
+        "(partners existentes), tarea_id/proyecto_id si aplica. "
+        "registrar_horas: proyecto_id, tarea_id, fechas (lista YYYY-MM-DD), horas (por dia), "
+        "descripcion, explicito (true si el usuario dijo las horas). "
+        "crear_gasto: nombre (concepto), importe, fecha. "
         "crear_contacto: nombre, email, telefono, cargo, empresa_id. "
-        "vincular_a_oportunidad / nota_en_historial: oportunidad_id (o partner_id). "
+        "vincular_a_oportunidad: oportunidad_id. "
         "actualizar_oportunidad: oportunidad_id, etapa_id, importe, fecha_cierre, "
-        "etapa_anterior, importe_anterior. "
-        "programar_actividad: oportunidad_id (o partner_id), resumen, fecha."
+        "etapa_anterior, importe_anterior."
     ),
     "properties": {
         "oportunidad_id": {"type": ["integer", "null"]},
@@ -56,13 +80,25 @@ _DATOS = {
         "fecha_cierre": {"type": ["string", "null"]},
         "resumen": {"type": ["string", "null"]},
         "fecha": {"type": ["string", "null"]},
+        "proyecto_id": {"type": ["integer", "null"]},
+        "tarea_id": {"type": ["integer", "null"]},
+        "fechas": {"type": ["array", "null"], "items": {"type": "string"}},
+        "horas": {"type": ["number", "null"]},
+        "descripcion": {"type": ["string", "null"]},
+        "explicito": {"type": ["boolean", "null"]},
+        "hora_inicio": {"type": ["string", "null"]},
+        "duracion_h": {"type": ["number", "null"]},
+        "asistentes_ids": {"type": ["array", "null"], "items": {"type": "integer"}},
     },
     "additionalProperties": False,
 }
 
 
-def acta_schema(*, with_crm: bool) -> dict[str, Any]:
-    """Esquema de la pasada unica (acta + correcciones [+ propuestas CRM] + aprendizajes)."""
+def acta_schema(*, with_crm: bool, types: list[str] | None = None) -> dict[str, Any]:
+    """Esquema de la pasada unica (acta + correcciones [+ propuestas Odoo] + aprendizajes).
+
+    ``types``: los tipos de propuesta que permite el perfil de capacidades (por defecto, todos).
+    """
     props: dict[str, Any] = {
         "titulo": {"type": "string", "description": "3-8 palabras, concreto, sin fecha"},
         "resumen": {"type": "array", "items": {"type": "string"}, "maxItems": MAX_SUMMARY},
@@ -134,7 +170,10 @@ def acta_schema(*, with_crm: bool) -> dict[str, Any]:
             "items": {
                 "type": "object",
                 "properties": {
-                    "tipo": {"type": "string", "enum": list(PROPOSAL_TYPES)},
+                    "tipo": {
+                        "type": "string",
+                        "enum": list(types) if types is not None else list(PROPOSAL_TYPES),
+                    },
                     "titulo": {"type": "string", "description": "una linea: verbo + objeto"},
                     "motivo": {"type": "string"},
                     "seg": {"type": ["integer", "null"]},

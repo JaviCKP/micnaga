@@ -3,9 +3,12 @@
 ``python -m micnaga.brain.mcp`` (o ``micnaga tools`` / ``micnaga-cli tools`` congelado). Lo lanza
 ``claude -p`` con ``--mcp-config``; Micnaga solo autoriza ``mcp__micnaga__*``.
 
-Herramientas: ``buscar_contactos``, ``buscar_empresas``, ``buscar_oportunidades``,
-``leer_oportunidad``, ``listar_etapas``, ``historial_reciente``, ``actividades_pendientes``
-(Odoo, si esta configurado) y ``buscar_en_reuniones`` (biblioteca local: FTS de frases y actas).
+Herramientas de Odoo (si esta configurado), **filtradas por el perfil de capacidades** del
+usuario (``MICNAGA_TOOLS``, ver ``micnaga.brain.capabilities``): CRM y contactos
+(``buscar_contactos``, ``buscar_empresas``, ``buscar_oportunidades``, ``leer_oportunidad``,
+``listar_etapas``, ``historial_reciente``, ``actividades_pendientes``) y negocio
+(``mis_partes_de_horas``, ``proyectos``, ``tareas``, ``calendario``, ``mis_actividades``,
+``mis_gastos``). Siempre: ``buscar_en_reuniones`` (biblioteca local: FTS de frases y actas).
 
 * La clave de Odoo la lee este proceso del Administrador de credenciales: **nunca pasa por
   Claude** (ni por su linea de comandos ni por su entorno).
@@ -14,8 +17,10 @@ Herramientas: ``buscar_contactos``, ``buscar_empresas``, ``buscar_oportunidades`
 * Sale al cerrarse stdin (no quedan procesos sueltos).
 
 Configuracion por entorno (la pone ``micnaga.brain.secretary`` en el ``--mcp-config``):
-``MICNAGA_ODOO_URL``, ``MICNAGA_ODOO_DB``, ``MICNAGA_ODOO_LOGIN`` (+ ``MICNAGA_HOME``,
-``MICNAGA_STORAGE`` para la biblioteca).
+``MICNAGA_ODOO_URL``, ``MICNAGA_ODOO_DB``, ``MICNAGA_ODOO_LOGIN``, ``MICNAGA_TOOLS`` (lista
+separada por comas; sin ella, las de CRM de siempre), ``MICNAGA_TODAY`` (solo pruebas) (+
+``MICNAGA_HOME``, ``MICNAGA_STORAGE`` para la biblioteca). El cliente de Odoo de este proceso es
+de **solo lectura**: un metodo de escritura falla antes de salir a la red.
 """
 
 from __future__ import annotations
@@ -25,6 +30,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable
+from datetime import date, timedelta
 from typing import Any, BinaryIO
 
 from micnaga import __version__
@@ -43,8 +49,20 @@ ODOO_TOOLS = (
     "historial_reciente",
     "actividades_pendientes",
 )
+BUSINESS_TOOLS = (
+    "mis_partes_de_horas",
+    "proyectos",
+    "tareas",
+    "calendario",
+    "mis_actividades",
+    "mis_gastos",
+)
 LOCAL_TOOLS = ("buscar_en_reuniones",)
 ALL_TOOLS = (*ODOO_TOOLS, *LOCAL_TOOLS)
+EVERY_ODOO_TOOL = (*ODOO_TOOLS, *BUSINESS_TOOLS)
+MAX_RANGE_DAYS = 92
+RECORD_MODELS = ("crm.lead", "res.partner", "project.task", "project.project")
+HISTORY_DAYS = 42
 
 
 def _schema(props: dict[str, Any], required: list[str]) -> dict[str, Any]:
@@ -85,7 +103,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Ultimos mensajes y notas del historial de un registro.",
         "inputSchema": _schema(
             {
-                "modelo": {"type": "string", "enum": ["crm.lead", "res.partner"]},
+                "modelo": {"type": "string", "enum": list(RECORD_MODELS)},
                 "id": {"type": "integer"},
             },
             ["modelo", "id"],
@@ -95,7 +113,7 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
         "description": "Actividades pendientes (mail.activity) de una oportunidad o contacto.",
         "inputSchema": _schema(
             {
-                "modelo": {"type": "string", "enum": ["crm.lead", "res.partner"]},
+                "modelo": {"type": "string", "enum": list(RECORD_MODELS)},
                 "id": {"type": "integer"},
             },
             ["id"],
@@ -104,6 +122,52 @@ TOOL_SPECS: dict[str, dict[str, Any]] = {
     "buscar_en_reuniones": {
         "description": "Busca en las reuniones anteriores del usuario (frases y actas).",
         "inputSchema": _schema({"texto": {"type": "string"}}, ["texto"]),
+    },
+    "mis_partes_de_horas": {
+        "description": "Partes de horas del usuario (account.analytic.line) entre dos fechas: "
+        "horas por dia, dias laborables que FALTAN o estan incompletos, festivos, y su PATRON "
+        "habitual (proyecto, horas y descripcion por franja). Usalo antes de proponer "
+        "registrar_horas.",
+        "inputSchema": _schema(
+            {
+                "desde": {"type": "string", "description": "YYYY-MM-DD (defecto: hace 30 dias)"},
+                "hasta": {"type": "string", "description": "YYYY-MM-DD (por defecto, hoy)"},
+            },
+            [],
+        ),
+    },
+    "proyectos": {
+        "description": "Proyectos de Odoo (project.project) activos: id, nombre, cliente y si "
+        "admiten partes de horas.",
+        "inputSchema": _schema({"activos": {"type": "boolean"}}, []),
+    },
+    "tareas": {
+        "description": "Tareas (project.task): por proyecto, las del usuario y/o abiertas, o "
+        "buscando por texto.",
+        "inputSchema": _schema(
+            {
+                "proyecto_id": {"type": "integer"},
+                "mias": {"type": "boolean", "description": "solo las asignadas al usuario"},
+                "abiertas": {"type": "boolean"},
+                "texto": {"type": "string"},
+            },
+            [],
+        ),
+    },
+    "calendario": {
+        "description": "Eventos del calendario del usuario (calendar.event) entre dos fechas, "
+        "en hora local.",
+        "inputSchema": _schema(
+            {"desde": {"type": "string"}, "hasta": {"type": "string"}}, ["desde", "hasta"]
+        ),
+    },
+    "mis_actividades": {
+        "description": "Actividades pendientes asignadas al usuario (mail.activity).",
+        "inputSchema": _schema({}, []),
+    },
+    "mis_gastos": {
+        "description": "Gastos recientes del usuario (hr.expense).",
+        "inputSchema": _schema({}, []),
     },
 }
 
@@ -115,12 +179,28 @@ class ToolError(Exception):
 class Tools:
     """Implementacion de las herramientas (inyectable en tests)."""
 
-    def __init__(self, odoo: Any = None, db_factory: Callable[[], Any] | None = None) -> None:
+    def __init__(
+        self,
+        odoo: Any = None,
+        db_factory: Callable[[], Any] | None = None,
+        *,
+        allowed: list[str] | None = None,
+        today: date | None = None,
+    ) -> None:
         self.odoo = odoo
         self._db_factory = db_factory
+        self.allowed = allowed
+        self.today = today
 
     def names(self) -> list[str]:
-        return [*(ODOO_TOOLS if self.odoo is not None else ()), *LOCAL_TOOLS]
+        if self.odoo is None:
+            return list(LOCAL_TOOLS)
+        if self.allowed is None:  # sin perfil de capacidades: las de CRM de siempre
+            return [*ODOO_TOOLS, *LOCAL_TOOLS]
+        return [*(t for t in EVERY_ODOO_TOOL if t in self.allowed), *LOCAL_TOOLS]
+
+    def _today(self) -> date:
+        return self.today or date.today()
 
     def call(self, name: str, args: dict[str, Any]) -> Any:
         if name not in self.names():
@@ -147,7 +227,78 @@ class Tools:
             return o.history(_model(args), _int(args, "id"))
         if name == "actividades_pendientes":
             return o.pending_activities(_int(args, "id"), model=_model(args))
+        if name == "mis_partes_de_horas":
+            return self.mis_partes_de_horas(args)
+        if name == "proyectos":
+            active = args.get("activos") is not False
+            return o.projects(active=active)
+        if name == "tareas":
+            return o.tasks(
+                project_id=_int(args, "proyecto_id", required=False),
+                mine=args.get("mias") is not False,
+                open_only=args.get("abiertas") is not False,
+                text=args.get("texto") if isinstance(args.get("texto"), str) else None,
+            )
+        if name == "calendario":
+            a, b = self._range(args, default_days=7)
+            return o.calendar_events(a.isoformat(), b.isoformat())
+        if name == "mis_actividades":
+            return o.my_activities()
+        if name == "mis_gastos":
+            return o.my_expenses()
         raise ToolError(name)  # pragma: no cover
+
+    def _range(self, args: dict[str, Any], *, default_days: int) -> tuple[date, date]:
+        from micnaga.brain.timesheets import parse_day
+
+        today = self._today()
+        b = parse_day(args.get("hasta")) or today
+        a = parse_day(args.get("desde")) or (b - timedelta(days=default_days))
+        if a > b:
+            a, b = b, a
+        if (b - a).days > MAX_RANGE_DAYS:
+            a = b - timedelta(days=MAX_RANGE_DAYS)
+        return a, b
+
+    def mis_partes_de_horas(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import horas, timesheets
+
+        today = self._today()
+        a, b = self._range(args, default_days=30)
+        b = min(b, today)
+        history = self.odoo.timesheet_lines(
+            (a - timedelta(days=HISTORY_DAYS)).isoformat(), b.isoformat()
+        )
+        lines = [ln for ln in history if str(ln["fecha"]) >= a.isoformat()]
+        days = timesheets.analyze_days(
+            lines, a, b, today=today, off_days=horas.off_days(), history=history
+        )
+        pattern = timesheets.learn_pattern(history)
+        logged = sorted(d for d, h in timesheets.totals_by_day(history).items() if h > 0)
+        return {
+            "hoy": today.isoformat(),
+            "desde": a.isoformat(),
+            "hasta": b.isoformat(),
+            "jornada_tipica": timesheets.typical_day_hours(history),
+            "ultimo_dia_con_horas": logged[-1] if logged else None,
+            "faltan": [d.to_dict() for d in days if d.estado == "falta"],
+            "incompletos": [d.to_dict() for d in days if d.estado == "incompleto"],
+            "posibles_libres": [d.fecha for d in days if d.estado in ("libre_probable", "libre")],
+            "festivos": [d.to_dict() for d in days if d.estado == "festivo"],
+            "horas_por_dia": {d.fecha: d.horas for d in days if d.horas and d.estado != "festivo"},
+            "patron": [
+                {
+                    "proyecto_id": s["proyecto"]["id"],
+                    "proyecto": s["proyecto"]["nombre"],
+                    "tarea_id": (s["tarea"] or {}).get("id"),
+                    "horas": s["horas"],
+                    "descripcion": s["descripcion"],
+                    "otras_descripciones": s["variantes"][1:4],
+                    "dias": "".join(s["dias"]),
+                }
+                for s in pattern
+            ],
+        }
 
     def buscar_en_reuniones(self, text: str) -> Any:
         if self._db_factory is None:
@@ -196,8 +347,8 @@ def _int(args: dict[str, Any], key: str, *, required: bool = True) -> Any:
 
 def _model(args: dict[str, Any]) -> str:
     m = args.get("modelo", "crm.lead")
-    if m not in ("crm.lead", "res.partner"):
-        raise ToolError("modelo debe ser crm.lead o res.partner")
+    if m not in RECORD_MODELS:
+        raise ToolError("modelo debe ser uno de: " + ", ".join(RECORD_MODELS))
     return str(m)
 
 
@@ -293,6 +444,7 @@ def serve(tools: Tools, stdin: BinaryIO, stdout: BinaryIO) -> None:
 
 def tools_from_env() -> Tools:
     from micnaga.brain.odoo import client_from_config
+    from micnaga.brain.timesheets import parse_day
 
     odoo = None
     try:
@@ -300,16 +452,20 @@ def tools_from_env() -> Tools:
             os.environ.get("MICNAGA_ODOO_URL", ""),
             os.environ.get("MICNAGA_ODOO_DB", ""),
             os.environ.get("MICNAGA_ODOO_LOGIN", ""),
+            read_only=True,
         )
     except Exception:
         log.exception("odoo client unavailable")
+    raw = os.environ.get("MICNAGA_TOOLS")
+    allowed = [t for t in raw.split(",") if t] if raw is not None else None
+    today = parse_day(os.environ.get("MICNAGA_TODAY"))
 
     def db_factory() -> Any:
         from micnaga.store.db import open_database
 
         return open_database()
 
-    return Tools(odoo, db_factory)
+    return Tools(odoo, db_factory, allowed=allowed, today=today)
 
 
 def run(argv: list[str] | None = None) -> int:

@@ -2,9 +2,14 @@
 
 Implementa lo poco que usa Micnaga: ``version``, ``authenticate``, ``execute_kw`` con
 ``search_read``, ``read``, ``search_count``, ``check_access_rights``, ``create``, ``write``,
-``unlink`` y ``message_post``. Dominios: ``=``, ``!=``, ``ilike``, ``in``, ``child_of`` y los
-prefijos ``|``/``&``. Cada llamada queda en ``calls`` (modelo, metodo) para comprobar que el
-analisis solo lee.
+``unlink`` y ``message_post``. Dominios: ``=``, ``!=``, ``ilike``, ``in``, ``not in``, ``>=``,
+``<=``, ``child_of`` y los prefijos ``|``/``&``. Cada llamada queda en ``calls`` (modelo, metodo)
+para comprobar que el analisis solo lee; los ``context`` de ``create`` en ``contexts``.
+
+Negocio (datos inventados): partes de horas con un patron diario hasta el 2026-11-04 (el
+2026-11-02 sin horas: «probablemente libre»), proyectos, tareas, calendario, gastos y modulos.
+``access`` (modelo -> operaciones permitidas) imita ``check_access_rights``; un ``create`` o
+``write`` sin ese permiso falla como en Odoo.
 """
 
 from __future__ import annotations
@@ -22,8 +27,105 @@ from xmlrpc.server import (
 
 DB, LOGIN, KEY, UID = "bitnaga_test", "javier@example.com", "test-odoo-key", 7
 
+PROJECT_TRAINING, PROJECT_ATLAS, PROJECT_INTERNAL, PROJECT_CLOSED = 5, 6, 4, 9
+PARTNER_ME = 3
+
+
+def _seed_timesheets() -> list[dict[str, Any]]:
+    """Patron diario L-V del 2026-10-05 al 2026-11-04 (sin el 12-10 ni el 02-11)."""
+    from datetime import date, timedelta
+
+    rows: list[dict[str, Any]] = []
+    day = date(2026, 10, 5)
+    n = 0
+    topics = ["Mejora de materiales", "Preparación de sesiones", "Documentación"]
+    while day <= date(2026, 11, 4):
+        if day.weekday() < 5 and day not in (date(2026, 10, 12), date(2026, 11, 2)):
+            for proj, hours, name in (
+                (PROJECT_TRAINING, 4.5, "Formación a técnicos (9:00-13:30)"),
+                (PROJECT_TRAINING, 0.5, "Reunión de seguimiento (13:30-14:00)"),
+                (PROJECT_TRAINING, 2.0, f"{topics[n % 3]} (15:00-17:00)"),
+                (PROJECT_ATLAS, 1.0, ["Desarrollo de Atlas", "Revisión de propuesta"][n % 2]),
+            ):
+                rows.append(
+                    {
+                        "id": 50_000 + len(rows),
+                        "date": day.isoformat(),
+                        "project_id": proj,
+                        "task_id": False,
+                        "employee_id": 70,
+                        "user_id": UID,
+                        "unit_amount": hours,
+                        "name": name,
+                    }
+                )
+            n += 1
+        day += timedelta(days=1)
+    return rows
+
+
 SEED: dict[str, list[dict[str, Any]]] = {
-    "res.users": [{"id": 7, "name": "Javier"}],
+    "res.users": [{"id": 7, "name": "Javier", "partner_id": PARTNER_ME, "tz": "Europe/Madrid"}],
+    "hr.employee": [{"id": 70, "name": "Javier"}],
+    "account.analytic.line": _seed_timesheets(),
+    "project.project": [
+        {
+            "id": PROJECT_TRAINING,
+            "name": "Formación Ayuntamiento",
+            "active": True,
+            "allow_timesheets": True,
+            "partner_id": False,
+        },
+        {
+            "id": PROJECT_ATLAS,
+            "name": "Plataforma Atlas",
+            "active": True,
+            "allow_timesheets": True,
+            "partner_id": 41,
+        },
+        {
+            "id": PROJECT_INTERNAL,
+            "name": "Interno",
+            "active": True,
+            "allow_timesheets": True,
+            "partner_id": False,
+        },
+        {
+            "id": PROJECT_CLOSED,
+            "name": "Proyecto archivado",
+            "active": False,
+            "allow_timesheets": True,
+            "partner_id": False,
+        },
+    ],
+    "project.task": [
+        {
+            "id": 300,
+            "name": "Migrar informes de Atlas",
+            "project_id": PROJECT_ATLAS,
+            "stage_id": False,
+            "state": "01_in_progress",
+            "date_deadline": False,
+            "user_ids": [7],
+        },
+        {
+            "id": 301,
+            "name": "Tarea cerrada",
+            "project_id": PROJECT_ATLAS,
+            "stage_id": False,
+            "state": "1_done",
+            "date_deadline": False,
+            "user_ids": [7],
+        },
+    ],
+    "calendar.event": [],
+    "hr.expense": [],
+    "ir.module.module": [
+        {"id": n, "name": m, "state": "installed"}
+        for n, m in enumerate(
+            ["hr_timesheet", "project", "calendar", "hr_expense", "crm", "contacts", "mail"], 1
+        )
+    ],
     "res.partner": [
         {
             "id": 41,
@@ -42,6 +144,15 @@ SEED: dict[str, list[dict[str, Any]]] = {
             "email": "carlos@dentaltriana.es",
             "phone": False,
             "function": "Gerente",
+        },
+        {
+            "id": PARTNER_ME,
+            "name": "Javier",
+            "is_company": False,
+            "parent_id": False,
+            "email": "javier@example.com",
+            "phone": False,
+            "function": False,
         },
         {
             "id": 58,
@@ -95,7 +206,12 @@ SEED: dict[str, list[dict[str, Any]]] = {
             "res_id": 205,
         },
     ],
-    "ir.model": [{"id": 300, "model": "crm.lead"}, {"id": 301, "model": "res.partner"}],
+    "ir.model": [
+        {"id": 300, "model": "crm.lead"},
+        {"id": 301, "model": "res.partner"},
+        {"id": 302, "model": "project.task"},
+        {"id": 303, "model": "project.project"},
+    ],
     "mail.activity.type": [{"id": 4, "name": "Por hacer"}],
 }
 M2O = {
@@ -106,7 +222,11 @@ M2O = {
     "author_id": "res.users",
     "activity_type_id": "mail.activity.type",
     "res_model_id": "ir.model",
+    "project_id": "project.project",
+    "task_id": "project.task",
+    "employee_id": "hr.employee",
 }
+M2M = {"user_ids", "partner_ids"}
 WRITE_METHODS = {"create", "write", "unlink", "message_post"}
 
 
@@ -120,6 +240,9 @@ class FakeOdoo:
         self.data = copy.deepcopy(SEED)
         self.calls: list[tuple[str, str]] = []
         self.denied: set[str] = set()
+        self.access: dict[str, set[str]] = {}
+        """modelo -> operaciones permitidas (sin entrada: todas)."""
+        self.contexts: list[tuple[str, dict[str, Any]]] = []
         self.lock = threading.Lock()
         self._next = 10_000
         self.server: MultiPathXMLRPCServer | None = None
@@ -185,7 +308,11 @@ class FakeOdoo:
                 raise Fault(2, "odoo.exceptions.AccessError: You are not allowed")
             rows = self.data.setdefault(model, [])
             if method == "check_access_rights":
-                return True
+                return self._allowed(model, str(args[0]))
+            if method in ("create", "write", "unlink") and not self._allowed(
+                model, "create" if method == "create" else "write"
+            ):
+                raise Fault(2, "odoo.exceptions.AccessError: You are not allowed to modify")
             if method == "search_count":
                 return len(self._filter(rows, args[0] if args else []))
             if method == "search_read":
@@ -202,12 +329,21 @@ class FakeOdoo:
                     self._render(model, r, kwargs.get("fields")) for r in rows if r["id"] in ids
                 ]
             if method == "create":
-                vals = dict(args[0])
+                vals = {k: self._command(v) for k, v in dict(args[0]).items()}
+                if kwargs.get("context"):
+                    self.contexts.append((model, dict(kwargs["context"])))
+                if model == "account.analytic.line":
+                    if "employee_id" in vals:  # un empleado sin acceso a hr.employee
+                        raise Fault(2, "odoo.exceptions.AccessError: hr.employee")
+                    vals.setdefault("employee_id", 70)
+                    vals.setdefault("user_id", UID)
                 self._next += 1
                 vals["id"] = self._next
                 rows.append(vals)
                 return self._next
             if method == "write":
+                if kwargs.get("context"):
+                    self.contexts.append((model, dict(kwargs["context"])))
                 for r in rows:
                     if r["id"] in args[0]:
                         r.update(args[1])
@@ -231,6 +367,19 @@ class FakeOdoo:
                 )
                 return self._next
         raise Fault(3, f"unknown method {method}")
+
+    def _allowed(self, model: str, op: str) -> bool:
+        if model in self.denied:
+            return False
+        ops = self.access.get(model)
+        return ops is None or op in ops
+
+    @staticmethod
+    def _command(v: Any) -> Any:
+        """``[(6, 0, ids)]`` (orden x2many) -> ``ids``."""
+        if isinstance(v, list) and v and isinstance(v[0], list | tuple) and v[0][0] == 6:
+            return list(v[0][2])
+        return v
 
     def _render(self, model: str, r: dict[str, Any], fields: list[str] | None) -> dict[str, Any]:
         out = {}
@@ -256,7 +405,15 @@ class FakeOdoo:
         if op == "ilike":
             return bool(v) and _norm(value) in _norm(v)
         if op == "in":
+            if field in M2M:
+                return bool(set(v or []) & set(value))
             return v in value
+        if op == "not in":
+            return v not in value
+        if op == ">=":
+            return v is not None and v is not False and str(v) >= str(value)
+        if op == "<=":
+            return v is not None and v is not False and str(v) <= str(value)
         if op == "child_of":
             return bool(v == value or r.get("parent_id") == value)
         raise ValueError(op)

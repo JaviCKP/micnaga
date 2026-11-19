@@ -131,6 +131,29 @@ def render_note_html(acta: dict[str, Any]) -> str:
     return "".join(parts)
 
 
+def note_text(acta: dict[str, Any]) -> str:
+    """El acta como texto plano editable (valor por defecto del cuerpo de la nota)."""
+    lines = [str(acta.get("titulo") or "")]
+    lines += [str(s) for s in acta.get("resumen") or []]
+    tareas = [
+        f"- {t.get('responsable') or '—'}: {t.get('texto', '')}"
+        + (f" ({t['fecha']})" if t.get("fecha") else "")
+        for t in acta.get("tareas") or []
+    ]
+    if tareas:
+        lines += ["", "Tareas:", *tareas]
+    abiertas = [f"- {q.get('texto', '')}" for q in acta.get("preguntas_abiertas") or []]
+    if abiertas:
+        lines += ["", "Abierto:", *abiertas]
+    return "\n".join(lines).strip()
+
+
+def text_to_html(text: str) -> str:
+    """Texto plano del usuario -> HTML escapado (parrafos y saltos de linea)."""
+    paras = [p for p in text.replace("\r", "").split("\n\n") if p.strip()]
+    return "".join("<p>" + html.escape(p.strip()).replace("\n", "<br>") + "</p>" for p in paras)
+
+
 def fts_text(acta: dict[str, Any]) -> str:
     chunks: list[str] = [str(acta.get("titulo") or "")]
     chunks += [str(s) for s in acta.get("resumen") or []]

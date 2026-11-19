@@ -9,10 +9,10 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [], editing: null };
+  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [], open: new Set() };
   const call = (action, args) => mic.call("secretaria", action, args || {});
   const lib = () => window.micnaga && window.micnaga.library;
-  const IT = () => window.micnaga && window.micnaga.items;   // editable items + Google (items.js)
+  const IT = () => window.micnaga && window.micnaga.items;   // Google items (items.js)
 
   /** A small «01:17 ▸» stamp that plays that moment. */
   function stamp(t) {
@@ -41,6 +41,12 @@
     historial_reciente: "secretaria.st.history",
     actividades_pendientes: "secretaria.st.activities",
     buscar_en_reuniones: "secretaria.st.meetings",
+    mis_partes_de_horas: "secretaria.st.hours",
+    proyectos: "secretaria.st.projects",
+    tareas: "secretaria.st.tasks",
+    calendario: "secretaria.st.calendar",
+    mis_actividades: "secretaria.st.my_activities",
+    mis_gastos: "secretaria.st.expenses",
   };
   function statusText(st) {
     if (!st) return mic.t("secretaria.st.reading");
@@ -118,7 +124,17 @@
       case "hablante": return mic.t("secretaria.p.speaker", { de: d.de, a: d.a });
       case "palabra": return mic.t("secretaria.p.word", { de: d.de, a: d.a, n: d.n || 1 });
       case "vincular_a_oportunidad": return mic.t("secretaria.p.link", { name: d.nombre || "#" + d.id });
-      case "nota_en_historial": return mic.t("secretaria.p.note", { name: d.nombre || "#" + d.id });
+      case "nota_en_historial":
+        return d.modelo === "project.task" || d.modelo === "project.project"
+          ? mic.t("secretaria.p.note_on", { name: d.nombre || "#" + d.id })
+          : mic.t("secretaria.p.note", { name: d.nombre || "#" + d.id });
+      case "crear_tarea":
+        return mic.t("secretaria.p.task", { what: d.nombre, proj: d.proyecto || "", d: d.fecha ? " · " + fmtDay(d.fecha) : "" });
+      case "crear_evento":
+        return mic.t("secretaria.p.event", { what: d.nombre, d: fmtDay(d.fecha) + (d.hora_inicio ? " " + d.hora_inicio : "") });
+      case "crear_gasto": return mic.t("secretaria.p.expense", { what: d.nombre, amount: money(d.importe) });
+      case "registrar_horas":
+        return mic.t("secretaria.p.hours", { h: (Math.round(d.horas * 100) / 100).toLocaleString("es-ES"), proj: d.proyecto || "", desc: d.descripcion || "" });
       case "crear_contacto": {
         const bits = [d.nombre, d.cargo, d.empresa].filter(Boolean).join(" · ");
         return mic.t("secretaria.p.contact", { who: bits });
@@ -140,7 +156,92 @@
     cambio_en_odoo: "secretaria.w.changed",
     parecida_pendiente: "secretaria.w.dup_activity",
     sin_comprobar: "secretaria.w.unchecked",
+    tarea_parecida: "secretaria.w.task_similar",
+    evento_parecido: "secretaria.w.event_similar",
   };
+
+  // ------------------------------------------------------------------ item editor
+  // Every item is data-driven: Python sends `campos` (key, type, options list, current value)
+  // and re-validates each change with the same rules as the original proposal; the item comes
+  // back replaced with the same id. One editor for every kind of item.
+  const hfmt = (h) => (Math.round(h * 100) / 100).toLocaleString("es-ES", { maximumFractionDigits: 2 });
+
+  function control(p, f) {
+    const own = IT() && IT().control(p, f, (v) => edit(p, { [f.clave]: v }));
+    if (own) return own;
+    const opts = (S.acta.opciones || {})[f.opciones] || [];
+    let c;
+    if (f.tipo === "textarea") {
+      c = el("textarea", "field-input sec-ta");
+      c.rows = f.clave === "cuerpo" ? 6 : 3;
+      c.value = f.valor || "";
+    } else if (f.tipo === "select") {
+      c = el("select", "field-select");
+      const list = opts.slice();
+      if (f.valor != null && !list.some((o) => String(o.id) === String(f.valor))) {
+        list.unshift({ id: f.valor, nombre: (p.datos && (p.datos.proyecto || p.datos.nombre || p.datos.etapa)) || String(f.valor) });
+      }
+      if (f.valor == null) c.append(el("option", "", "—"));
+      for (const o of list) { const op = el("option", "", o.nombre); op.value = String(o.id); c.append(op); }
+      c.value = f.valor == null ? "" : String(f.valor);
+      c.disabled = list.length < 2 && f.valor != null;
+    } else {
+      c = el("input", "field-input" + (f.tipo === "number" ? " num" : ""));
+      c.type = f.tipo === "text" ? "text" : f.tipo;
+      if (f.min != null) c.min = f.min;
+      if (f.max != null) c.max = f.max;
+      if (f.paso != null) c.step = f.paso;
+      c.value = f.valor == null ? "" : String(f.valor);
+    }
+    c.spellcheck = false;
+    c.addEventListener("change", () => {
+      let v = c.value;
+      if (f.tipo === "number") v = parseFloat(v);
+      else if (f.tipo === "select" && f.clave !== "destino") v = v === "" ? null : parseInt(v, 10);
+      else if (v === "" && (f.tipo === "date" || f.tipo === "time")) v = null;
+      edit(p, { [f.clave]: v });
+    });
+    return c;
+  }
+
+  function chips(p, f) {
+    const row = el("div", "sec-inv");
+    for (const g of f.valor || []) {
+      const b = el("button", "sec-chipbtn", g.nombre);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(!!g.on));
+      b.addEventListener("click", () => {
+        const on = f.valor.filter((x) => (x.id === g.id ? !x.on : x.on)).map((x) => x.id);
+        edit(p, { invitados_on: on });
+      });
+      row.append(b);
+    }
+    row.append(el("span", "sec-inv-n", mic.t("secretaria.invite_note")));
+    return row;
+  }
+
+  function editor(p) {
+    const box = el("div", "sec-edit");
+    box.dataset.id = p.id;
+    for (const f of p.campos || []) {
+      if (f.tipo === "chips" && !(f.valor && f.valor.length)) continue;
+      // rows of buttons go in a div: a <label> would forward a click on its text to the first one
+      const lab = el(["chips", "people", "choice"].includes(f.tipo) ? "div" : "label", "sec-f sec-f-" + f.tipo + " k-" + f.clave);
+      lab.append(el("span", "sec-fl", mic.t(f.etiqueta || "secretaria.f." + f.clave)));
+      lab.append(f.tipo === "chips" ? chips(p, f) : control(p, f));
+      box.append(lab);
+    }
+    return box;
+  }
+
+  async function edit(p, changes) {
+    const r = await call("edit", { folder: S.folder, id: p.id, cambios: changes });
+    if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
+    S.acta = r.acta;
+    render();
+    const box = document.querySelector(`.sec-edit[data-id="${p.id}"]`);
+    if (box) box.closest(".sec-p").classList.add("saved");
+  }
 
   function renderProposals(a) {
     const props = (a.propuestas || []).filter((p) => p.estado !== "descartada");
@@ -172,14 +273,28 @@
     if (odooState && odooState !== "conectado" && odooState !== "sin_configurar") {
       box.append(el("p", "sec-warn", mic.t("secretaria.odoo." + odooState)));
     }
-    const groups = [["google", "secretaria.group.google"], ["crm", "secretaria.group.crm"], ["correcciones", "secretaria.group.fix"]];
+    const groups = [
+      ["google", "secretaria.group.google"],
+      ["horas", "secretaria.group.horas"],
+      ["agenda", "secretaria.group.agenda"],
+      ["crm", "secretaria.group.crm"],
+      ["correcciones", "secretaria.group.fix"],
+    ];
     const checks = [];
     for (const [g, key] of groups) {
       const items = props.filter((p) => p.grupo === g);
       if (!items.length) continue;
       box.append(el("h4", "caps sec-gh", mic.t(key)));
       const ul = el("ul", "sec-plist");
+      let lastDay = null;
       for (const p of items) {
+        if (g === "horas" && p.datos && p.datos.fecha !== lastDay) {
+          lastDay = p.datos.fecha;
+          const total = items.filter((x) => x.datos && x.datos.fecha === lastDay).reduce((a, x) => a + (+x.datos.horas || 0), 0);
+          const dh = el("li", "sec-day");
+          dh.append(el("span", "sec-dayname", fmtDay(lastDay)), el("span", "sec-daytot tnum", hfmt(total) + " h"));
+          ul.append(dh);
+        }
         const li = el("li", "sec-p");
         li.dataset.state = p.estado;
         const lab = el("label", "sec-pl");
@@ -194,11 +309,11 @@
         const txt = el("span", "sec-pt");
         txt.append(el("span", "sec-pmain", proposalText(p)));
         const sub = [];
-        if (p.motivo) sub.push(p.motivo);
+        if (p.motivo && g !== "horas") sub.push(p.motivo);
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
         if (p.estado === "fallida") sub.push((IT() && IT().errorText(p.error)) || mic.t("secretaria.failed"));
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));
-        const note = p.estado === "pendiente" && S.editing !== p.id && IT() ? IT().notice(p) : null;
+        const note = p.estado === "pendiente" && IT() ? IT().notice(p) : null;
         if (note) {
           const n = el("span", "sec-pnote", note);
           n.dataset.out = String((p.invita && p.invita.length > 0) || !!p.envia);
@@ -210,20 +325,6 @@
         li.append(lab);
         const s = stamp(p.t);
         if (s) li.append(s);
-        if (IT() && (p.campos || []).length && (p.estado === "pendiente" || p.estado === "fallida")) {
-          const ed = el("button", "icon-btn sec-pedit");
-          ed.type = "button";
-          ed.innerHTML = mic.icon("edit");
-          ed.setAttribute("aria-label", mic.t("secretaria.edit"));
-          ed.dataset.tip = mic.t("secretaria.edit");
-          ed.setAttribute("aria-expanded", String(S.editing === p.id));
-          ed.addEventListener("click", () => { S.editing = S.editing === p.id ? null : p.id; render(); });
-          li.append(ed);
-          if (S.editing === p.id) {
-            li.dataset.editing = "true";
-            li.append(IT().editor(p, (values) => edit(p.id, values), () => { S.editing = null; render(); }));
-          }
-        }
         if (p.estado === "aplicada") {
           const u = el("button", "icon-btn sec-pundo");
           u.type = "button";
@@ -232,6 +333,22 @@
           u.dataset.tip = mic.t("secretaria.undo_one");
           u.addEventListener("click", () => act("undo", [p.id]));
           li.append(u);
+        }
+        const editable = p.estado === "pendiente" || (p.grupo === "google" && p.estado === "fallida");
+        if (editable && (p.campos || []).length) {
+          const pen = el("button", "icon-btn sec-pedit");
+          pen.type = "button";
+          pen.innerHTML = mic.icon("edit");
+          pen.setAttribute("aria-label", mic.t("secretaria.edit"));
+          pen.setAttribute("aria-expanded", String(S.open.has(p.id)));
+          pen.addEventListener("click", () => {
+            if (S.open.has(p.id)) S.open.delete(p.id); else S.open.add(p.id);
+            render();
+            const first = document.querySelector(`.sec-edit[data-id="${p.id}"] input, .sec-edit[data-id="${p.id}"] select, .sec-edit[data-id="${p.id}"] textarea`);
+            if (first) first.focus();
+          });
+          li.append(pen);
+          if (S.open.has(p.id)) { li.classList.add("editing"); li.append(editor(p)); }
         }
         ul.append(li);
       }
@@ -265,12 +382,6 @@
     const failed = (r.acta.propuestas || []).filter((p) => ids.includes(p.id) && p.estado === "fallida").length;
     if (action !== "apply") snack(mic.t("secretaria.undone"));
     else snack(failed ? mic.t("secretaria.applied_some", { n: failed }) : mic.t("secretaria.applied"));
-  }
-
-  async function edit(id, values) {
-    const r = await call("edit", { folder: S.folder, id, values });
-    if (r && r.ok) { S.acta = r.acta; S.editing = null; render(); snack(mic.t("secretaria.edited")); }
-    return r;
   }
 
   function snack(text) {
@@ -353,8 +464,8 @@
     const folder = e.detail && e.detail.folder;
     if (folder === S.folder) return;
     S.folder = folder;
-    S.editing = null;
     S.acta = null;
+    S.open = new Set();
     S.run = null;
     clearTimeout(S.poll);
     const host = $("sec");
@@ -369,7 +480,7 @@
     const tag = t.tagName;
     if (tag === "INPUT" && t.type !== "checkbox") return;
     if (tag === "TEXTAREA" || tag === "BUTTON" || tag === "SELECT" || t.isContentEditable) return;
-    if (t.closest && t.closest(".ph, dialog, .menu, .it-form")) return;
+    if (t.closest && t.closest(".ph, dialog, .menu")) return;
     const b = document.querySelector(".sec-apply");
     if (b && !b.disabled && !b.hidden) { e.preventDefault(); b.click(); }
   });
