@@ -9,7 +9,8 @@
 * ``jobs.stage`` se actualiza con ``Database.set_stage`` (indice 1-based de la etapa en curso) y se
   emiten eventos ``JobStarted`` / ``JobProgress`` / ``JobDone`` / ``JobFailed`` / ``JobDiscarded``.
 * **Descarte** (la etapa 1 lanza ``SessionDiscarded``): ``Database.discard_job`` (que ya anota
-  solo fecha + motivo y borra la ruta de ``jobs``), despues se borra la carpeta de la sesion. Sin
+  solo fecha + motivo y borra la ruta de ``jobs``), despues la carpeta se aparta en
+  «Descartadas» (``micnaga.holding``: recuperable ``storage.discarded_keep_days`` dias). Sin
   trabajo (modo en primer plano) se usa ``log_discard``. Ni el motivo ni el log llevan titulo o
   ruta.
 * **Fallo**: ``fail_job`` con el error; los ficheros se conservan para reintentar. Las
@@ -258,7 +259,7 @@ class PipelineRunner:
                     self.db.log_discard(reason)
             except Exception:
                 log.exception("could not record the discard")
-        delete_session(session)
+        hold_session(session, reason)
         if job is not None:
             self._emit(JobDiscarded(job.id, label, reason))
         return RunResult("discarded", session, reason, stage_times=times)
@@ -348,6 +349,19 @@ class PipelineRunner:
 
 
 # ----------------------------------------------------------------------------- ficheros
+
+
+def hold_session(session: Path, reason: str) -> None:
+    """Aparta una sesion que no se transcribe en «Descartadas» (recuperable N dias; nunca se
+    borra sin un «No» del usuario, DECISIONS §18). Si no se puede mover, se deja donde esta."""
+    from micnaga.holding import REASON_GATES, REASON_UNCONFIRMED, move_to_held
+    from micnaga.pipeline.stages.s01_gates import UNCONFIRMED
+
+    key = REASON_UNCONFIRMED if reason == UNCONFIRMED else REASON_GATES
+    try:
+        move_to_held(session, key, detail=reason)
+    except OSError:
+        log.exception("could not move a discarded session to the held area")
 
 
 def delete_session(session: Path) -> None:

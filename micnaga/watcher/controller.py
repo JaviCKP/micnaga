@@ -7,7 +7,7 @@ Deben volver rapido (encolar trabajo en el hilo de UI / captura) y pueden llamar
 ``Watcher.popup_answer`` / ``popup_hover`` / ``record_now``... sin riesgo de interbloqueo.
 
 Sesion en disco: la crea y es dueno de ella el controlador (``start_recording`` la abre,
-``stop_and_finalize`` / ``discard_recording`` la cierran). El vigilante solo pasa ``confirmed`` y
+``stop_and_finalize`` / ``hold_recording`` la cierran). El vigilante solo pasa ``confirmed`` y
 el ``MeetingInfo`` definitivo (titulo/codigo para el nombre de carpeta y ``meet_code``); la
 decision de compuertas la toma la etapa 1 del pipeline (``micnaga.gates``), no el vigilante.
 """
@@ -20,13 +20,21 @@ from typing import Protocol
 
 from micnaga.watcher.machine import (
     Action,
+    BeginDiscard,
+    CancelDiscard,
+    ClearEnd,
+    CloseEndPopup,
     ClosePopup,
     ConfirmRecording,
-    DiscardRecording,
+    EndCloseReason,
     HidePill,
+    HoldReason,
+    HoldRecording,
+    MarkEnd,
     PauseRecording,
     PopupCloseReason,
     ResumeRecording,
+    ShowEndPopup,
     ShowPill,
     ShowPopup,
     StartRecording,
@@ -61,16 +69,46 @@ class WatcherController(Protocol):
         """La sesion pasa a confirmada (marcar en capture.json; solo exigira la compuerta 1)."""
         ...
 
-    def discard_recording(self) -> None:
-        """Parar y borrar todo lo grabado de la sesion actual; no entra en la cola."""
+    def begin_discard(self, *, undo_s: float) -> None:
+        """«Ahora no»/«Descartar»: marcar la sesion como descartada en disco (sincrono, antes de
+        volver), pausar la captura, ocultar la pastilla y ofrecer «Deshacer» ``undo_s``."""
         ...
 
-    def stop_and_finalize(self, *, confirmed: bool, meeting: MeetingInfo) -> None:
-        """Parar, cerrar (WAV->FLAC) y encolar el job con ``confirmed``; las compuertas deciden.
+    def cancel_discard(self) -> None:
+        """«Deshacer»: quitar la marca y reanudar la captura."""
+        ...
+
+    def hold_recording(self, *, reason: HoldReason, trim: bool) -> None:
+        """Parar y apartar en «Descartadas» (no se transcribe; recuperable N dias)."""
+        ...
+
+    def stop_and_finalize(self, *, confirmed: bool, meeting: MeetingInfo, trim: bool) -> None:
+        """Parar, cerrar (WAV->FLAC, recortada si ``trim``) y encolar el job.
 
         Puede llegar con la pausa privada activa: cerrar igualmente.
         """
         ...
+
+    def mark_end(self) -> None:
+        """El micro se solto: anotar ya el punto de recorte (tiempo de grabacion)."""
+        ...
+
+    def clear_end(self) -> None:
+        """Olvidar el punto de recorte (el micro volvio o «Seguir grabando»)."""
+        ...
+
+    def show_end_popup(
+        self,
+        *,
+        confirmed: bool,
+        title: str | None,
+        monitor_hint: MonitorHint | None,
+        timeout_s: float,
+    ) -> None:
+        """Popup de fin: «¿Ha terminado?» (confirmada) o «¿La guardo?» (sin confirmar)."""
+        ...
+
+    def close_end_popup(self, *, reason: EndCloseReason) -> None: ...
 
     def show_pill(self, *, provisional: bool, paused: bool) -> None:
         """Muestra (o actualiza) la pastilla de grabacion."""
@@ -100,10 +138,29 @@ def dispatch_action(controller: WatcherController, action: Action) -> None:
         controller.close_popup(reason=action.reason)
     elif isinstance(action, ConfirmRecording):
         controller.confirm_recording()
-    elif isinstance(action, DiscardRecording):
-        controller.discard_recording()
+    elif isinstance(action, BeginDiscard):
+        controller.begin_discard(undo_s=action.undo_s)
+    elif isinstance(action, CancelDiscard):
+        controller.cancel_discard()
+    elif isinstance(action, HoldRecording):
+        controller.hold_recording(reason=action.reason, trim=action.trim)
     elif isinstance(action, StopAndFinalize):
-        controller.stop_and_finalize(confirmed=action.confirmed, meeting=action.meeting)
+        controller.stop_and_finalize(
+            confirmed=action.confirmed, meeting=action.meeting, trim=action.trim
+        )
+    elif isinstance(action, MarkEnd):
+        controller.mark_end()
+    elif isinstance(action, ClearEnd):
+        controller.clear_end()
+    elif isinstance(action, ShowEndPopup):
+        controller.show_end_popup(
+            confirmed=action.confirmed,
+            title=action.title,
+            monitor_hint=action.monitor_hint,
+            timeout_s=action.timeout_s,
+        )
+    elif isinstance(action, CloseEndPopup):
+        controller.close_end_popup(reason=action.reason)
     elif isinstance(action, ShowPill):
         controller.show_pill(provisional=action.provisional, paused=action.paused)
     elif isinstance(action, HidePill):

@@ -1,9 +1,15 @@
 """Cola de trabajos desde la app: cierre de sesiones (FLAC + SQLite) y supervisor del worker.
 
-* ``Finisher``: un hilo serie. Recibe tareas ``fn(db)`` (convertir a FLAC, encolar, borrar
+* ``Finisher``: un hilo serie. Recibe tareas ``fn(db)`` (convertir a FLAC, encolar, apartar
   sesiones descartadas) con una ``Database`` abierta **dentro de su hilo** (SQLite no comparte
   conexiones entre hilos). Los controladores del vigilante deben volver rapido, asi que nada de
   esto corre en su hilo.
+* Cambio de carpeta de reuniones (hallazgo 3): ``Finisher`` y ``WorkerSupervisor`` reciben
+  ``db_key()`` (la ruta del indice segun la config de ahora) y reabren la conexion cuando cambia;
+  si no, seguirian encolando/vigilando el indice de la carpeta antigua mientras el worker nuevo
+  lee el de la nueva y las transcripciones se quedarian paradas. Los trabajos que quedaran
+  pendientes en el indice antiguo no se mueven (la carpeta antigua sigue siendo valida si se
+  vuelve a ella).
 * ``WorkerSupervisor``: mantiene vivo el proceso de trabajo mientras haya trabajos pendientes. El
   worker lanzado por la app sale al vaciar la cola (``--once``: cada tanda empieza en un proceso
   limpio, asi la memoria de torch/diarize se devuelve al sistema); si un trabajo se encola justo
@@ -29,14 +35,16 @@ from micnaga.store.db import Database, JobState, open_database
 log = logging.getLogger(__name__)
 
 DbFactory = Callable[[], Database]
+DbKey = Callable[[], object]
 Task = Callable[[Database], None]
 
 
 class Finisher:
     """Hilo serie de tareas de cierre."""
 
-    def __init__(self, db_factory: DbFactory) -> None:
+    def __init__(self, db_factory: DbFactory, *, db_key: DbKey | None = None) -> None:
         self._db_factory = db_factory
+        self._db_key = db_key or (lambda: None)
         self._queue: queue.Queue[tuple[str, Task] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
@@ -69,6 +77,7 @@ class Finisher:
 
     def _run(self) -> None:
         db: Database | None = None
+        key: object = None
         try:
             while True:
                 item = self._queue.get()
@@ -76,8 +85,15 @@ class Finisher:
                     return
                 label, task = item
                 try:
+                    wanted = self._db_key()
+                    if db is not None and wanted != key:
+                        log.info("meetings folder changed: reopening the jobs index")
+                        with contextlib.suppress(Exception):
+                            db.close()
+                        db = None
                     if db is None:
                         db = self._db_factory()
+                        key = wanted
                     task(db)
                 except Exception:
                     log.exception("finisher task %r failed", label)
@@ -96,14 +112,22 @@ class Finisher:
 
 
 def finalize_and_enqueue(
-    config: Config, session_dir: Path, *, on_enqueued: Callable[[], None]
+    config: Config,
+    session_dir: Path,
+    *,
+    on_enqueued: Callable[[], None],
+    end_s: float | None = None,
 ) -> Task:
-    """Tarea: WAV -> FLAC y trabajo ``pending``. Si la conversion falla se encola igualmente
-    (el pipeline sabe convertir los WAV): una grabacion nunca se pierde por esto."""
+    """Tarea: (recorte en ``end_s``) WAV -> FLAC y trabajo ``pending``. Si la conversion falla
+    se encola igualmente (el pipeline sabe convertir los WAV): una grabacion nunca se pierde."""
 
     def task(db: Database) -> None:
         from micnaga.capture import finalize_session
 
+        if end_s is not None:
+            from micnaga.capture.recovery import set_trim
+
+            set_trim(session_dir, end_s)
         try:
             finalize_session(session_dir, flac_level=config.capture.flac_level)
         except Exception:
@@ -111,6 +135,29 @@ def finalize_and_enqueue(
         job = db.enqueue_job(session_dir)
         log.info("job %d queued", job.id)
         on_enqueued()
+
+    return task
+
+
+def finalize_and_hold(
+    config: Config, session_dir: Path, *, reason: str, end_s: float | None = None
+) -> Task:
+    """Tarea: (recorte) WAV -> FLAC y apartar en «Descartadas» (no se encola). Si algo falla la
+    carpeta queda marcada y el siguiente arranque la aparta: nunca se transcribe ni se pierde."""
+
+    def task(_db: Database) -> None:
+        from micnaga import holding
+        from micnaga.capture import finalize_session
+
+        if end_s is not None:
+            from micnaga.capture.recovery import set_trim
+
+            set_trim(session_dir, end_s)
+        try:
+            finalize_session(session_dir, flac_level=config.capture.flac_level)
+        except Exception:
+            log.exception("finalize failed for a held session; holding the WAV files")
+        holding.move_to_held(session_dir, reason)
 
     return task
 
@@ -139,6 +186,7 @@ class WorkerSupervisor:
         config: Config,
         *,
         db_factory: DbFactory | None = None,
+        db_key: DbKey | None = None,
         spawn: Callable[[], subprocess.Popen[bytes] | None] | None = None,
         is_running: Callable[[], bool] | None = None,
         models_ready: Callable[[], bool] | None = None,
@@ -149,6 +197,7 @@ class WorkerSupervisor:
     ) -> None:
         self._config = config
         self._db_factory = db_factory or (lambda: open_database(config))
+        self._db_key = db_key or (lambda: None)
         self._spawn = spawn or _default_spawn
         self._is_running = is_running or _default_is_running
         self._models_ready = models_ready or (lambda: _models_ready(config))
@@ -183,11 +232,18 @@ class WorkerSupervisor:
 
     def _run(self) -> None:
         db: Database | None = None
+        key: object = None
         try:
             while not self._stop.is_set():
                 try:
+                    wanted = self._db_key()
+                    if db is not None and wanted != key:
+                        with contextlib.suppress(Exception):
+                            db.close()
+                        db = None
                     if db is None:
                         db = self._db_factory()
+                        key = wanted
                     self.tick(db)
                 except Exception:
                     log.exception("worker supervisor tick failed")

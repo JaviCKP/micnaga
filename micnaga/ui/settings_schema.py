@@ -73,6 +73,16 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                 step=1,
                 unit="s",
             ),
+            _f("detection.end_confirm_s", "float", minimum=0.5, maximum=30, step=0.5, unit="s"),
+            _f(
+                "detection.end_popup_timeout_s",
+                "float",
+                minimum=3,
+                maximum=120,
+                step=1,
+                unit="s",
+            ),
+            _f("detection.undo_s", "float", minimum=3, maximum=60, step=1, unit="s"),
             _f(
                 "detection.end_after_s",
                 "float",
@@ -92,8 +102,17 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                 advanced=True,
             ),
             _f("gates.min_duration_s", "float", minimum=0, maximum=3600, step=10, unit="s"),
-            _f("gates.min_remote_speech_s", "float", minimum=0, maximum=600, step=5, unit="s"),
-            _f("gates.min_turns", "int", minimum=0, maximum=100, step=1),
+            _f(
+                "gates.min_remote_speech_s",
+                "float",
+                minimum=0,
+                maximum=600,
+                step=5,
+                unit="s",
+                advanced=True,
+            ),
+            _f("gates.min_turns", "int", minimum=0, maximum=100, step=1, advanced=True),
+            _f("gates.require_confirmed", "bool", advanced=True),
         ),
     ),
     (
@@ -150,6 +169,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             _f("storage.root", "path"),
             _f("storage.models_dir", "path", advanced=True),
+            _f("storage.discarded_keep_days", "int", minimum=1, maximum=90, step=1, unit="d"),
             _f(
                 "capture.sample_rate",
                 "int",
@@ -194,11 +214,17 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
 FIELDS: dict[str, FieldSpec] = {f.path: f for _g, fields in GROUPS for f in fields}
 
 
+INTERNAL_SECTIONS = frozenset({"meta"})
+"""Secciones de ``config.toml`` que no son ajustes (``[meta] version``)."""
+
+
 def config_paths() -> list[str]:
     """Todas las rutas ``seccion.clave`` de ``Config`` (la fuente de verdad)."""
     cfg = Config()
     out: list[str] = []
     for sec in dataclasses.fields(cfg):
+        if sec.name in INTERNAL_SECTIONS:
+            continue
         section = getattr(cfg, sec.name)
         out.extend(f"{sec.name}.{f.name}" for f in dataclasses.fields(section))
     return out

@@ -51,6 +51,37 @@
     mic.send("pill_marker");
   });
   bPause.addEventListener("click", () => mic.send("pill_toggle_pause"));
+  document.getElementById("b-save").addEventListener("mousedown", (e) => e.stopPropagation());
+  document.getElementById("b-save").addEventListener("click", () => mic.send("pill_save"));
+
+  // ---- «Descartada · Deshacer» (la cuenta atras real es la del vigilante) ---------------
+  const undoBar = document.getElementById("undo-bar");
+  const bUndo = document.getElementById("b-undo");
+  const U = { timer: 0, until: 0, total: 1 };
+  bUndo.addEventListener("mousedown", (e) => e.stopPropagation());
+  bUndo.addEventListener("click", () => { mic.send("pill_undo"); undoEnd(); });
+  function undoTick() {
+    const left = Math.max(0, U.until - performance.now());
+    undoBar.style.setProperty("--p", (left / U.total).toFixed(4));
+    if (left <= 0) { clearInterval(U.timer); U.timer = 0; }
+  }
+  function undo(o) {
+    o = o || {};
+    const s = Math.max(1, Number(o.seconds) || 8);
+    U.total = s * 1000;
+    U.until = performance.now() + U.total;
+    el.dataset.mode = "undo";
+    el.dataset.hover = "false";
+    clearInterval(U.timer);
+    U.timer = setInterval(undoTick, 50);
+    undoTick();
+    live.textContent = mic.t("undo.announce");
+  }
+  function undoEnd() {
+    clearInterval(U.timer);
+    U.timer = 0;
+    el.dataset.mode = "pill";
+  }
   document.getElementById("b-stop").addEventListener("click", () => mic.send("pill_stop"));
 
   function applyPause(paused) {
@@ -71,6 +102,7 @@
     /** Start/refresh: {elapsed seconds so far, paused?, provisional?} */
     show(o) {
       o = o || {};
+      undoEnd();
       S.elapsed = o.elapsed || 0;
       S.since = performance.now();
       S.running = true;
@@ -87,6 +119,8 @@
     /** for screenshots / standalone */
     setLevels(m, s) { meters.mic.fill(mic.levelToUi(m)); meters.sys.fill(mic.levelToUi(s)); },
     setHover,
+    undo,
+    undoEnd,
   };
 
   // ---- standalone / mock -------------------------------------------------------------
@@ -100,6 +134,7 @@
     if (!mic.isHost) {
       const q = mic.params;
       api.pill.show({ elapsed: Number(q.get("elapsed") || 754), paused: q.get("paused") === "1", provisional: q.get("provisional") === "1" });
+      if (q.get("undo") === "1") api.pill.undo({ seconds: 8 });
       if (q.get("hover") === "1") setHover(true);
       if (q.get("levels")) {
         const [a, b] = q.get("levels").split(",").map(Number);

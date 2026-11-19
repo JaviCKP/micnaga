@@ -206,6 +206,24 @@ def append_zeros(path: Path, n: int) -> None:
             os.fsync(f.fileno())
 
 
+def truncate_wav(path: Path, n: int) -> int:
+    """Recorta un WAV PCM16 mono (ya reparado) a ``n`` muestras como maximo. Devuelve cuantas
+    quedan. Idempotente: un fichero ya mas corto no cambia."""
+    current = repair_wav(path)
+    if n >= current:
+        return current
+    n = max(0, n)
+    with _open_retry(path, "r+b") as f:
+        rate = struct.unpack("<I", (f.seek(24), f.read(4))[1])[0]
+        f.seek(0)
+        f.write(build_header(n, rate))
+        f.truncate(HEADER_BYTES + n * BYTES_PER_SAMPLE)
+        f.flush()
+        with contextlib.suppress(OSError):
+            os.fsync(f.fileno())
+    return n
+
+
 def read_wav_float(path: Path) -> tuple[NDArray[np.float32], int]:
     """Lee un WAV/FLAC mono entero como ``float32`` (para pruebas y pipeline)."""
     data, rate = sf.read(str(path), dtype="float32", always_2d=False)

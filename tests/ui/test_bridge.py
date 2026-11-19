@@ -340,14 +340,14 @@ def test_settings_diagnostics_provider_failure_is_contained() -> None:
 
 def test_real_startup_registry_is_blocked_from_settings_under_pytest() -> None:
     """Sin registro inyectado, guardar «Arrancar con Windows» no puede tocar el Run real."""
+    before = startup.WinRegistry().get("Micnaga")  # el PC puede tenerla (app instalada)
     store = MemStore()
     api = SettingsApi(store=store, callbacks=UiCallbacks())  # backend por defecto = real
     values = api.get_settings()["values"]
-    flip = not values["startup"]["run_at_login"]
-    values["startup"]["run_at_login"] = flip
+    values["startup"]["run_at_login"] = before is None  # lo contrario de lo que hay
     r = api.save_settings(values)
     assert r.get("saved") is True and r["error"] == "settings.err.startup_failed"
-    assert startup.WinRegistry().get("Micnaga") is None  # sigue sin existir
+    assert startup.WinRegistry().get("Micnaga") == before  # intacta
 
 
 # ----------------------------------------------------------------------------- asistente

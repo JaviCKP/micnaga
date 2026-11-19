@@ -652,6 +652,52 @@
   $("q").addEventListener("input", onQuery);
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
+  // ------------------------------------------------------------------ «Descartadas»
+  const heldBox = $("held"), heldList = $("held-list"), heldHead = $("held-h");
+  heldHead.addEventListener("click", () => {
+    const open = heldHead.getAttribute("aria-expanded") !== "true";
+    heldHead.setAttribute("aria-expanded", String(open));
+    heldList.hidden = !open;
+  });
+  function daysLeft(iso) {
+    const ms = new Date(iso) - new Date();
+    return Math.max(0, Math.ceil(ms / 86400000));
+  }
+  function renderHeld(items) {
+    S.held = items || [];
+    heldBox.hidden = !S.held.length;
+    $("held-n").textContent = S.held.length ? String(S.held.length) : "";
+    heldList.replaceChildren();
+    for (const h of S.held) {
+      const row = el("div", "held-row");
+      const txt = el("div", "");
+      txt.append(el("div", "held-t", h.title || mic.t("library.held.untitled")));
+      const when = h.started_at ? mic.fmtDate(h.started_at) : "";
+      const left = mic.t("library.held.days_left", { n: daysLeft(h.expires_at) });
+      txt.append(el("div", "held-s tnum", [when, mic.fmtDuration(h.duration_s), left].filter(Boolean).join(" · ")));
+      const rec = el("button", "held-rec", mic.t("library.held.recover"));
+      rec.type = "button";
+      rec.title = mic.t("library.held.recover_tip");
+      rec.addEventListener("click", async () => {
+        rec.disabled = true;
+        const r = await mic.call("recover_held", h.name);
+        if (r && r.ok) { renderHeld(r.held); snack(mic.t("library.held.recovered")); }
+        else { rec.disabled = false; snack(mic.t((r && r.error) || "library.err.op_failed")); }
+      });
+      const del = el("button", "held-del");
+      del.type = "button";
+      del.innerHTML = mic.icon("x");
+      del.setAttribute("aria-label", mic.t("library.held.delete"));
+      del.title = mic.t("library.held.delete");
+      del.addEventListener("click", async () => {
+        const r = await mic.call("delete_held", h.name);
+        if (r && r.ok) renderHeld(r.held);
+      });
+      row.append(txt, rec, del);
+      heldList.append(row);
+    }
+  }
+
   // ------------------------------------------------------------------ boot
   const api = (window.micnaga = window.micnaga || {});
   api.library = {
@@ -669,6 +715,7 @@
     }
     S.meetings = (await mic.call("list_meetings", 500, 0)) || [];
     renderList();
+    if (boot && boot.has_held) renderHeld(await mic.call("list_held"));
     const q = mic.params;
     if (q.get("folder")) await openMeeting(q.get("folder"), q.get("t") ? parseFloat(q.get("t")) : undefined);
     else if (q.get("select") === "first" && S.meetings.length) await openMeeting(S.meetings[0].folder);

@@ -42,6 +42,29 @@ OFF = SignalSnapshot()  # nada
 MIC_ONLY = snap(mic=(CHROME,))  # micro en uso sin pestana de Meet
 MEET_ONLY = SignalSnapshot(meet_tabs=(tab(),))  # Meet abierto, micro sin usar
 
+NON_DESTRUCTIVE_ACTIONS = frozenset(
+    {
+        "StartRecording",
+        "ShowPopup",
+        "ClosePopup",
+        "ConfirmRecording",
+        "MarkEnd",
+        "ClearEnd",
+        "ShowEndPopup",
+        "CloseEndPopup",
+        "BeginDiscard",  # marca + pausa (recuperable con «Deshacer»), no borra
+        "CancelDiscard",
+        "HoldRecording",  # aparta en «Descartadas», no borra
+        "StopAndFinalize",
+        "ShowPill",
+        "HidePill",
+        "PauseRecording",
+        "ResumeRecording",
+    }
+)
+"""Todas las acciones que puede emitir la maquina. Ninguna borra audio (DECISIONS §18): una
+sesion solo termina en ``HoldRecording`` o ``StopAndFinalize``."""
+
 
 class Sim:
     """Reloj falso + maquina. ``tick`` avanza 1 s por llamada (como el sondeo real)."""
@@ -54,6 +77,8 @@ class Sim:
 
     def event(self, ev: Event) -> list[Action]:
         acts = self.m.step(ev, self.now)
+        unknown = [n for n in names(acts) if n not in NON_DESTRUCTIVE_ACTIONS]
+        assert not unknown, f"accion desconocida (¿borra algo?): {unknown}"
         self.log.extend(acts)
         return acts
 
@@ -107,11 +132,29 @@ class FakeController:
     def confirm_recording(self) -> None:
         self._rec("confirm_recording")
 
-    def discard_recording(self) -> None:
-        self._rec("discard_recording")
+    def begin_discard(self, *, undo_s: float) -> None:
+        self._rec("begin_discard", undo_s=undo_s)
 
-    def stop_and_finalize(self, *, confirmed: bool, meeting: MeetingInfo) -> None:
-        self._rec("stop_and_finalize", confirmed=confirmed, meeting=meeting)
+    def cancel_discard(self) -> None:
+        self._rec("cancel_discard")
+
+    def hold_recording(self, *, reason: str, trim: bool) -> None:
+        self._rec("hold_recording", reason=reason, trim=trim)
+
+    def stop_and_finalize(self, *, confirmed: bool, meeting: MeetingInfo, trim: bool) -> None:
+        self._rec("stop_and_finalize", confirmed=confirmed, meeting=meeting, trim=trim)
+
+    def mark_end(self) -> None:
+        self._rec("mark_end")
+
+    def clear_end(self) -> None:
+        self._rec("clear_end")
+
+    def show_end_popup(self, **kw: Any) -> None:
+        self._rec("show_end_popup", **kw)
+
+    def close_end_popup(self, *, reason: str) -> None:
+        self._rec("close_end_popup", reason=reason)
 
     def show_pill(self, *, provisional: bool, paused: bool) -> None:
         self._rec("show_pill", provisional=provisional, paused=paused)

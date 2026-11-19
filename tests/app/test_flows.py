@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from micnaga import holding
 from micnaga.config import Config
 from micnaga.watcher import WatcherState
 from tests.app.fakes import Rig, app_snapshot, meet_snapshot
@@ -26,6 +27,21 @@ def _to_popup(rig: Rig, snap: Any = None) -> None:
 def _answer(rig: Rig, decision: str) -> None:
     """El usuario pulsa en el popup: llega por el callback real del host."""
     _host(rig).handle_popup_decide(decision)
+
+
+def _end(rig: Rig, choice: str) -> None:
+    """Respuesta al popup de fin (callback real del host)."""
+    _host(rig).handle_end_decide(choice)
+
+
+def _held(folder: Path) -> Path:
+    return holding.held_root(folder.parent) / folder.name
+
+
+def _end_popup(rig: Rig) -> dict[str, Any]:
+    shown = [js for js in rig.js(rig.popup) if js.startswith("micnaga.popup.showEnd(")]
+    assert shown, rig.js(rig.popup)
+    return dict(json.loads(shown[-1][len("micnaga.popup.showEnd(") : -1]))
 
 
 # ------------------------------------------------------------------------------ ruta Meet
@@ -49,7 +65,11 @@ def test_meet_path_popup_record_stop_enqueues_confirmed_job() -> None:
     assert json.loads(payload[len("micnaga.pill.show(") : -1])["elapsed"] == rig.rec.elapsed
     assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
 
-    rig.feed(OFF, 16)  # cuelga la reunion (15 s sin senal)
+    rig.feed(OFF, 3)  # cuelga: el micro se suelta 2 s -> popup de fin «¿Ha terminado?»
+    assert rig.watcher.state is WatcherState.END_PROMPT  # type: ignore[union-attr]
+    assert _end_popup(rig)["confirmed"] is True
+    assert rig.popup.visible
+    rig.feed(OFF, 10)  # sin respuesta en 10 s: termina
     rig.settle()
     assert not rig.pill.visible
     assert "stop" in rig.rec.names
@@ -69,31 +89,104 @@ def test_user_stop_from_pill_button() -> None:
     assert not rig.pill.visible
 
 
-def test_decline_discards_and_ignores_the_meeting() -> None:
+def test_decline_offers_undo_then_holds_never_deletes() -> None:
+    """«Ahora no»: marca en disco al instante, «Descartada · Deshacer» 8 s y despues se aparta
+    en «Descartadas» (recuperable); nunca se transcribe ni se borra al momento."""
     rig = Rig()
     _to_popup(rig)
     folder = rig.rec.dir
+    assert folder is not None
     _answer(rig, "dismiss")  # «Ahora no»
+    assert holding.discard_reason(folder) == holding.REASON_DECLINED  # persistido ya
+    assert rig.watcher.state is WatcherState.DISCARD_PENDING  # type: ignore[union-attr]
+    assert _host(rig).undo_visible and "pause" in rig.rec.names
+    rig.feed(meet_snapshot(), 9)  # pasan los 8 s de «Deshacer»
     rig.settle()
-    assert folder is not None and not folder.exists()
+    assert not folder.exists() and _held(folder).is_dir()
     assert rig.jobs() == []
+    assert not _host(rig).undo_visible and not rig.pill.visible
     rig.feed(meet_snapshot(), 20)  # sigue en la misma reunion: no vuelve a preguntar
     assert len(rig.recorders.made) == 1
 
 
-def test_end_before_answer_discards_everything_on_meet_path() -> None:
+def test_undo_after_decline_keeps_recording_as_confirmed() -> None:
     rig = Rig()
     _to_popup(rig)
     folder = rig.rec.dir
-    rig.feed(OFF, 16)
+    assert folder is not None
+    _answer(rig, "dismiss")
+    _host(rig).handle_popup_closed("leaving")  # el JS retira la tarjeta
+    rig.feed(meet_snapshot(), 3)
+    _host(rig).handle_pill_undo()  # «Deshacer»
+    assert holding.discard_reason(folder) is None
+    assert rig.rec.names[-1] in ("resume", "set_confirmed")
+    assert "resume" in rig.rec.names
+    assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
+    assert rig.pill.visible and not _host(rig).undo_visible
+    rig.app.callbacks.on_stop()
     rig.settle()
-    assert any("micnaga.popup.end()" in js for js in rig.js(rig.popup))
-    assert folder is not None and not folder.exists()
+    assert len(rig.jobs()) == 1 and folder.is_dir()
+
+
+def test_end_before_answer_asks_save_and_unanswered_is_held() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    folder = rig.rec.dir
+    rig.feed(OFF, 3)
+    assert any("micnaga.popup.end()" in js for js in rig.js(rig.popup)) or rig.popup.visible
+    assert _end_popup(rig)["confirmed"] is False  # «¿La guardo?»
+    rig.feed(OFF, 11)  # nadie contesta
+    rig.settle()
+    assert folder is not None and not folder.exists() and _held(folder).is_dir()
     assert rig.jobs() == []
     assert not rig.pill.visible
 
 
-def test_timeout_keeps_recording_provisional_then_enqueues_unconfirmed() -> None:
+def test_end_popup_save_transcribes_and_trims_at_the_mic_release() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    rig.feed(meet_snapshot(), 15)  # el popup caduca -> pastilla provisional
+    _host(rig).handle_popup_morph(True)
+    rig.rec.elapsed = 100.0
+    rig.feed(OFF, 3)  # el micro se suelta (2 s): se anota el punto de recorte
+    rig.rec.elapsed = 105.0  # la cola mientras se contesta no cuenta
+    _end(rig, "save")
+    rig.settle()
+    jobs = rig.jobs()
+    assert len(jobs) == 1
+    assert ("set_confirmed", True) in rig.rec.calls
+    assert rig.ctl.recording is False
+
+
+def test_end_popup_keep_recording_then_only_the_user_stops() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    _answer(rig, "record")
+    _host(rig).handle_popup_morph(False)
+    rig.feed(OFF, 3)
+    _end(rig, "keep")  # «Seguir grabando»
+    assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
+    rig.feed(OFF, 30)  # sin micro: ya no pregunta ni para
+    assert rig.ctl.recording and rig.jobs() == []
+    rig.app.callbacks.on_stop()
+    rig.settle()
+    assert len(rig.jobs()) == 1
+
+
+def test_mic_back_before_answering_retracts_the_end_popup() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    _answer(rig, "record")
+    _host(rig).handle_popup_morph(False)
+    rig.feed(OFF, 3)
+    assert rig.watcher.state is WatcherState.END_PROMPT  # type: ignore[union-attr]
+    rig.feed(meet_snapshot(), 1)  # el micro vuelve (silencio, cambio de dispositivo...)
+    assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
+    assert any("micnaga.popup.endClose(" in js for js in rig.js(rig.popup))
+    assert rig.ctl.recording
+
+
+def test_timeout_keeps_recording_provisional_and_the_pill_offers_save() -> None:
     rig = Rig()
     _to_popup(rig)
     rig.feed(meet_snapshot(), 15)  # el vigilante agota su cuenta atras
@@ -102,11 +195,9 @@ def test_timeout_keeps_recording_provisional_then_enqueues_unconfirmed() -> None
     _host(rig).handle_popup_morph(True)
     assert rig.pill.visible
     assert any('"provisional": true' in js for js in rig.js(rig.pill))
-    rig.feed(OFF, 16)
-    rig.settle()
-    jobs = rig.jobs()
-    assert len(jobs) == 1
-    assert "set_confirmed" not in rig.rec.names  # las compuertas deciden
+    _host(rig).handle_pill_save()  # «¿Guardar?» de la pastilla
+    assert ("set_confirmed", True) in rig.rec.calls
+    assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
 
 
 def test_ui_timeout_decision_is_ignored_the_watcher_owns_the_countdown() -> None:
@@ -194,8 +285,10 @@ def test_generic_path_pill_first_then_popup_then_decline_discards() -> None:
         (4321,),
     ) in rig.w32.calls  # sin hint de monitor: ventana en primer plano
     _answer(rig, "dismiss")
+    assert _host(rig).undo_visible  # la pastilla deja sitio a «Descartada · Deshacer»
+    rig.feed(app_snapshot(), 9)
     rig.settle()
-    assert folder is not None and not folder.exists()
+    assert folder is not None and not folder.exists() and _held(folder).is_dir()
     assert rig.jobs() == []
     assert not rig.pill.visible
 
@@ -224,9 +317,21 @@ def test_generic_timeout_leaves_the_existing_pill() -> None:
     rig.feed(app_snapshot(), 15)  # el popup caduca
     assert rig.watcher.state is WatcherState.RECORDING_PROVISIONAL  # type: ignore[union-attr]
     assert rig.pill.visible
-    rig.feed(OFF, 16)
+    folder = rig.rec.dir
+    rig.feed(OFF, 13)  # la app suelta el micro, «¿La guardo?» y nadie contesta
     rig.settle()
-    assert len(rig.jobs()) == 1  # provisional: las compuertas deciden
+    assert rig.jobs() == []  # sin «Si» nunca se transcribe...
+    assert folder is not None and _held(folder).is_dir()  # ...pero se puede recuperar
+
+
+def test_generic_mic_released_before_the_popup_is_held_silently() -> None:
+    rig = Rig()
+    rig.feed(app_snapshot(), 21)  # pastilla provisional, aun sin popup
+    folder = rig.rec.dir
+    rig.feed(OFF, 3)
+    rig.settle()
+    assert not rig.popup.visible
+    assert folder is not None and _held(folder).is_dir() and rig.jobs() == []
 
 
 # ------------------------------------------------------------------ pausa privada y marcadores
@@ -293,11 +398,21 @@ def test_tray_actions_reach_the_watcher() -> None:
     assert len(rig.jobs()) == 1
 
 
-def test_quit_while_recording_finalizes_and_does_not_discard() -> None:
+def test_quit_while_unconfirmed_holds_and_does_not_transcribe() -> None:
     rig = Rig()
     _to_popup(rig)  # grabando provisional con popup abierto
+    folder = rig.rec.dir
     rig.app.callbacks.on_quit()
     assert rig.app.stopped
+    assert folder is not None and _held(folder).is_dir()
+    assert rig.jobs() == []
+
+
+def test_quit_while_confirmed_finalizes_and_queues() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    _answer(rig, "record")
+    rig.app.callbacks.on_quit()
     assert rig.rec.dir is not None and rig.rec.dir.exists()
     assert len(rig.jobs()) == 1
 
@@ -310,8 +425,25 @@ def test_config_discard_on_timeout_flows() -> None:
     folder = rig.rec.dir
     rig.feed(meet_snapshot(), 15)
     rig.settle()
-    assert folder is not None and not folder.exists()
+    assert folder is not None and not folder.exists() and _held(folder).is_dir()
     assert rig.jobs() == []
+
+
+def test_recover_from_descartadas_enqueues_it_as_confirmed() -> None:
+    rig = Rig()
+    _to_popup(rig)
+    folder = rig.rec.dir
+    assert folder is not None
+    _answer(rig, "dismiss")
+    rig.feed(meet_snapshot(), 9)
+    rig.settle()
+    items = rig.app.held_ops.list_held()
+    assert [h["name"] for h in items] == [folder.name]
+    rig.app.held_ops.recover_held(folder.name)
+    rig.settle()
+    assert folder.is_dir() and not _held(folder).exists()
+    assert len(rig.jobs()) == 1
+    assert rig.app.held_ops.list_held() == []
 
 
 def test_session_folder_lives_under_the_meetings_root(tmp_storage: Path) -> None:

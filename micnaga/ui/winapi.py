@@ -99,6 +99,9 @@ class Win32:
     def show_window(self, hwnd: int, cmd: int) -> None:
         ctypes.windll.user32.ShowWindow(wintypes.HWND(hwnd), cmd)
 
+    def is_visible(self, hwnd: int) -> bool:
+        return bool(ctypes.windll.user32.IsWindowVisible(wintypes.HWND(hwnd)))
+
     def get_window_rect(self, hwnd: int) -> Rect:
         r = wintypes.RECT()
         ctypes.windll.user32.GetWindowRect(wintypes.HWND(hwnd), ctypes.byref(r))

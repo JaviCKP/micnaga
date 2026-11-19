@@ -30,6 +30,7 @@ LevelsProvider: TypeAlias = Callable[[], object]
 
 TrayState: TypeAlias = Literal["watching", "recording", "paused", "processing"]
 PopupDecision: TypeAlias = Literal["record", "dismiss", "timeout"]
+EndDecision: TypeAlias = Literal["finish", "keep", "save", "discard"]
 PopupClosed: TypeAlias = Literal["morphed", "leaving", "fading"]
 
 
@@ -70,6 +71,10 @@ class UiCallbacks:
     on_popup_hover: Callable[[bool], None] = _noop
     """Raton encima: la cuenta atras se pausa. Para que el vigilante pause su propio reloj."""
     on_popup_closed: Callable[[str], None] = _noop
+    on_end_decision: Callable[[EndDecision], None] = _noop
+    """Popup de fin: ``finish``/``keep`` (confirmada) o ``save``/``discard`` (sin confirmar)."""
+    on_undo: Callable[[], None] = _noop
+    """«Deshacer» del aviso «Descartada»."""
     # pastilla (MIC-10/12/13)
     on_marker: Callable[[], None] = _noop
     on_pause_toggle: Callable[[bool], None] = _noop
@@ -122,6 +127,17 @@ class LibraryOps(Protocol):
     def save_voiceprint(self, folder: str, speaker_id: str) -> None: ...
 
     def delete_voiceprint(self, name: str) -> None: ...
+
+
+class HeldOps(Protocol):
+    """«Descartadas» (audio apartado sin transcribir): listar, recuperar (se transcribe como
+    reunion confirmada) y borrar ya. Lo implementa la integracion."""
+
+    def list_held(self) -> list[dict[str, Any]]: ...
+
+    def recover_held(self, name: str) -> None: ...
+
+    def delete_held(self, name: str) -> None: ...
 
 
 ModelState: TypeAlias = Literal[

@@ -99,6 +99,14 @@ def test_no_orphan_keys() -> None:
         "settings.about.models",
         "settings.about.privacy",
         "tray.pause_watching",
+        "end.title_confirmed",
+        "end.title_unconfirmed",
+        "end.finish",
+        "end.save",
+        "end.keep",
+        "end.discard",
+        "toast.error.capture_failed.title",
+        "toast.error.capture_failed.body",
     }  # compuestos con un bucle / condicional
     orphans = sorted(k for k in ES if k not in used)
     assert not orphans, orphans

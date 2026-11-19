@@ -40,6 +40,7 @@ from micnaga.ui.contracts import (
     ConfigStore,
     DiagnosticsProvider,
     DownloadModels,
+    HeldOps,
     LevelsProvider,
     LibraryOps,
     MonitorHint,
@@ -58,6 +59,9 @@ log = logging.getLogger(__name__)
 
 FLY_SECONDS = 0.4
 PILL_FLUSH_S = 2.0
+POPUP_VERIFY_S = 1.2
+"""Tras mostrar un popup se comprueba que la ventana sigue visible; si no, se reintenta."""
+UNDO_SIZE = (236, 40)
 THEME_POLL_S = 5.0
 _BG = {"light": "#eceef3", "dark": "#050507"}
 ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
@@ -111,6 +115,7 @@ class UiHost:
         tray: bool = True,
         folder_opener: Callable[[Path], None] | None = None,
         acrylic: bool | None = None,
+        held_ops: HeldOps | None = None,
     ) -> None:
         self._store: ConfigStore = config_store or FileConfigStore()
         self._config: Config = config if config is not None else self._store.load()
@@ -134,6 +139,7 @@ class UiHost:
         self._play = play
         self._want_tray = tray
         self._folder_opener = folder_opener
+        self._held_ops = held_ops
         self._toast = ToastNotifier(
             self._open_from_toast,
             language=self._config.ui.language,
@@ -160,7 +166,10 @@ class UiHost:
         self._popup_on_timeout = "provisional"
         self._popup_total_s = 15.0
         self._popup_state_provider: Callable[[], tuple[float, bool] | None] | None = None
+        self._popup_mode = "ask"  # ask | end
+        self._popup_script = ""
         self._pill_flush_timer: threading.Timer | None = None
+        self._undo_visible = False
         # pastilla
         self._pill = _Pill()
         self._pill_after_morph: tuple[float, bool] | None = None
@@ -205,6 +214,11 @@ class UiHost:
                 if win.hwnd:
                     winapi.apply_no_activate(win.hwnd, self._w32)
                     win.make_transparent()
+                # pywebview (edgechromium) hace ``form.Show()`` en cada navegacion de una ventana
+                # transparente aunque se creara oculta: sin esto, al arrancar quedaban una tarjeta
+                # vacia y una pastilla «00:00» visibles en la esquina superior izquierda.
+                if not self._overlay_in_use(win):
+                    win.hide()
         self._setup_acrylic()
         if self._want_tray:
             self._tray = Tray(self._tray_callbacks(), language=self._config.ui.language)
@@ -215,6 +229,14 @@ class UiHost:
                 on_ready(self)
             except Exception:
                 log.exception("on_ready failed")
+
+    def _overlay_in_use(self, win: UiWindow) -> bool:
+        with self._lock:
+            if win is self._popup:
+                return self._popup_state != "idle"
+            if win is self._pillwin:
+                return self._pill.visible or self._undo_visible
+        return False
 
     def _want_acrylic(self) -> bool:
         if self._acrylic_pref is not None:
@@ -405,13 +427,143 @@ class UiHost:
                 countdown_total_s if countdown_total_s is not None else timeout_value
             )
             self._pill_after_morph = None
-        win.place(rect)
-        win.run_js(f"mic.setMotion({'true' if winapi.animations_enabled(self._w32) else 'false'});")
-        win.run_js(f"micnaga.popup.show({json.dumps(payload)})")
-        win.show(activate=False)
+        with self._lock:
+            self._popup_mode = "ask"
+            self._popup_script = f"micnaga.popup.show({json.dumps(payload)})"
+        self._present_popup(win, rect)
+        log.info("popup shown at %s (monitor work area %s)", rect, mon.work)
         sound.play_chime(
             enabled=cfg.ui.sound, dnd=lambda: winapi.do_not_disturb(self._w32), player=self._play
         )
+
+    def _present_popup(self, win: UiWindow, rect: Rect) -> None:
+        win.place(rect)
+        win.run_js(f"mic.setMotion({'true' if winapi.animations_enabled(self._w32) else 'false'});")
+        win.run_js(self._popup_script)
+        win.show(activate=False)
+        self._arm_popup_check(self._popup_shown_at)
+
+    def _arm_popup_check(self, shown_at: float) -> None:
+        timer = threading.Timer(POPUP_VERIFY_S, lambda: self._verify_popup(shown_at))
+        timer.daemon = True
+        timer.start()
+
+    def _verify_popup(self, shown_at: float, *, retry: bool = True) -> bool:
+        """El popup debe estar en pantalla: si la ventana no es visible (o no esta donde se
+        puso) se vuelve a colocar, a pintar y a mostrar, y se deja constancia en el log."""
+        win = self._popup
+        with self._lock:
+            if win is None or self._popup_state != "showing" or self._popup_shown_at != shown_at:
+                return True
+            rect = self._popup_rect
+        visible = win.is_visible()
+        if visible:
+            return True
+        log.warning("popup not visible %.1f s after show; re-presenting it", POPUP_VERIFY_S)
+        if retry and rect is not None:
+            win.place(rect)
+            win.run_js(self._popup_script)
+            win.show(activate=False)
+            self._arm_popup_check_once(shown_at)
+        return False
+
+    def _arm_popup_check_once(self, shown_at: float) -> None:
+        timer = threading.Timer(POPUP_VERIFY_S, lambda: self._verify_popup(shown_at, retry=False))
+        timer.daemon = True
+        timer.start()
+
+    # ================================================================= popup de fin
+
+    def show_end_popup(
+        self,
+        title: str,
+        *,
+        duration_s: float,
+        confirmed: bool,
+        monitor_hint: MonitorHint = None,
+        countdown_total_s: float = 10.0,
+    ) -> None:
+        """«¿Ha terminado?» (Terminar / Seguir grabando) o «¿La guardo?» (Guardar / Descartar).
+
+        Mismo cristal y ventana que el popup; la cuenta atras la lleva el vigilante."""
+        win = self._popup
+        if win is None:
+            raise RuntimeError("UiHost.run() has not created the windows yet")
+        mon = self._w32.monitor_info(monitor_hint)
+        rect = winapi.popup_rect(mon)
+        payload = {
+            "title": title,
+            "durationS": round(max(0.0, duration_s), 1),
+            "confirmed": bool(confirmed),
+            "timeoutS": countdown_total_s,
+        }
+        with self._lock:
+            self._popup_state = "showing"
+            self._popup_mode = "end"
+            self._popup_rect, self._popup_mon = rect, mon
+            self._popup_shown_at = time.monotonic()
+            self._popup_total_s = float(countdown_total_s)
+            self._popup_script = f"micnaga.popup.showEnd({json.dumps(payload)})"
+        self._present_popup(win, rect)
+        log.info("end popup shown at %s", rect)
+
+    def hide_end_popup(self, reason: str = "answered") -> None:
+        win = self._popup
+        with self._lock:
+            if win is None or self._popup_state != "showing" or self._popup_mode != "end":
+                return
+        win.run_js(f"micnaga.popup.endClose({json.dumps(reason)})")
+        threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
+
+    def handle_end_decide(self, choice: str) -> None:
+        self._cb.on_end_decision(choice)  # type: ignore[arg-type]
+
+    # ================================================================= «Descartada · Deshacer»
+
+    def show_undo(self, seconds: float) -> None:
+        """Aviso compacto en el sitio de la pastilla: «Descartada · Deshacer» ``seconds``."""
+        win = self._pillwin
+        if win is None:
+            return
+        mon = self._pill.monitor or self._popup_mon or self._w32.monitor_info(None)
+        x, y, pw, h = self._pill_target(mon)
+        w = round(UNDO_SIZE[0] * mon.scale)
+        rect = winapi.clamp_to_work_area((x + (pw - w) // 2, y, w, h), mon.work)
+        with self._lock:
+            self._undo_visible = True
+        win.place(rect)
+        win.run_js(f"micnaga.pill.undo({json.dumps({'seconds': seconds})})")
+        win.show(activate=False)
+
+    def hide_undo(self) -> None:
+        win = self._pillwin
+        with self._lock:
+            was = self._undo_visible
+            self._undo_visible = False
+            pill_up = self._pill.visible
+        if win is None or not was:
+            return
+        win.run_js("micnaga.pill.undoEnd()")
+        if not pill_up:
+            win.hide()
+
+    @property
+    def undo_visible(self) -> bool:
+        return self._undo_visible
+
+    def handle_pill_undo(self) -> None:
+        self._cb.on_undo()
+
+    def handle_pill_save(self) -> None:
+        """«¿Guardar?» de la pastilla provisional = confirmar (como «Grabar ahora»)."""
+        self._cb.on_record_now()
+
+    def notify_error(self, key: str) -> None:
+        """Aviso de error visible (toast) p. ej. ``capture_failed``."""
+        try:
+            self._toast.show_error(key)
+        except Exception:
+            log.exception("could not show the error toast")
 
     def hide_popup(self, reason: str = "ended") -> None:
         """La reunion acabo antes de responder: la tarjeta se desvanece (180 ms)."""
@@ -434,6 +586,8 @@ class UiHost:
             if win is None or self._popup_state != "showing":
                 return
         provisional = self._popup_on_timeout != "discard"
+        if self._popup_mode == "end":
+            return
         if provisional:
             self._pill.provisional = True
         win.run_js(
@@ -607,6 +761,8 @@ class UiHost:
             pill.visible, pill.provisional, pill.monitor = True, provisional, mon
             pill.base, pill.expanded = rect, False
             pill.ignore_moves_until = time.monotonic() + 0.4
+        with self._lock:
+            self._undo_visible = False
         win.place(rect)
         win.run_js(f"micnaga.pill.show({json.dumps(payload)})")
         win.show(activate=False)
@@ -620,7 +776,8 @@ class UiHost:
             self._pill_after_morph = None
         if win is not None:
             win.run_js("micnaga.pill.stop()")
-            win.hide()
+            if not self._undo_visible:
+                win.hide()
         self._update_tray()
 
     def set_pill_paused(self, paused: bool) -> None:
@@ -808,6 +965,7 @@ class UiHost:
             config=lambda: self._config,
             ops=self._ops,
             opener=self._folder_opener,
+            held=self._held_ops,
         )
 
     def open_library(self, folder: str | None = None, seek_s: float | None = None) -> None:
@@ -881,6 +1039,10 @@ class UiHost:
         with self._lock:
             win = self._windows.get("settings")
         return win.pick_folder(current) if win is not None else None
+
+    def set_held_ops(self, ops: HeldOps | None) -> None:
+        """«Descartadas» en la biblioteca (lo pone la integracion)."""
+        self._held_ops = ops
 
     def set_on_window_closed(self, callback: Callable[[str], None] | None) -> None:
         """Aviso al cerrarse una ventana normal (``library`` | ``settings`` | ``wizard``)."""

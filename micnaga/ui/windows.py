@@ -62,6 +62,8 @@ class UiWindow(Protocol):
 
     def hide(self) -> None: ...
 
+    def is_visible(self) -> bool: ...
+
     def place(self, rect: Rect) -> None: ...
 
     def rect(self) -> Rect: ...
@@ -129,6 +131,9 @@ class PywebviewWindow:
 
     def hide(self) -> None:
         winapi.hide(self.hwnd, self._w32)
+
+    def is_visible(self) -> bool:
+        return bool(self.hwnd) and self._w32.is_visible(self.hwnd)
 
     def place(self, rect: Rect) -> None:
         winapi.place(self.hwnd, rect, self._w32, topmost=self._spec.on_top)
@@ -267,6 +272,9 @@ class FakeWindow:
     def hide(self) -> None:
         self.visible = False
         self.log.append(("hide", None))
+
+    def is_visible(self) -> bool:
+        return self.visible
 
     def place(self, rect: Rect) -> None:
         self.current_rect = rect

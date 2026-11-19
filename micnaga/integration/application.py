@@ -32,7 +32,12 @@ from micnaga.events import (
 )
 from micnaga.integration.controller import AppController
 from micnaga.integration.events_server import EventsServer
-from micnaga.integration.jobs import DbFactory, Finisher, WorkerSupervisor
+from micnaga.integration.jobs import (
+    DbFactory,
+    Finisher,
+    WorkerSupervisor,
+    finalize_and_enqueue,
+)
 from micnaga.integration.levels import LevelMonitor
 from micnaga.integration.library_ops import AppLibraryOps
 from micnaga.integration.ports import RecorderFactory, UiPort
@@ -152,6 +157,29 @@ def make_model_downloader(
     return download
 
 
+class AppHeldOps:
+    """``HeldOps`` de la biblioteca sobre ``micnaga.holding`` (raiz de la config de ahora)."""
+
+    def __init__(self, app: Application) -> None:
+        self._app = app
+
+    def list_held(self) -> list[dict[str, Any]]:
+        from micnaga import holding
+
+        cfg = self._app.config
+        root = paths.meetings_root(cfg)
+        return [h.to_dict() for h in holding.list_held(root, cfg.storage.discarded_keep_days)]
+
+    def recover_held(self, name: str) -> None:
+        self._app.recover_held(name)
+
+    def delete_held(self, name: str) -> None:
+        from micnaga import holding
+
+        if not holding.delete_held(paths.meetings_root(self._app.config), name):
+            raise FileNotFoundError(name)
+
+
 class Application:
     def __init__(
         self,
@@ -209,10 +237,11 @@ class Application:
             make_model_downloader(lambda: self.config),
             self.diagnostics,
         )
-        self.finisher = Finisher(self._db_factory)
+        self.finisher = Finisher(self._db_factory, db_key=self._db_key)
         self.supervisor = WorkerSupervisor(
             config,
             db_factory=self._db_factory,
+            db_key=self._db_key,
             spawn=spawn,
             is_running=is_worker_running,
             models_ready=self._models_ready_fn,
@@ -233,8 +262,19 @@ class Application:
         self.ui.set_levels_provider(self._levels)
         self.watcher = watcher_factory(config, self.controller, self._on_watcher_state)
         self.controller.bind_watcher(self.watcher)
+        self.held_ops = AppHeldOps(self)
+        set_held = getattr(self.ui, "set_held_ops", None)
+        if callable(set_held):
+            set_held(self.held_ops)
         self.hotkeys = hotkeys_factory(config, self._marker, self.watcher.toggle_private_pause)
         self.events_server = EventsServer(self.handle_event, events_name)
+
+    def _db_key(self) -> object:
+        """Ruta del indice segun la config actual: si cambia, Finisher y supervisor reabren."""
+        try:
+            return str(paths.db_path(self.config))
+        except Exception:
+            return None
 
     def _open_db(self) -> Database:
         """Abre el indice con reintentos: la primera apertura (crear esquema / pasar a WAL) de
@@ -281,13 +321,16 @@ class Application:
             log.info("models missing: opening the first-run wizard")
             self.ui.open_wizard()
 
-    def shutdown(self, *, wait_s: float = 120.0) -> None:
-        """Para el vigilante, cierra la grabacion en curso (sin descartarla) y los hilos."""
+    def shutdown(self, *, wait_s: float = 120.0, reason: str = "unspecified") -> None:
+        """Para el vigilante, cierra la grabacion en curso (sin descartarla) y los hilos.
+
+        ``reason`` queda en el log (``tray_quit``, ``exit_after``, ``console_close``,
+        ``gui_loop_ended``...): toda salida dice por que salio."""
         with self._shutdown_lock:
             if self._stopped.is_set():
                 return
             self._stopped.set()
-        log.info("shutting down")
+        log.info("shutting down (reason: %s)", reason)
         for step in (
             self.hotkeys.stop,
             self.watcher.stop,
@@ -302,9 +345,9 @@ class Application:
             except Exception:
                 log.exception("shutdown step failed")
 
-    def request_quit(self) -> None:
+    def request_quit(self, reason: str = "exit_after") -> None:
         """Salir como el «Salir» de la bandeja (para ``--exit-after`` y pruebas)."""
-        self.shutdown()
+        self.shutdown(reason=reason)
         self.ui.quit()
 
     @property
@@ -317,13 +360,15 @@ class Application:
         return UiCallbacks(
             on_popup_decision=self._on_popup_decision,
             on_popup_hover=lambda h: self.watcher.popup_hover(h),
+            on_end_decision=lambda c: self.watcher.end_answer(c),
+            on_undo=lambda: self.watcher.undo(),
             on_marker=self._marker,
             on_pause_toggle=lambda p: self.watcher.set_private_pause(p),
             on_stop=lambda: self.watcher.user_stop(),
             on_record_now=lambda: self.watcher.record_now(),
             on_pause_watching=lambda minutes: self.watcher.suspend(minutes * 60.0),
             on_resume_watching=lambda: self.watcher.resume_watching(),
-            on_quit=self.shutdown,
+            on_quit=lambda: self.shutdown(reason="tray_quit"),
             on_settings_saved=self._on_settings_saved,
             on_first_run_done=self._on_first_run_done,
             on_levels_monitor=self._on_levels_monitor,
@@ -437,6 +482,17 @@ class Application:
             from micnaga.capture import wasapi  # noqa: F401
         except Exception:
             log.debug("warm-up import failed", exc_info=True)
+
+    def recover_held(self, name: str) -> None:
+        """«Recuperar» de la biblioteca: vuelve a la raiz, confirmada, y se encola."""
+        from micnaga import holding
+
+        root = paths.meetings_root(self.config)
+        session = holding.restore_held(root, name)
+        self.finisher.submit(
+            "recover",
+            finalize_and_enqueue(self.config, session, on_enqueued=self.supervisor.kick),
+        )
 
     def _boot_recovery(self) -> None:
         try:

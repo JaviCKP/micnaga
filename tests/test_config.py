@@ -21,7 +21,11 @@ def test_defaults_match_spec_section_10() -> None:
     assert c.detection.confirm_after_s == 5
     assert c.detection.popup_timeout_s == 15
     assert c.detection.on_timeout == "provisional"
-    assert (c.gates.min_duration_s, c.gates.min_remote_speech_s, c.gates.min_turns) == (180, 30, 6)
+    # Desvio pedido por el usuario (DECISIONS §18): decide el popup; solo minimo de duracion.
+    assert (c.gates.min_duration_s, c.gates.min_remote_speech_s, c.gates.min_turns) == (30, 0, 0)
+    assert c.gates.require_confirmed is True
+    assert (c.detection.end_confirm_s, c.detection.end_popup_timeout_s) == (2.0, 10.0)
+    assert c.detection.undo_s == 8.0 and c.storage.discarded_keep_days == 7
     assert c.capture.sample_rate == 16000
     assert c.capture.chunk_flush_s == 2
     assert c.processing.asr_engine == "parakeet"
@@ -67,7 +71,7 @@ def test_partial_file_fills_defaults(tmp_path: Path) -> None:
     f.write_text('[gates]\nmin_turns = 10\n[ui]\ntheme = "light"\n', encoding="utf-8")
     c = load_config(f)
     assert c.gates.min_turns == 10
-    assert c.gates.min_duration_s == 180
+    assert c.gates.min_duration_s == 30
     assert c.ui.theme == "light"
 
 
@@ -194,3 +198,34 @@ def test_detection_invalid_values_are_rejected(tmp_path: Path, toml: str) -> Non
     f.write_text(toml, encoding="utf-8")
     with pytest.raises(ConfigError):
         load_config(f)
+
+
+def test_v1_file_migrates_old_gate_defaults_but_keeps_user_choices(tmp_path: Path) -> None:
+    """Un config.toml v1 escrito por «Guardar» fija TODAS las claves: sin migrar, los defectos
+    antiguos (180/30/6) seguirian mandando. Los cambiados a mano se respetan."""
+    from micnaga.config import CONFIG_VERSION, ensure_config, load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        "[gates]\nmin_duration_s = 180.0\nmin_remote_speech_s = 45.0\nmin_turns = 6\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert cfg.gates.min_duration_s == 30.0  # defecto viejo -> nuevo
+    assert cfg.gates.min_remote_speech_s == 45.0  # eleccion del usuario
+    assert cfg.gates.min_turns == 0
+    ensure_config(path)  # reescribe una vez con la version
+    assert f"version = {CONFIG_VERSION}" in path.read_text(encoding="utf-8")
+    again = load_config(path)
+    assert again.gates.min_duration_s == 30.0 and again.gates.min_remote_speech_s == 45.0
+    again_text = path.read_text(encoding="utf-8")
+    ensure_config(path)
+    assert path.read_text(encoding="utf-8") == again_text  # idempotente
+
+
+def test_v2_file_is_not_migrated(tmp_path: Path) -> None:
+    from micnaga.config import load_config
+
+    path = tmp_path / "config.toml"
+    path.write_text("[meta]\nversion = 2\n[gates]\nmin_duration_s = 180.0\n", encoding="utf-8")
+    assert load_config(path).gates.min_duration_s == 180.0

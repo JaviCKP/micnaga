@@ -23,6 +23,14 @@
       <button class="icon-btn clear" id="q-clear" type="button" hidden data-i18n-aria-label="library.search_clear" data-icon="x"></button>
     </div>
     <div class="side-scroll" id="side" tabindex="-1"></div>
+    <section class="held" id="held" hidden>
+      <button class="held-h" id="held-h" type="button" aria-expanded="false" aria-controls="held-list">
+        <span class="caps" data-i18n="library.held.title">Descartadas</span>
+        <span class="held-n tnum" id="held-n"></span>
+        <span class="held-chev" data-icon="chevron" aria-hidden="true"></span>
+      </button>
+      <div class="held-list" id="held-list" hidden></div>
+    </section>
   </aside>
 
   <main class="main glass" id="main">

@@ -112,6 +112,18 @@ class ToastNotifier:
         toast.AddAction(ToastButton(i18n.t("toast.open", self._language), ARG_PREFIX + folder))
         self._get_toaster().show_toast(toast)
 
+    def show_error(self, key: str) -> None:
+        """Aviso de error (p. ej. ``capture_failed``): titulo y texto de ``toast.error.<key>``."""
+        from windows_toasts import Toast
+
+        toast = Toast(
+            text_fields=[
+                i18n.t(f"toast.error.{key}.title", self._language),
+                i18n.t(f"toast.error.{key}.body", self._language),
+            ]
+        )
+        self._get_toaster().show_toast(toast)
+
     def _activated(self, args: Any) -> None:
         folder = parse_arguments(str(getattr(args, "arguments", "") or ""))
         if folder is None:

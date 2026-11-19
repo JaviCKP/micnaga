@@ -34,6 +34,7 @@ from micnaga.ui.contracts import (
     Diagnostic,
     DiagnosticsProvider,
     DownloadModels,
+    HeldOps,
     LevelsProvider,
     LibraryOps,
     ModelProgress,
@@ -86,6 +87,12 @@ class SurfaceController(Protocol):
 
     def handle_pill_stop(self) -> None: ...
 
+    def handle_end_decide(self, choice: str) -> None: ...
+
+    def handle_pill_undo(self) -> None: ...
+
+    def handle_pill_save(self) -> None: ...
+
 
 class PopupApi:
     """``pywebview.api`` del popup."""
@@ -112,6 +119,11 @@ class PopupApi:
     def popup_closed(self, kind: str) -> None:
         if kind in self._CLOSED:
             self._c.handle_popup_closed(kind)
+
+    def popup_end_decide(self, choice: str) -> None:
+        """Popup de fin: ``finish`` | ``keep`` | ``save`` | ``discard``."""
+        if choice in ("finish", "keep", "save", "discard"):
+            self._c.handle_end_decide(choice)
 
     def popup_notice_dismissed(self) -> None:
         self._c.handle_notice_dismissed()
@@ -145,6 +157,14 @@ class PillApi:
 
     def pill_stop(self) -> None:
         self._c.handle_pill_stop()
+
+    def pill_undo(self) -> None:
+        """«Deshacer» del aviso «Descartada»."""
+        self._c.handle_pill_undo()
+
+    def pill_save(self) -> None:
+        """«¿Guardar?» de la pastilla provisional: confirma la grabacion."""
+        self._c.handle_pill_save()
 
 
 # ============================================================================ biblioteca
@@ -185,12 +205,14 @@ class LibraryApi:
         config: Callable[[], Config],
         ops: LibraryOps | None = None,
         opener: Callable[[Path], None] | None = None,
+        held: HeldOps | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._root = meetings_root
         self._audio_url = audio_url
         self._config = config
         self._ops = ops
+        self._held = held
         self._opener = opener or _startfile
 
     # ---------------------------------------------------------------- lectura
@@ -200,7 +222,43 @@ class LibraryApi:
         return ok(
             voiceprints_enabled=cfg.privacy.voiceprints_enabled,
             can_edit=self._ops is not None,
+            has_held=self._held is not None,
         )
+
+    # ------------------------------------------------------------- «Descartadas»
+
+    def list_held(self) -> list[dict[str, Any]]:
+        """Grabaciones apartadas sin transcribir (recuperables ``discarded_keep_days`` dias)."""
+        if self._held is None:
+            return []
+        try:
+            return self._held.list_held()
+        except Exception:
+            log.exception("list_held failed")
+            return []
+
+    def recover_held(self, name: str) -> Result:
+        """La aparta de «Descartadas» y la encola como reunion confirmada."""
+        if self._held is None or not _valid_held_name(name):
+            return fail("library.err.not_found")
+        try:
+            self._held.recover_held(name)
+        except FileNotFoundError:
+            return fail("library.err.not_found")
+        except Exception:
+            log.exception("recover_held failed")
+            return fail("library.err.op_failed")
+        return ok(held=self.list_held())
+
+    def delete_held(self, name: str) -> Result:
+        if self._held is None or not _valid_held_name(name):
+            return fail("library.err.not_found")
+        try:
+            self._held.delete_held(name)
+        except Exception:
+            log.exception("delete_held failed")
+            return fail("library.err.op_failed")
+        return ok(held=self.list_held())
 
     def list_meetings(self, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
@@ -379,6 +437,10 @@ class LibraryApi:
         if speaker_id not in {s.id for s in tr.speakers}:
             return fail("library.err.no_speaker")
         return None
+
+
+def _valid_held_name(name: object) -> bool:
+    return isinstance(name, str) and valid_folder_name(name)
 
 
 def _startfile(path: Path) -> None:  # pragma: no cover - abre el Explorador real

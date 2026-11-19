@@ -18,11 +18,16 @@ class SimulatedCrash(BaseException):
 
 
 def relaxed_config() -> Config:
-    """Compuertas relajadas para poder usar sesiones sinteticas cortas (rapidas)."""
+    """Compuertas relajadas para poder usar sesiones sinteticas cortas (rapidas).
+
+    Estos tests ejercitan el motor de compuertas sobre sesiones provisionales, asi que se
+    desactiva ``require_confirmed`` (en la app, una sesion sin «Si» nunca llega a transcribirse:
+    ver ``test_unconfirmed_session_is_held_not_transcribed``)."""
     cfg = Config()
     cfg.gates.min_duration_s = 20.0
     cfg.gates.min_remote_speech_s = 5.0
     cfg.gates.min_turns = 3
+    cfg.gates.require_confirmed = False
     return cfg
 
 
