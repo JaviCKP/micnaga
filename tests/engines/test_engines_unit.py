@@ -56,6 +56,26 @@ def test_words_from_tokens_offset_tail_cap_and_duration() -> None:
     assert words_from_tokens([" ", ""], [0.0, 1.0], None) == []
 
 
+def test_words_from_tokens_lone_space_token_opens_number_words() -> None:
+    # Secuencias reales de Parakeet v3 (el vocabulario no tiene «▁8»: llega «▁» suelto + digitos)
+    toks = [" trab", "aj", "ar", " a", " las", " ", "8", " y", " ", "5", "0", ".", " Mu", "ch"]
+    words = words_from_tokens(toks, [0.08 * i for i in range(len(toks))], None)
+    assert [w.w for w in words] == ["trabajar", "a", "las", "8", "y", "50.", "Much"]
+    assert words[3].s == pytest.approx(0.08 * 6)  # empieza en el digito, no en el «▁»
+    toks = [" F", "alt", "an", " ", "1", "0", " minut", "os", " para", " las", " ", "9", "."]
+    words = words_from_tokens(toks, [0.08 * i for i in range(len(toks))], None)
+    assert " ".join(w.w for w in words) == "Faltan 10 minutos para las 9."
+
+
+def test_words_from_tokens_lone_space_before_punctuation_and_at_edges() -> None:
+    toks = [" ", "8", " ", ",", " ", "¿", "Qu", "é", "?", " "]
+    words = words_from_tokens(toks, [0.1 * i for i in range(len(toks))], None)
+    assert [w.w for w in words] == ["8,", "¿Qué?"]
+    # un token vacio no es una marca de palabra
+    words = words_from_tokens([" ", "5", "", "0"], [0.0, 0.1, 0.2, 0.3], None)
+    assert [w.w for w in words] == ["50"]
+
+
 @dataclass
 class FakeResult:
     text: str
@@ -157,6 +177,24 @@ def test_whisper_words_are_stripped_and_params_forced() -> None:
     eng.close()
     with pytest.raises(RuntimeError):
         eng.transcribe(noise(1.0), SR)
+
+
+def test_whisper_number_words_keep_their_spaces() -> None:
+    from micnaga.pipeline.stages.phrases import words_text
+
+    class NumbersModel:
+        def transcribe(self, audio: Any, **kwargs: Any) -> tuple[list[Any], Any]:
+            words = [" a", " las", " 8", " y", " 50.", "Faltan", " 10", " minutos"]
+            seg = types.SimpleNamespace(
+                words=[FakeWord(w, 0.2 * i, 0.2 * i + 0.1, 0.9) for i, w in enumerate(words)]
+            )
+            return [seg], None
+
+    eng = WhisperEngine.__new__(WhisperEngine)
+    eng.name, eng.language = "faster-whisper-small-int8", "es"
+    eng._model = NumbersModel()
+    words = eng.transcribe(noise(2.0), SR)
+    assert words_text(words) == "a las 8 y 50. Faltan 10 minutos"
 
 
 # -------------------------------------------------------------------------- diarize
