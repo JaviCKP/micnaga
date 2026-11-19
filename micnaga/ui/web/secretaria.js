@@ -95,10 +95,17 @@
   }
 
   // ------------------------------------------------------------------ acta
-  function section(title, items, render, cls) {
+  function heading(title, icon, n) {
+    const h = el("h4", "caps sec-h");
+    if (icon) h.insertAdjacentHTML("afterbegin", mic.icon(icon, "mini"));
+    h.append(title);
+    if (n) h.append(el("span", "sec-n tnum", String(n)));
+    return h;
+  }
+  function section(title, items, render, cls, icon) {
     if (!items || !items.length) return null;
     const box = el("div", "sec-block" + (cls ? " " + cls : ""));
-    box.append(el("h4", "caps", title));
+    box.append(heading(title, icon, items.length));
     const ul = el("ul", "sec-list");
     items.forEach((it) => ul.append(render(it)));
     box.append(ul);
@@ -142,7 +149,7 @@
     const since = IT() ? IT().since(a, call, stamp) : null;
     if (since) box.append(since);
     const blocks = [
-      section(mic.t("secretaria.decisions"), a.decisiones, (it) => line(it, "·")),
+      section(mic.t("secretaria.decisions"), a.decisiones, (it) => line(it, "·"), "k-dec", "check"),
       section(mic.t("secretaria.tasks"), a.tareas, (t) => {
         const li = el("li", "sec-li task" + (t.es_mia ? " mine" : ""));
         li.append(el("span", "sec-g", "○"));
@@ -153,9 +160,9 @@
         const s = stamp(t.t);
         if (s) li.append(s);
         return li;
-      }),
-      section(mic.t("secretaria.open"), a.preguntas_abiertas, (it) => line(it, "?")),
-      section(mic.t("secretaria.next"), a.proximos_pasos, (it) => line(it, "→")),
+      }, "k-task", "task"),
+      section(mic.t("secretaria.open"), a.preguntas_abiertas, (it) => line(it, "?"), "k-open", "help"),
+      section(mic.t("secretaria.next"), a.proximos_pasos, (it) => line(it, "→"), "k-next", "arrow"),
     ].filter(Boolean);
     if (IT()) blocks.push(...IT().actaExtras(a, call, stamp));
     if (blocks.length) {

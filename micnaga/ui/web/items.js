@@ -158,7 +158,10 @@
     const cs = a.contrastes || [];
     if (cs.length) {
       const box = el("div", "sec-block it-contrasts");
-      box.append(el("h4", "caps", mic.t("items.contrasts")));
+      const h = el("h4", "caps sec-h");
+      h.insertAdjacentHTML("afterbegin", mic.icon("info", "mini"));
+      h.append(mic.t("items.contrasts"), el("span", "sec-n tnum", String(cs.length)));
+      box.append(h);
       const ul = el("ul", "sec-list");
       cs.forEach((c) => {
         const li = el("li", "sec-li it-contrast");
@@ -209,7 +212,10 @@
     const items = a.desde_la_ultima || [];
     if (!items.length) return null;
     const box = el("div", "it-since");
-    box.append(el("h4", "caps", mic.t("items.since")));
+    const h = el("h4", "caps sec-h");
+    h.insertAdjacentHTML("afterbegin", mic.icon("restart", "mini"));
+    h.append(mic.t("items.since"), el("span", "sec-n tnum", String(items.length)));
+    box.append(h);
     const ul = el("ul", "sec-list");
     items.forEach((it) => {
       const li = el("li", "sec-li");
