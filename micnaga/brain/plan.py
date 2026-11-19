@@ -262,6 +262,15 @@ def build_crm(
             p["checked"] = False
             ok = p.get("datos") is not None
         if ok and p["titulo"]:
+            extra = p["datos"] if isinstance(p.get("datos"), dict) else None
+            if extra is not None and p["tipo"] in ("nota_en_historial", "vincular_a_oportunidad"):
+                body = sc.clean_text(d.get("cuerpo"), 4000) if d.get("cuerpo") else ""
+                if body:
+                    extra["cuerpo"] = str(d.get("cuerpo"))[:4000].strip()
+            if extra is not None and p["tipo"] == "programar_actividad":
+                kind_id = _int(d.get("tipo_actividad_id"))
+                if kind_id:
+                    extra["tipo_actividad_id"] = kind_id
             if p["tipo"] == "nota_en_historial" and (p["datos"] or {}).get("modelo") in (
                 "res.partner",
                 "crm.lead",
@@ -633,6 +642,231 @@ def _similar_activity(summary: str, pending: list[dict[str, Any]]) -> bool:
         fuzz.token_set_ratio(summary.casefold(), str(a.get("resumen") or "").casefold()) >= 80
         for a in pending
     )
+
+
+# ============================================================================== items editables
+#
+# Cada propuesta es un **item**: ``{id, grupo, tipo, titulo, motivo, seg, t, datos, checked,
+# aviso, estado, ...}``. Para la revision se le anade ``campos`` (esquema editable, se calcula al
+# servirla: tambien vale para actas antiguas). Cualquier cambio del usuario (o, mas adelante, una
+# version revisada por la IA) vuelve a la **forma de entrada del modelo** (``to_input``), se aplica
+# y pasa por la MISMA validacion que la propuesta original (``rebuild``); el resultado sustituye
+# al item conservando su ``id``.
+
+_T = "text"
+EDIT_FIELDS: dict[str, list[dict[str, Any]]] = {
+    "registrar_horas": [
+        {"clave": "fecha", "tipo": "date"},
+        {"clave": "proyecto_id", "tipo": "select", "opciones": "proyectos"},
+        {"clave": "horas", "tipo": "number", "min": 0.25, "max": 12, "paso": 0.25},
+        {"clave": "descripcion", "tipo": _T},
+    ],
+    "crear_tarea": [
+        {"clave": "nombre", "tipo": _T},
+        {"clave": "proyecto_id", "tipo": "select", "opciones": "proyectos"},
+        {"clave": "fecha", "tipo": "date"},
+        {"clave": "descripcion", "tipo": "textarea"},
+    ],
+    "nota_en_historial": [
+        {"clave": "destino", "tipo": "select", "opciones": "destinos"},
+        {"clave": "cuerpo", "tipo": "textarea"},
+    ],
+    "vincular_a_oportunidad": [{"clave": "cuerpo", "tipo": "textarea"}],
+    "programar_actividad": [
+        {"clave": "resumen", "tipo": _T},
+        {"clave": "fecha", "tipo": "date"},
+        {"clave": "tipo_actividad_id", "tipo": "select", "opciones": "tipos_actividad"},
+        {"clave": "destino", "tipo": "select", "opciones": "destinos"},
+    ],
+    "crear_evento": [
+        {"clave": "nombre", "tipo": _T},
+        {"clave": "fecha", "tipo": "date"},
+        {"clave": "hora_inicio", "tipo": "time"},
+        {"clave": "duracion_h", "tipo": "number", "min": 0.25, "max": 12, "paso": 0.25},
+        {"clave": "invitados", "tipo": "chips"},
+    ],
+    "crear_gasto": [
+        {"clave": "nombre", "tipo": _T},
+        {"clave": "importe", "tipo": "number", "min": 0.01, "paso": 0.01},
+        {"clave": "fecha", "tipo": "date"},
+    ],
+    "crear_contacto": [
+        {"clave": "nombre", "tipo": _T},
+        {"clave": "cargo", "tipo": _T},
+        {"clave": "email", "tipo": _T},
+        {"clave": "telefono", "tipo": _T},
+    ],
+    "actualizar_oportunidad": [
+        {"clave": "etapa_id", "tipo": "select", "opciones": "etapas"},
+        {"clave": "importe", "tipo": "number", "min": 0, "paso": 1},
+        {"clave": "fecha_cierre", "tipo": "date"},
+    ],
+    "hablante": [{"clave": "a", "tipo": _T}],
+    "palabra": [{"clave": "a", "tipo": _T}],
+}
+_TARGET_KEY = {
+    "project.task": "tarea_id",
+    "project.project": "proyecto_id",
+    "crm.lead": "oportunidad_id",
+    "res.partner": "partner_id",
+}
+
+
+def _field_value(p: dict[str, Any], key: str, acta: dict[str, Any]) -> Any:
+    d = p.get("datos") or {}
+    if key == "destino":
+        return f"{d.get('modelo')}:{d.get('id')}" if d.get("modelo") else None
+    if key == "cuerpo":
+        if d.get("cuerpo"):
+            return d["cuerpo"]
+        from micnaga.brain import acta as acta_io
+
+        return acta_io.note_text(acta)
+    return d.get(key)
+
+
+def decorate(acta: dict[str, Any]) -> dict[str, Any]:
+    """Anade a cada item pendiente su esquema editable con los valores actuales."""
+    for p in acta.get("propuestas") or []:
+        specs = EDIT_FIELDS.get(str(p.get("tipo")), [])
+        p["campos"] = [{**f, "valor": _field_value(p, f["clave"], acta)} for f in specs]
+    return acta
+
+
+def to_input(p: dict[str, Any]) -> dict[str, Any]:
+    """Item validado -> la forma que devuelve el modelo (para revalidarlo tras un cambio)."""
+    d = dict(p.get("datos") or {})
+    kind = str(p.get("tipo"))
+    datos: dict[str, Any]
+    if kind in ("nota_en_historial", "programar_actividad", "vincular_a_oportunidad"):
+        datos = {k: d.get(k) for k in ("resumen", "fecha", "cuerpo", "tipo_actividad_id")}
+        key = _TARGET_KEY.get(str(d.get("modelo")))
+        if key:
+            datos[key] = d.get("id")
+    elif kind == "actualizar_oportunidad":
+        prev = d.get("anterior") or {}
+        datos = {
+            "oportunidad_id": d.get("id"),
+            "etapa_id": d.get("etapa_id"),
+            "importe": d.get("importe"),
+            "fecha_cierre": d.get("fecha_cierre"),
+            "etapa_anterior": prev.get("etapa"),
+            "importe_anterior": prev.get("importe"),
+        }
+    elif kind == "crear_evento":
+        datos = {
+            k: d.get(k)
+            for k in ("nombre", "fecha", "hora_inicio", "duracion_h", "tarea_id", "proyecto_id")
+        }
+        datos["asistentes_ids"] = [i["id"] for i in d.get("invitados") or []]
+    else:
+        datos = {k: v for k, v in d.items() if k not in ("parecidos", "ya_en_el_dia")}
+    return {
+        "tipo": kind,
+        "titulo": p.get("titulo") or kind,
+        "motivo": p.get("motivo") or "",
+        "seg": p.get("seg"),
+        "confianza": p.get("confianza") or 0.5,
+        "datos": datos,
+    }
+
+
+def apply_changes(raw: dict[str, Any], changes: dict[str, Any]) -> dict[str, Any]:
+    """Cambios de la UI (solo las claves editables de ese tipo) sobre la forma de entrada."""
+    allowed = {f["clave"] for f in EDIT_FIELDS.get(str(raw["tipo"]), [])}
+    datos = dict(raw["datos"])
+    for key, value in changes.items():
+        if key not in allowed or key == "invitados":
+            continue
+        if key == "destino":
+            model, _, rid = str(value).partition(":")
+            if model not in _TARGET_KEY or not rid.isdigit():
+                raise ValueError("destino")
+            for k in _TARGET_KEY.values():
+                datos.pop(k, None)
+            datos[_TARGET_KEY[model]] = int(rid)
+        elif key == "proyecto_id" and raw["tipo"] == "registrar_horas":
+            datos["proyecto_id"] = value
+            datos["tarea_id"] = None
+        else:
+            datos[key] = value
+    if raw["tipo"] == "registrar_horas" and "fecha" in datos:
+        datos["fechas"] = [datos["fecha"]]
+    return {**raw, "datos": datos}
+
+
+def rebuild(
+    raw: dict[str, Any],
+    transcript: Transcript,
+    odoo: Any | None,
+    *,
+    profile: dict[str, Any] | None,
+    today: date,
+) -> dict[str, Any]:
+    """Una propuesta (forma del modelo) -> item validado, o ``ValueError`` con el motivo.
+
+    Las lineas de horas dan el motivo exacto (``horas``, ``futuro``, ``dia_lleno``...)."""
+    if raw["tipo"] == "registrar_horas" and odoo is not None:
+        from micnaga.brain.horas import HoursBook
+
+        d = raw["datos"]
+        HoursBook(odoo, today).validate(  # LineError (ValueError) con el motivo
+            {**d, "fecha": (d.get("fechas") or [d.get("fecha")])[0]},
+            explicit=d.get("explicito") is True,
+        )
+    out = build_crm([raw], transcript, odoo, profile=profile, today=today)
+    if raw["tipo"] in sc.CORRECTION_TYPES or not out:
+        raise ValueError("invalid")
+    return out[0]
+
+
+def options(
+    odoo: Any, profile: dict[str, Any] | None, proposals: list[dict[str, Any]]
+) -> dict[str, list[dict[str, Any]]]:
+    """Listas para los desplegables de la revision (proyectos, destinos, tipos, etapas)."""
+    from micnaga.brain import capabilities
+
+    out: dict[str, list[dict[str, Any]]] = {}
+
+    def can(model: str) -> bool:
+        return capabilities.can(profile, model)
+
+    try:
+        if can("project.project"):
+            out["proyectos"] = [
+                {"id": p["id"], "nombre": p["nombre"]} for p in odoo.projects() if p.get("horas")
+            ]
+        targets = capabilities.note_targets(profile) if profile else []
+        dest: dict[str, str] = {}
+        if "project.task" in targets:
+            pids = {
+                (p.get("datos") or {}).get("proyecto_id")
+                for p in proposals
+                if (p.get("datos") or {}).get("proyecto_id")
+            }
+            tasks = odoo.tasks(mine=True, limit=40)
+            for pid in sorted(x for x in pids if isinstance(x, int)):
+                tasks += odoo.tasks(project_id=pid, mine=False, limit=40)
+            for t in tasks:
+                proj = (t.get("proyecto") or {}).get("nombre")
+                dest[f"project.task:{t['id']}"] = f"{t['nombre']}" + (f" · {proj}" if proj else "")
+        if "project.project" in targets:
+            for p in out.get("proyectos") or odoo.projects():
+                dest[f"project.project:{p['id']}"] = str(p["nombre"])
+        for p in proposals:  # el destino actual siempre esta
+            d = p.get("datos") or {}
+            if d.get("modelo") in _TARGET_KEY and d.get("id"):
+                dest.setdefault(f"{d['modelo']}:{d['id']}", str(d.get("nombre") or d["id"]))
+        if dest:
+            out["destinos"] = [{"id": k, "nombre": v} for k, v in dest.items()]
+        if can("mail.activity"):
+            rows = odoo.search_read("mail.activity.type", [], ["name"], limit=30)
+            out["tipos_actividad"] = [{"id": r["id"], "nombre": r.get("name")} for r in rows]
+        if can("crm.lead") and can("crm.stage"):
+            out["etapas"] = [{"id": s["id"], "nombre": s["nombre"]} for s in odoo.stages()]
+    except Exception as exc:
+        log.info("review options incomplete: %s", getattr(exc, "kind", type(exc).__name__))
+    return out
 
 
 def number(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:

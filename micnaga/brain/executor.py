@@ -209,7 +209,12 @@ class Executor:
             new_id = o.create("res.partner", values)
             return {"modelo": "res.partner", "creado": new_id}
         if kind in ("vincular_a_oportunidad", "nota_en_historial"):
-            msg_id = o.message_post(d["modelo"], d["id"], acta_io.render_note_html(acta))
+            body = (
+                acta_io.text_to_html(str(d["cuerpo"]))
+                if d.get("cuerpo")
+                else acta_io.render_note_html(acta)
+            )
+            msg_id = o.message_post(d["modelo"], d["id"], body)
             return {"modelo": "mail.message", "creado": msg_id, "registro": [d["modelo"], d["id"]]}
         if kind == "actualizar_oportunidad":
             lead = o.read_lead(d["id"])
@@ -242,6 +247,8 @@ class Executor:
                 "date_deadline": d["fecha"],
                 "user_id": o.uid,
             }
+            if d.get("tipo_actividad_id"):
+                values["activity_type_id"] = d["tipo_actividad_id"]
             model_id = o.model_id(d["modelo"])
             if model_id is not None:
                 values["res_model_id"] = model_id
@@ -319,45 +326,90 @@ class Executor:
     # ------------------------------------------------------------------ editar
 
     def edit(self, pid: str, changes: dict[str, Any]) -> dict[str, Any]:
-        """Cambios del usuario en una propuesta pendiente (validados aqui, nunca en JS)."""
+        """Cambios del usuario en cualquier campo editable de un item pendiente: se revalidan con
+        la misma logica que la propuesta original y el item se sustituye (mismo ``id``)."""
+        from micnaga.brain import plan
+
         acta = acta_io.read_acta(self.folder)
         if acta is None:
             raise ApplyError("no_acta")
-        p = next((x for x in acta.get("propuestas") or [] if x.get("id") == pid), None)
-        if p is None or p.get("estado") != "pendiente":
-            raise ApplyError("not_editable")
-        d = dict(p.get("datos") or {})
-        kind = p.get("tipo")
-        if kind == "registrar_horas":
-            from micnaga.brain.horas import HoursBook
-
-            raw = {**d}
-            for key in ("horas", "proyecto_id", "descripcion", "tarea_id", "fecha"):
-                if key in changes:
-                    raw[key] = changes[key]
-            if "proyecto_id" in changes and "tarea_id" not in changes:
-                raw["tarea_id"] = None
-            book = HoursBook(self.odoo(), self.today)
-            # el total del dia se cuenta sin esta misma linea (ya_en_el_dia = lo de Odoo)
-            line = book.validate(raw, explicit=bool(d.get("explicito")))
-            p["datos"] = {**d, **line}
+        p = self._pending(acta, pid)
+        if p.get("grupo") == "correcciones":
+            to = " ".join(str(changes.get("a") or "").split())[:60]
+            if not to or re.search(r"\d", to):
+                raise ApplyError("invalid")
+            p["datos"] = {**(p.get("datos") or {}), "a": to}
             p["checked"] = True
-        elif kind == "crear_tarea":
-            if isinstance(changes.get("nombre"), str) and changes["nombre"].strip():
-                d["nombre"] = " ".join(changes["nombre"].split())[:160]
-            if "fecha" in changes:
-                from micnaga.brain.schema import iso_date
-
-                d["fecha"] = iso_date(changes["fecha"])
-            p["datos"] = d
-        elif kind == "crear_evento":
-            on = {int(i) for i in changes.get("invitados_on") or [] if isinstance(i, int)}
+            acta_io.write_acta(self.folder, acta)
+            return acta
+        invited = changes.get("invitados_on")
+        if p.get("tipo") == "crear_evento" and isinstance(invited, list) and len(changes) == 1:
+            on = {int(i) for i in invited if isinstance(i, int) and not isinstance(i, bool)}
+            d = dict(p.get("datos") or {})
             d["invitados"] = [{**i, "on": int(i["id"]) in on} for i in d.get("invitados") or []]
             p["datos"] = d
-        else:
-            raise ApplyError("not_editable")
+            acta_io.write_acta(self.folder, acta)
+            return acta
+        try:
+            raw = plan.apply_changes(plan.to_input(p), changes)
+        except ValueError as exc:
+            raise ApplyError("invalid") from exc
+        return self.replace(pid, raw, acta=acta, user_edit=True)
+
+    def replace(
+        self,
+        pid: str,
+        raw: dict[str, Any],
+        *,
+        acta: dict[str, Any] | None = None,
+        user_edit: bool = False,
+    ) -> dict[str, Any]:
+        """Sustituye un item pendiente por otra version (forma de salida del modelo), p. ej. la
+        que revise la IA a partir de un mensaje del usuario. Conserva ``id``; ``LineError`` /
+        ``ApplyError`` si la nueva version no pasa la validacion."""
+        from micnaga.brain import capabilities, plan
+
+        acta = acta if acta is not None else acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        p = self._pending(acta, pid)
+        if raw.get("tipo") != p.get("tipo"):
+            raise ApplyError("invalid")
+        o = self.odoo()
+        try:
+            profile = capabilities.ensure(o)
+        except Exception:
+            profile = None
+        transcript = output.read_transcript(self.folder)
+        try:
+            new = plan.rebuild(raw, transcript, o, profile=profile, today=self.today)
+        except ValueError as exc:
+            from micnaga.brain.timesheets import LineError
+
+            if isinstance(exc, LineError):
+                raise
+            raise ApplyError("invalid") from exc
+        if p.get("tipo") == "crear_evento":  # los invitados que el usuario ya activo siguen
+            was_on = {i["id"] for i in (p.get("datos") or {}).get("invitados") or [] if i.get("on")}
+            for i in (new.get("datos") or {}).get("invitados") or []:
+                i["on"] = i["id"] in was_on
+        keep: dict[str, Any] = {k: p[k] for k in ("id", "seg", "t") if k in p}
+        p.clear()
+        p.update(new)
+        p.update(keep, estado="pendiente", deshacer=None, error=None)
+        if user_edit:
+            p["checked"] = True
         acta_io.write_acta(self.folder, acta)
         return acta
+
+    @staticmethod
+    def _pending(acta: dict[str, Any], pid: str) -> dict[str, Any]:
+        p: dict[str, Any] | None = next(
+            (x for x in acta.get("propuestas") or [] if x.get("id") == pid), None
+        )
+        if p is None or p.get("estado") != "pendiente":
+            raise ApplyError("not_editable")
+        return p
 
     # ------------------------------------------------------------------ deshacer
 

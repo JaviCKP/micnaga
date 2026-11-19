@@ -499,6 +499,74 @@ def test_apply_and_undo_business_actions(fake_odoo: FakeOdoo, meeting: Path) -> 
     assert d["account.analytic.line"][-1]["date"] == "2026-11-04"
 
 
+def test_every_item_is_editable_and_replaced_keeping_its_id(
+    fake_odoo: FakeOdoo, meeting: Path
+) -> None:
+    from micnaga.brain import acta as acta_io
+
+    employee_access(fake_odoo)
+
+    c = client(fake_odoo, read_only=True)
+    prof = capabilities.discover(c)
+    raw = [
+        _raw("nota_en_historial", {"tarea_id": 300}),
+        _raw("crear_tarea", {"proyecto_id": PROJECT_ATLAS, "nombre": "Preparar demo"}),
+        _raw("programar_actividad", {"tarea_id": 300, "resumen": "Llamar", "fecha": "2026-11-23"}),
+        _raw("crear_gasto", {"nombre": "Taxi", "importe": 18.5, "fecha": "2026-11-18"}),
+    ]
+    props = plan.build_crm(raw, business_transcript(), c, profile=prof, today=TODAY)
+    _acta_with(meeting, props)
+    opts = plan.options(c, prof, props)
+    assert {"proyectos", "destinos", "tipos_actividad"} <= set(opts)
+    assert {"id": "project.task:300", "nombre": "Migrar informes de Atlas · Plataforma Atlas"} in (
+        opts["destinos"]
+    )
+    acta = plan.decorate(acta_io.read_acta(meeting) or {})
+    by_type = {p["tipo"]: p for p in acta["propuestas"]}
+    note_fields = {f["clave"]: f for f in by_type["nota_en_historial"]["campos"]}
+    assert note_fields["destino"]["valor"] == "project.task:300"
+    assert note_fields["cuerpo"]["valor"].startswith("Seguimiento")
+    assert [f["clave"] for f in by_type["crear_tarea"]["campos"]] == [
+        "nombre",
+        "proyecto_id",
+        "fecha",
+        "descripcion",
+    ]
+
+    ex = Executor(meeting, odoo=lambda: client(fake_odoo), today=TODAY)
+    task_id = by_type["crear_tarea"]["id"]
+    acta = ex.edit(
+        task_id,
+        {"nombre": "Demo para el cliente", "proyecto_id": PROJECT_TRAINING, "fecha": "2026-11-30"},
+    )
+    task = next(p for p in acta["propuestas"] if p["id"] == task_id)
+    assert task["datos"]["nombre"] == "Demo para el cliente"
+    assert task["datos"]["proyecto"] == "Formación Ayuntamiento" and task["checked"]
+    with pytest.raises(ApplyError):
+        ex.edit(task_id, {"proyecto_id": PROJECT_CLOSED})  # misma validacion que al proponer
+    note_id = by_type["nota_en_historial"]["id"]
+    ex.edit(note_id, {"cuerpo": "Resumen corto\n\n<script>x</script>"})
+    with pytest.raises(ApplyError):
+        ex.edit(note_id, {"destino": "res.partner:41"})  # sin escritura en contactos
+    act_id = by_type["programar_actividad"]["id"]
+    ex.edit(act_id, {"tipo_actividad_id": 4, "fecha": "2026-11-25"})
+    # una version revisada (p. ej. por la IA) sustituye al item con el mismo id
+    acta = ex.replace(
+        by_type["crear_gasto"]["id"],
+        _raw("crear_gasto", {"nombre": "Taxi aeropuerto", "importe": 22, "fecha": "2026-11-18"}),
+    )
+    gasto = next(p for p in acta["propuestas"] if p["tipo"] == "crear_gasto")
+    assert gasto["id"] == by_type["crear_gasto"]["id"] and gasto["datos"]["importe"] == 22
+    assert [p["id"] for p in acta["propuestas"]] == [p["id"] for p in props]
+
+    Executor(meeting, odoo=lambda: client(fake_odoo), today=TODAY).apply([note_id, act_id, task_id])
+    note = [m for m in fake_odoo.data["mail.message"] if m.get("model") == "project.task"][-1]
+    assert note["body"] == "<p>Resumen corto</p><p>&lt;script&gt;x&lt;/script&gt;</p>"
+    act = fake_odoo.data["mail.activity"][-1]
+    assert act["activity_type_id"] == 4 and act["date_deadline"] == "2026-11-25"
+    assert fake_odoo.data["project.task"][-1]["project_id"] == PROJECT_TRAINING
+
+
 def test_edit_hours_and_attendees_are_validated_in_python(
     fake_odoo: FakeOdoo, meeting: Path
 ) -> None:

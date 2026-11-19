@@ -342,6 +342,8 @@ class Secretary:
                 today=date.fromisoformat(day),
             )
         plan.number(proposals)
+        if odoo is not None and odoo_info.get("estado") == "conectado":
+            acta["opciones"] = plan.options(odoo, profile, proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
         acta.update(
             version=acta_io.ACTA_VERSION,

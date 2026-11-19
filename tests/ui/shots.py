@@ -419,8 +419,13 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         1,
                         wait=2.2,
                         folder=followup_folder,
-                        js="[...document.querySelectorAll('.sec-gh')].pop()"
-                        ".scrollIntoView({block: 'center'})",
+                        # el editor de items abierto en la tarea y en el evento
+                        js="const open = (t) => [...document.querySelectorAll('.sec-p')]"
+                        ".find((li) => li.textContent.includes(t)).querySelector('.sec-pedit')"
+                        ".click();"
+                        "open('Tarea:'); setTimeout(() => { open('Evento:');"
+                        "[...document.querySelectorAll('.sec-gh')].pop()"
+                        ".scrollIntoView({block: 'start'}); }, 150);",
                     )
                     shot(
                         "secretaria_settings",

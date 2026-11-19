@@ -432,6 +432,10 @@ class BrainService:
             return {"ok": False, "error": "secretaria.err.unknown"}
         try:
             out: dict[str, Any] = handler(args)
+            if isinstance(out.get("acta"), dict):  # items con su esquema editable
+                from micnaga.brain.plan import decorate
+
+                decorate(out["acta"])
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -605,7 +609,10 @@ class BrainService:
         except LineError as exc:
             return {"ok": False, "error": f"secretaria.horas.err.{exc}"}
         except ApplyError as exc:
-            return {"ok": False, "error": f"secretaria.err.{exc}"}
+            key = str(exc)
+            if key.startswith("horas_"):
+                return {"ok": False, "error": f"secretaria.horas.err.{key[6:]}"}
+            return {"ok": False, "error": f"secretaria.err.{key}"}
         return {"ok": True, "acta": acta}
 
     def _api_undo(self, args: dict[str, Any]) -> dict[str, Any]:

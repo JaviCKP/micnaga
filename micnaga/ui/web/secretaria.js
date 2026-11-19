@@ -9,7 +9,7 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [] };
+  const S = { folder: null, acta: null, run: null, enabled: false, poll: 0, busy: false, applied: [], open: new Set() };
   const call = (action, args) => mic.call("secretaria", action, args || {});
   const lib = () => window.micnaga && window.micnaga.library;
 
@@ -131,6 +131,8 @@
       case "crear_evento":
         return mic.t("secretaria.p.event", { what: d.nombre, d: fmtDay(d.fecha) + (d.hora_inicio ? " " + d.hora_inicio : "") });
       case "crear_gasto": return mic.t("secretaria.p.expense", { what: d.nombre, amount: money(d.importe) });
+      case "registrar_horas":
+        return mic.t("secretaria.p.hours", { h: (Math.round(d.horas * 100) / 100).toLocaleString("es-ES"), proj: d.proyecto || "", desc: d.descripcion || "" });
       case "crear_contacto": {
         const bits = [d.nombre, d.cargo, d.empresa].filter(Boolean).join(" · ");
         return mic.t("secretaria.p.contact", { who: bits });
@@ -156,59 +158,84 @@
     evento_parecido: "secretaria.w.event_similar",
   };
 
-  // ------------------------------------------------------------------ editable bits
+  // ------------------------------------------------------------------ item editor
+  // Every item is data-driven: Python sends `campos` (key, type, options list, current value)
+  // and re-validates each change with the same rules as the original proposal; the item comes
+  // back replaced with the same id. One editor for every kind of item.
   const hfmt = (h) => (Math.round(h * 100) / 100).toLocaleString("es-ES", { maximumFractionDigits: 2 });
 
-  /** An hours line of the acta: hours and description edit in place (Python re-validates). */
-  function hoursLine(p, cb) {
-    const d = p.datos || {};
-    const box = el("span", "sec-pt sec-hours");
-    const main = el("span", "sec-pmain sec-hrow");
-    const h = el("input", "field-input num sec-hin");
-    h.type = "number"; h.min = "0.25"; h.max = "12"; h.step = "0.25";
-    h.value = String(d.horas);
-    h.disabled = p.estado !== "pendiente";
-    h.setAttribute("aria-label", mic.t("secretaria.horas.hours"));
-    const desc = el("input", "field-input sec-din");
-    desc.type = "text";
-    desc.value = d.descripcion || "";
-    desc.disabled = p.estado !== "pendiente";
-    desc.setAttribute("aria-label", mic.t("secretaria.horas.desc"));
-    main.append(h, el("span", "sec-hproj", d.proyecto || ""), desc);
-    box.append(main);
-    const save = async (changes) => {
-      const r = await call("edit", { folder: S.folder, id: p.id, cambios: changes });
-      if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
-      S.acta = r.acta;
-      cb.checked = true;
-      cb.dispatchEvent(new Event("change"));
-    };
-    h.addEventListener("change", () => save({ horas: parseFloat(h.value) }));
-    desc.addEventListener("change", () => save({ descripcion: desc.value }));
-    return box;
+  function control(p, f) {
+    const opts = (S.acta.opciones || {})[f.opciones] || [];
+    let c;
+    if (f.tipo === "textarea") {
+      c = el("textarea", "field-input sec-ta");
+      c.rows = f.clave === "cuerpo" ? 6 : 3;
+      c.value = f.valor || "";
+    } else if (f.tipo === "select") {
+      c = el("select", "field-select");
+      const list = opts.slice();
+      if (f.valor != null && !list.some((o) => String(o.id) === String(f.valor))) {
+        list.unshift({ id: f.valor, nombre: (p.datos && (p.datos.proyecto || p.datos.nombre || p.datos.etapa)) || String(f.valor) });
+      }
+      if (f.valor == null) c.append(el("option", "", "—"));
+      for (const o of list) { const op = el("option", "", o.nombre); op.value = String(o.id); c.append(op); }
+      c.value = f.valor == null ? "" : String(f.valor);
+      c.disabled = list.length < 2 && f.valor != null;
+    } else {
+      c = el("input", "field-input" + (f.tipo === "number" ? " num" : ""));
+      c.type = f.tipo === "text" ? "text" : f.tipo;
+      if (f.min != null) c.min = f.min;
+      if (f.max != null) c.max = f.max;
+      if (f.paso != null) c.step = f.paso;
+      c.value = f.valor == null ? "" : String(f.valor);
+    }
+    c.spellcheck = false;
+    c.addEventListener("change", () => {
+      let v = c.value;
+      if (f.tipo === "number") v = parseFloat(v);
+      else if (f.tipo === "select" && f.clave !== "destino") v = v === "" ? null : parseInt(v, 10);
+      else if (v === "" && (f.tipo === "date" || f.tipo === "time")) v = null;
+      edit(p, { [f.clave]: v });
+    });
+    return c;
   }
 
-  /** Attendees of an event: OFF by default; nobody is invited unless switched on here. */
-  function invites(p) {
-    const d = p.datos || {};
-    if (!d.invitados || !d.invitados.length) return null;
-    const row = el("span", "sec-inv");
-    row.append(el("span", "sec-inv-l", mic.t("secretaria.invite")));
-    for (const g of d.invitados) {
+  function chips(p, f) {
+    const row = el("div", "sec-inv");
+    for (const g of f.valor || []) {
       const b = el("button", "sec-chipbtn", g.nombre);
       b.type = "button";
       b.setAttribute("aria-pressed", String(!!g.on));
-      b.disabled = p.estado !== "pendiente";
-      b.addEventListener("click", async (e) => {
-        e.preventDefault();
-        const on = d.invitados.filter((x) => (x.id === g.id ? !x.on : x.on)).map((x) => x.id);
-        const r = await call("edit", { folder: S.folder, id: p.id, cambios: { invitados_on: on } });
-        if (r && r.ok) { S.acta = r.acta; render(); }
+      b.addEventListener("click", () => {
+        const on = f.valor.filter((x) => (x.id === g.id ? !x.on : x.on)).map((x) => x.id);
+        edit(p, { invitados_on: on });
       });
       row.append(b);
     }
     row.append(el("span", "sec-inv-n", mic.t("secretaria.invite_note")));
     return row;
+  }
+
+  function editor(p) {
+    const box = el("div", "sec-edit");
+    box.dataset.id = p.id;
+    for (const f of p.campos || []) {
+      if (f.tipo === "chips" && !(f.valor && f.valor.length)) continue;
+      const lab = el("label", "sec-f sec-f-" + f.tipo + " k-" + f.clave);
+      lab.append(el("span", "sec-fl", mic.t("secretaria.f." + f.clave)));
+      lab.append(f.tipo === "chips" ? chips(p, f) : control(p, f));
+      box.append(lab);
+    }
+    return box;
+  }
+
+  async function edit(p, changes) {
+    const r = await call("edit", { folder: S.folder, id: p.id, cambios: changes });
+    if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
+    S.acta = r.acta;
+    render();
+    const box = document.querySelector(`.sec-edit[data-id="${p.id}"]`);
+    if (box) box.closest(".sec-p").classList.add("saved");
   }
 
   function renderProposals(a) {
@@ -273,8 +300,8 @@
         checks.push(cb);
         const mark = el("span", "sec-mark");
         mark.innerHTML = p.estado === "aplicada" ? mic.icon("check") : p.estado === "fallida" ? mic.icon("x") : "";
-        const txt = g === "horas" ? hoursLine(p, cb) : el("span", "sec-pt");
-        if (g !== "horas") txt.append(el("span", "sec-pmain", proposalText(p)));
+        const txt = el("span", "sec-pt");
+        txt.append(el("span", "sec-pmain", proposalText(p)));
         const sub = [];
         if (p.motivo && g !== "horas") sub.push(p.motivo);
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
@@ -282,7 +309,6 @@
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));
         lab.append(cb, mark, txt);
         li.append(lab);
-        if (p.tipo === "crear_evento") { const inv = invites(p); if (inv) txt.append(inv); }
         const s = stamp(p.t);
         if (s) li.append(s);
         if (p.estado === "aplicada") {
@@ -293,6 +319,21 @@
           u.dataset.tip = mic.t("secretaria.undo_one");
           u.addEventListener("click", () => act("undo", [p.id]));
           li.append(u);
+        }
+        if (p.estado === "pendiente" && (p.campos || []).length) {
+          const pen = el("button", "icon-btn sec-pedit");
+          pen.type = "button";
+          pen.innerHTML = mic.icon("edit");
+          pen.setAttribute("aria-label", mic.t("secretaria.edit"));
+          pen.setAttribute("aria-expanded", String(S.open.has(p.id)));
+          pen.addEventListener("click", () => {
+            if (S.open.has(p.id)) S.open.delete(p.id); else S.open.add(p.id);
+            render();
+            const first = document.querySelector(`.sec-edit[data-id="${p.id}"] input, .sec-edit[data-id="${p.id}"] select, .sec-edit[data-id="${p.id}"] textarea`);
+            if (first) first.focus();
+          });
+          li.append(pen);
+          if (S.open.has(p.id)) { li.classList.add("editing"); li.append(editor(p)); }
         }
         ul.append(li);
       }
@@ -409,6 +450,7 @@
     if (folder === S.folder) return;
     S.folder = folder;
     S.acta = null;
+    S.open = new Set();
     S.run = null;
     clearTimeout(S.poll);
     const host = $("sec");

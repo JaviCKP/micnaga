@@ -112,6 +112,10 @@ def _dynamic_keys() -> set[str]:
         )
     }
     keys |= {f"secretaria.horas.o.{o}" for o in ("reunion", "calendario", "patron")}
+    # etiquetas del editor de items: una por campo editable (``plan.EDIT_FIELDS``)
+    from micnaga.brain.plan import EDIT_FIELDS
+
+    keys |= {f"secretaria.f.{f['clave']}" for fs in EDIT_FIELDS.values() for f in fs}
     return keys
 
 
