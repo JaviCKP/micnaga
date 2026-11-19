@@ -88,6 +88,7 @@ def test_real_read_tools_and_missing_days() -> None:
     if out["ultimo_dia_con_horas"] == "2026-11-04":  # el estado verificado hoy
         assert missing == expected and len(expected) == 11
         assert "2026-11-02" in out["posibles_libres"]  # lunes sin horas entre dias con horas
+        assert out["incompletos"] == [] and out["jornada_tipica"] == 8.0
     assert out["patron"] and len(json.dumps(out)) < mcp.MAX_RESULT_CHARS
     projects = tools.call("proyectos", {})
     tasks = tools.call("tareas", {"mias": False})
