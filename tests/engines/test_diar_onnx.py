@@ -477,3 +477,25 @@ def test_real_embedding_matches_wespeakerruntime_on_same_audio(tmp_path: Path) -
             assert cos >= 0.99
     finally:
         d.close()
+
+
+@pytest.mark.models
+@pytest.mark.timeout(900)
+def test_real_models_long_silence_and_noise_burst_make_no_ghost(tmp_path: Path) -> None:
+    """Dialogo de 2 voces + 70 s de silencio + rafaga de ruido: 2 hablantes tras la etapa 7."""
+    from micnaga.pipeline.engines.diar.postfilter import absorb_minor_speakers
+    from tests.engines import diar_compare, diar_eval
+
+    built = diar_compare.mixed_case(tmp_path)
+    if built is None:
+        pytest.skip("SAPI voices unavailable")
+    audio, truth = built
+    d = create_diarizer(Config(), "onnx")
+    try:
+        raw = d.diarize(audio, SR, None)
+        turns = absorb_minor_speakers(raw, d.embed(audio, SR, raw))  # type: ignore[attr-defined]
+    finally:
+        d.close()
+    assert len({t.speaker for t in turns}) == 2
+    assert all(t.start < 65.0 for t in turns)  # nada en el silencio ni en la rafaga
+    assert diar_eval.der(turns, truth) < DER_BOUND

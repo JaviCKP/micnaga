@@ -23,6 +23,9 @@ Grupos:
                                (fichero verificado byte a byte identico), asi no hay red oculta.
 ``faster-whisper-small``       ASR alternativo (opcional; no se descarga salvo que se pida).
 
+``CANDIDATE_MANIFEST`` (aparte, nunca lo descarga la app): segmentacion pyannote 3.0 y cuatro
+modelos de embeddings de sherpa-onnx evaluados para la diarizacion y no adoptados.
+
 ``faster-whisper-medium`` NO esta en el manifiesto: pesa ~1,5 GB y no estaba autorizado
 descargarlo, y esta prohibido inventar hashes. Anadirlo = descargar, calcular SHA-256 y una entrada.
 """
@@ -55,12 +58,20 @@ PARAKEET_GROUP = "parakeet-tdt-0.6b-v3-int8"
 SILERO_GROUP = "silero-vad"
 WESPEAKER_GROUP = "wespeaker"
 WHISPER_SMALL_GROUP = "faster-whisper-small"
+PYANNOTE_SEG_GROUP = "pyannote-segmentation-3.0"
+SHERPA_WESPEAKER_GROUP = "sherpa-wespeaker-resnet34-lm"
+SHERPA_CAMPPLUS_GROUP = "sherpa-3dspeaker-campplus-en"
+SHERPA_ERES2NET_GROUP = "sherpa-3dspeaker-eres2net-en"
+SHERPA_TITANET_GROUP = "sherpa-nemo-titanet-small"
 
 _HF = "https://huggingface.co"
 _PARAKEET_REV = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
 _SILERO_REV = "b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6"
 _WESPEAKER_REV = "f0c48c298fd835726c27956a5d617bad7115627e"
 _WHISPER_SMALL_REV = "536b0662742c02347bc0e980a01041f333bce120"
+_PYANNOTE_SEG_REV = "9403a6902bb58e3d5ae8c7e77c3422de279db2e0"
+_SHERPA_EMB_REV = "3b5eb92b942ace929e479b6987108d291438547f"
+_SHERPA_EMB_BASE = f"{_HF}/csukuangfj/speaker-embedding-models/resolve/{_SHERPA_EMB_REV}"
 
 
 class ModelError(RuntimeError):
@@ -209,6 +220,82 @@ MANIFEST: dict[str, ModelGroup] = {
         ),
     ),
 }
+
+
+def _sherpa_embedding(
+    gid: str, title: str, license_: str, entry: tuple[str, int, str]
+) -> ModelGroup:
+    return ModelGroup(
+        id=gid,
+        title=title,
+        license=license_,
+        source=f"{_HF}/csukuangfj/speaker-embedding-models",
+        files=_files(gid, _SHERPA_EMB_BASE, [entry]),
+    )
+
+
+CANDIDATE_MANIFEST: dict[str, ModelGroup] = {
+    PYANNOTE_SEG_GROUP: ModelGroup(
+        id=PYANNOTE_SEG_GROUP,
+        title="pyannote segmentation-3.0 (ONNX de sherpa-onnx)",
+        license="MIT (pyannote, CNRS; exportacion ONNX de csukuangfj)",
+        source=f"{_HF}/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0",
+        files=_files(
+            PYANNOTE_SEG_GROUP,
+            f"{_HF}/csukuangfj/sherpa-onnx-pyannote-segmentation-3-0/resolve/{_PYANNOTE_SEG_REV}",
+            [
+                (
+                    "model.onnx",
+                    5992913,
+                    "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079",
+                ),
+            ],
+        ),
+    ),
+    SHERPA_WESPEAKER_GROUP: _sherpa_embedding(
+        SHERPA_WESPEAKER_GROUP,
+        "WeSpeaker ResNet34-LM (VoxCeleb, ONNX con metadatos de sherpa-onnx)",
+        "CC-BY-4.0 (WeSpeaker)",
+        (
+            "wespeaker_en_voxceleb_resnet34_LM.onnx",
+            26530550,
+            "e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012",
+        ),
+    ),
+    SHERPA_CAMPPLUS_GROUP: _sherpa_embedding(
+        SHERPA_CAMPPLUS_GROUP,
+        "3D-Speaker CAM++ (VoxCeleb, ONNX de sherpa-onnx)",
+        "Apache-2.0 (3D-Speaker, Alibaba DAMO)",
+        (
+            "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx",
+            29596979,
+            "98daf9bcf1c8abf3db374fec4c27a5eda7c58705bb3f180d057b085a72a88bb5",
+        ),
+    ),
+    SHERPA_ERES2NET_GROUP: _sherpa_embedding(
+        SHERPA_ERES2NET_GROUP,
+        "3D-Speaker ERes2Net (VoxCeleb, ONNX de sherpa-onnx)",
+        "Apache-2.0 (3D-Speaker, Alibaba DAMO)",
+        (
+            "3dspeaker_speech_eres2net_sv_en_voxceleb_16k.onnx",
+            26485264,
+            "c4947caf150b8502fdd75bbe4089b971ab1ec42e90ee3ba547faca2cde44d9ee",
+        ),
+    ),
+    SHERPA_TITANET_GROUP: _sherpa_embedding(
+        SHERPA_TITANET_GROUP,
+        "NVIDIA NeMo TitaNet small (ONNX de sherpa-onnx)",
+        "CC-BY-4.0 (NVIDIA)",
+        (
+            "nemo_en_titanet_small.onnx",
+            40257283,
+            "ad4a1802485d8b34c722d2a9d04249662f2ece5d28a7a039063ca22f515a789e",
+        ),
+    ),
+}
+"""Modelos evaluados para la diarizacion y NO adoptados (``tests/engines/diar_compare.py``,
+``docs/diarization_onnx.md``): URL fijada, tamano y SHA-256 igual que en ``MANIFEST``, pero la
+app nunca los descarga. Solo para repetir la comparativa (``download_models(manifest=...)``)."""
 
 OPTIONAL_GROUPS: tuple[str, ...] = (WHISPER_SMALL_GROUP,)
 """Grupos que no se descargan en el asistente salvo que la configuracion los pida."""
