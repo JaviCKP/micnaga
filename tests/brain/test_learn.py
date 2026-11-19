@@ -61,21 +61,31 @@ def test_add_dedupe_contradiction_forget_and_restore() -> None:
 
 
 def test_consolidation_rewrites_compactly_and_revalidates() -> None:
-    facts = [item(f"El cliente número {i} prefiere reuniones por la mañana temprano") for i in range(90)]
+    facts = [
+        item(f"El cliente número {i} prefiere reuniones por la mañana temprano") for i in range(90)
+    ]
     # todos casi iguales: la dedupe los frena; se escriben a mano para forzar el tamano
-    items = [learn.Learned("2026-11-01", "reunion", f"Hecho estable distinto {chr(65 + i % 26)}{i}")
-             for i in range(85)]
+    items = [
+        learn.Learned("2026-11-01", "reunion", f"Hecho estable distinto {chr(65 + i % 26)}{i}")
+        for i in range(85)
+    ]
     learn._write(items)
     assert learn.needs_consolidation()
     asked: list[str] = []
 
     def ask(text: str) -> dict[str, Any]:
         asked.append(text)
-        return {"hechos": ["Hecho consolidado uno del negocio", "correo a@b.es fuera",
-                           "Hecho consolidado dos del negocio"]}
+        return {
+            "hechos": [
+                "Hecho consolidado uno del negocio",
+                "correo a@b.es fuera",
+                "Hecho consolidado dos del negocio",
+            ]
+        }
 
     assert learn.consolidate(ask) == 2
     assert [i.fact for i in learn.list_learned()] == [
-        "Hecho consolidado uno del negocio", "Hecho consolidado dos del negocio"
+        "Hecho consolidado uno del negocio",
+        "Hecho consolidado dos del negocio",
     ]
     assert asked and facts

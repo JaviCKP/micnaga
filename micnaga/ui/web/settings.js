@@ -8,10 +8,13 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const ICONS = { general: "sliders", detection: "mic", processing: "wave", storage: "folder", privacy: "shield", diagnostics: "activity", about: "info" };
-  const CARD_OF = { startup: "ui", ui: "ui" };
+  const ICONS = { general: "sliders", detection: "mic", processing: "wave", storage: "folder", secretaria: "feather", privacy: "shield", diagnostics: "activity", about: "info" };
+  const CARD_OF = {
+    startup: "ui", ui: "ui",
+    "secretaria.odoo_url": "odoo", "secretaria.odoo_db": "odoo", "secretaria.odoo_login": "odoo",
+  };
 
-  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
+  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const get = (path) => { const [s, k] = path.split("."); return S.cur[s][k]; };
@@ -203,7 +206,7 @@
     const adv = [];
     for (const f of g.fields) {
       if (f.advanced) { adv.push(f); continue; }
-      const sec = CARD_OF[f.path.split(".")[0]] || f.path.split(".")[0];
+      const sec = CARD_OF[f.path] || CARD_OF[f.path.split(".")[0]] || f.path.split(".")[0];
       if (!cards.has(sec)) {
         const title = mic.t("settings.cards." + sec);
         const c = group(title === mic.t("settings.groups." + g.id) ? "" : title);   // no echo of the pane title
@@ -212,6 +215,7 @@
       }
       cards.get(sec).append(fieldRow(f));
     }
+    if (g.id === "secretaria" && S.hasSec) secretariaExtras(pane, cards);
     if (g.id === "privacy" && S.hasVp) pane.append(voiceprintCard());
     if (g.id === "privacy") pane.append(legalCard());
     if (adv.length) {
@@ -237,6 +241,147 @@
     }
     return pane;
   }
+
+  // ------------------------------------------------------------------ secretaria
+  const sec = (action, args) => mic.call("secretaria", action, args || {});
+
+  /** A status line: live dot + text, an optional action on the right. */
+  function statusRow() {
+    const row = el("div", "frow sec-status");
+    const left = el("div", "finfo");
+    const dot = el("span", "sig");
+    dot.dataset.s = "off";
+    const text = el("span", "sec-st-text");
+    left.append(dot, text);
+    const right = el("div", "ctl");
+    row.append(left, right);
+    return { row, right, set(state, msg) { dot.dataset.s = state; text.textContent = msg; } };
+  }
+
+  /** Secrets go in and never come back: the field only says «guardada». */
+  function secretRow(kind, label, onSaved) {
+    const row = el("div", "frow");
+    const info = el("div", "finfo");
+    info.append(el("div", "flabel", label));
+    const ctl = el("div", "ctl");
+    const inp = el("input", "field-input");
+    inp.type = "password";
+    inp.autocomplete = "off";
+    inp.spellcheck = false;
+    inp.setAttribute("aria-label", label);
+    const b = el("button", "btn btn-sm", mic.t("secretaria.save_secret"));
+    b.type = "button";
+    b.addEventListener("click", async () => {
+      const r = await sec("set_secret", { kind, value: inp.value || null });
+      inp.value = "";
+      inp.placeholder = r && r.stored ? mic.t("secretaria.stored") : "";
+      onSaved();
+    });
+    ctl.append(inp, b);
+    row.append(info, ctl);
+    return { row, inp };
+  }
+
+  function secretariaExtras(pane, cards) {
+    const title = pane.querySelector("h2");
+    const consent = el("p", "legal sec-consent");
+    consent.innerHTML = mic.icon("lock");
+    consent.append(el("span", "", mic.t("secretaria.consent")));
+    title.after(consent);
+
+    // Claude: detected Claude Code session + «Probar»; token / API key only in those modes
+    const claude = cards.get("secretaria");
+    const st = statusRow();
+    const test = el("button", "btn btn-sm", mic.t("secretaria.test"));
+    test.type = "button";
+    st.right.append(test);
+    let refresh = () => {};
+    const token = secretRow("token", mic.t("secretaria.token"), () => refresh());
+    const key = secretRow("api_key", mic.t("secretaria.api_key"), () => refresh());
+    claude.append(st.row, token.row, key.row);
+    const showSecret = () => {
+      const auth = get("secretaria.auth");
+      token.row.hidden = auth !== "token";
+      key.row.hidden = auth !== "api_key";
+    };
+    pane.addEventListener("change", showSecret);
+    showSecret();
+    test.addEventListener("click", async () => {
+      test.disabled = true;
+      st.set("warn", mic.t("secretaria.testing"));
+      const r = await sec("claude_test");
+      test.disabled = false;
+      if (r && r.ok) st.set("ok", mic.t("secretaria.test_ok", { title: r.title, s: (r.ms / 1000).toFixed(1) }));
+      else st.set("fail", mic.t((r && r.error) || "secretaria.err.failed"));
+    });
+
+    // Odoo: the key (never shown back) + «Probar»: who you are and what is readable
+    const odoo = cards.get("odoo");
+    const okey = secretRow("odoo", mic.t("secretaria.odoo_key"), () => refresh());
+    const ost = statusRow();
+    const otest = el("button", "btn btn-sm", mic.t("secretaria.test"));
+    otest.type = "button";
+    ost.right.append(otest);
+    odoo.append(okey.row, ost.row);
+    otest.addEventListener("click", async () => {
+      otest.disabled = true;
+      ost.set("warn", mic.t("secretaria.testing"));
+      const r = await sec("odoo_test", {
+        url: get("secretaria.odoo_url"), db: get("secretaria.odoo_db"), login: get("secretaria.odoo_login"),
+        key: okey.inp.value || null,
+      });
+      otest.disabled = false;
+      if (r && r.ok) {
+        const names = { "crm.lead": "CRM", "res.partner": mic.t("secretaria.contacts"), "mail.activity": mic.t("secretaria.activities") };
+        const readable = Object.entries(r.readable || {}).filter(([m]) => names[m]).map(([m, v]) => names[m] + (v ? " ✓" : " ✗")).join(" · ");
+        ost.set("ok", mic.t("secretaria.odoo_ok", { user: r.user || "?", version: r.version || "", readable }));
+      } else ost.set("fail", mic.t((r && r.error) || "secretaria.err.failed"));
+    });
+
+    refresh = async () => {
+      const s = await sec("status");
+      if (!s || !s.ok) return;
+      if (!s.claude_installed) st.set("fail", mic.t("secretaria.not_installed"));
+      else if (s.auth === "session") {
+        const d = await sec("claude_detect");
+        if (d && d.logged_in) st.set("ok", mic.t("secretaria.session_ok", { plan: d.plan ? " · " + String(d.plan).toUpperCase() : "" }));
+        else st.set("warn", mic.t("secretaria.session_missing"));
+      } else {
+        const has = s.auth === "token" ? s.has_token : s.has_api_key;
+        if (has) st.set("ok", mic.t("secretaria.secret_ok"));
+        else st.set("warn", mic.t("secretaria.secret_missing"));
+      }
+      okey.inp.placeholder = s.has_odoo_key ? mic.t("secretaria.stored") : "";
+      ost.set(s.has_odoo_key ? "off" : "off", s.has_odoo_key ? mic.t("secretaria.odoo_untested") : mic.t("secretaria.odoo_none"));
+    };
+    refresh();
+    pane.append(learnedCard());
+  }
+
+  function learnedCard() {
+    const c = group(mic.t("secretaria.learned"));
+    const list = el("div");
+    c.append(list);
+    async function load(r) {
+      r = r || (await sec("learned"));
+      list.replaceChildren();
+      const items = (r && r.items) || [];
+      if (!items.length) { list.append(el("p", "empty-note", mic.t("secretaria.learned_none"))); return; }
+      items.forEach((it, i) => {
+        const row = el("div", "vp sec-learn" + (it.review ? " review" : ""));
+        const mid = el("div");
+        mid.append(el("div", "n", it.fact), el("div", "s", it.review ? it.day + " · " + mic.t("secretaria.review") : it.day));
+        const b = el("button", "btn btn-sm btn-ghost", mic.t("secretaria.forget"));
+        b.type = "button";
+        b.addEventListener("click", async () => load(await sec("forget", { index: i })));
+        row.append(mid, b);
+        list.append(row);
+      });
+    }
+    load();
+    return c.parentElement;
+  }
+
 
   function legalCard() {
     const d = el("p", "legal");
@@ -375,6 +520,7 @@
     S.orig = clone(data.values);
     S.hasDiag = !!data.has_diagnostics;
     S.hasVp = !!data.has_voiceprints;
+    S.hasSec = !!data.has_secretaria;
     const nav = $("nav"), panes = $("panes");
     const ids = [];
     const addTab = (id) => {

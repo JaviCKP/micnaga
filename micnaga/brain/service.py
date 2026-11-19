@@ -399,7 +399,9 @@ class BrainService:
     def _api_acta(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._folder_path(args)
         if path is None:
-            return {"ok": False, "error": "library.err.not_found"}
+            with self._lock:  # renombrada por el titulo del acta mientras se miraba
+                moved = self._renames.get(str(args.get("folder")))
+            return {"ok": False, "error": "library.err.not_found", "moved": moved}
         acta = acta_io.read_acta(path)
         db = self._db()
         try:

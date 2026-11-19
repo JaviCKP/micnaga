@@ -159,7 +159,8 @@ def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> N
     }
     # secretos: entran, nunca salen
     assert svc.api("set_secret", {"kind": "token", "value": "oat-123"}) == {
-        "ok": True, "stored": True
+        "ok": True,
+        "stored": True,
     }
     status = svc.api("status", {})
     assert status["has_token"] is True and "oat-123" not in str(status)

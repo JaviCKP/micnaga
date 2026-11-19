@@ -46,6 +46,46 @@ def _dynamic_keys() -> set[str]:
     keys |= set(ERR_KEY.findall(_read(UI / "bridge.py")))
     keys |= {"settings.err.save_failed", "settings.err.invalid", "settings.err.startup_failed"}
     keys |= {"wizard.err.no_downloader", "wizard.err.generic"}
+    # Secretaria: tarjeta de Odoo (CARD_OF por ruta) y textos que el JS elige de un mapa o
+    # compone con el estado/el error que devuelve Python.
+    keys.add("settings.cards.odoo")
+    keys |= {f"secretaria.group.{g}" for g in ("crm", "fix")}
+    keys |= {
+        f"secretaria.st.{s}"
+        for s in (
+            "contacts",
+            "companies",
+            "leads",
+            "lead",
+            "stages",
+            "history",
+            "activities",
+            "meetings",
+        )
+    }
+    keys |= {f"secretaria.w.{w}" for w in ("similar", "changed", "dup_activity", "unchecked")}
+    keys |= {f"secretaria.odoo.{s}" for s in ("clave", "sin_conexion", "sin_herramientas", "error")}
+    keys |= {
+        f"secretaria.err.{e}"
+        for e in (
+            "failed",
+            "offline",
+            "auth",
+            "not_found",
+            "rate_limit",
+            "timeout",
+            "output",
+            "disabled",
+            "unknown",
+            "invalid",
+            "odoo_incomplete",
+            "odoo_auth",
+            "odoo_offline",
+            "odoo_access",
+            "odoo_failed",
+        )
+    }
+    keys |= {"toast.proposals_one", "toast.proposals_other"}
     return keys
 
 

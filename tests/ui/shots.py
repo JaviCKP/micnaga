@@ -129,7 +129,13 @@ def _composite(
 
 def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
     tmp = Path(tempfile.mkdtemp(prefix="micnaga-shots-"))
-    env_keys = ("MICNAGA_HOME", "MICNAGA_STORAGE", "MICNAGA_MODELS", "MICNAGA_UI_DEMO")
+    env_keys = (
+        "MICNAGA_HOME",
+        "MICNAGA_STORAGE",
+        "MICNAGA_MODELS",
+        "MICNAGA_UI_DEMO",
+        "MICNAGA_CLAUDE_EXE",
+    )
     saved = {k: os.environ.get(k) for k in env_keys}
     os.environ.update(
         MICNAGA_HOME=str(tmp / "home"),
@@ -156,8 +162,47 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
         startup.set_default_backend(startup.MemoryRegistry())
         cfg = Config()
         cfg.privacy.voiceprints_enabled = True
+        cfg.secretaria.enabled = True
+        cfg.secretaria.odoo_url = "https://odoo.example.com"
+        cfg.secretaria.odoo_db = "empresa"
+        cfg.secretaria.odoo_login = "javier@example.com"
         root = paths.meetings_root(cfg)
         folders = fake.build_demo_library(root)
+        # Secretaria: una reunion con acta y propuestas, un claude falso (sesion detectada)
+        from micnaga.brain import secrets
+        from micnaga.brain.service import BrainService
+        from tests.brain.demo import write_demo_meeting
+
+        acta_folder = write_demo_meeting(root)
+        fake_claude = tmp / "claude_fake.py"
+        fake_claude.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(REPO / 'tests' / 'brain')!r})\n"
+            "import fake_claude\n"
+            "sys.exit(fake_claude.main(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        os.environ["MICNAGA_CLAUDE_EXE"] = str(fake_claude)
+        secrets.put(secrets.ODOO_KEY, "demo")
+        from micnaga.brain import learn
+
+        learn.add_learnings(
+            [
+                {
+                    "hecho": "Las oportunidades se titulan «Empresa · servicio».",
+                    "fuente": "crm",
+                    "evidencia": "crm.lead",
+                    "confianza": 0.9,
+                },
+                {
+                    "hecho": "En las reuniones con Dental Triana suele estar recepción.",
+                    "fuente": "reunion",
+                    "evidencia": "#1",
+                    "confianza": 0.8,
+                },
+            ]
+        )
+        brain = BrainService(lambda: cfg)
         ops = fake.FakeLibraryOps(lambda: root)
         ops.voiceprints["Laura"] = Voiceprint("Laura", "2026-11-02", 3)
         store = FileConfigStore()
@@ -172,6 +217,7 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
             config=lambda: cfg,
             ops=ops,
             opener=lambda p: None,
+            brain=brain,
         )
         api: dict[str, object] = {
             "library": lib,
@@ -181,6 +227,7 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                 registry=reg,
                 diagnostics=fake.fake_diagnostics,
                 ops=ops,
+                brain=brain,
             ),
             "wizard": WizardApi(
                 download_models=fake.fake_download_models,
@@ -292,6 +339,47 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         )
                     )
                     img.unlink()
+                if want("secretaria"):
+                    shot(
+                        "secretaria_acta",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                    )
+                    shot(
+                        "secretaria_settings",
+                        theme,
+                        "settings.html",
+                        "settings",
+                        800,
+                        900,
+                        1,
+                        wait=2.4,
+                        tab="secretaria",
+                    )
+                    img = shot(
+                        "secretaria_pill_raw",
+                        theme,
+                        "pill.html",
+                        "pill",
+                        420,
+                        40,
+                        2,
+                        wait=1.6,
+                        transparent=True,
+                        keep=False,
+                        elapsed=134,
+                        hover=1,
+                        title="Dental Triana · presupuesto CRM",
+                    )
+                    out = out_dir / f"secretaria_pill_{theme}.png"
+                    shots.append(_composite([(img, (30, 12), 1.0)], (480, 64), dark, out, 2))
+                    img.unlink()
                 if want("library"):
                     shot(
                         "library",
@@ -355,6 +443,27 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         1,
                         wait=1.4,
                         tab="detection",
+                    )
+                if want("secretaria") and theme == "dark":
+                    # aplica solo las correcciones (son locales) y cambia la reunion de demo:
+                    # por eso va al final y una sola vez
+                    shot(
+                        "secretaria_applied",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.querySelectorAll('.sec-props input[type=checkbox]')"
+                        ".forEach((c, i) => { if (i < 5) c.checked = false; });"
+                        "document.querySelectorAll('.sec-props input')[0]"
+                        ".dispatchEvent(new Event('change'));"
+                        "document.querySelector('.sec-apply').click();"
+                        "setTimeout(() => document.querySelectorAll('.sec-gh')[1]"
+                        ".scrollIntoView({block: 'start'}), 300)",
                     )
                 if want("wizard"):
                     shot(

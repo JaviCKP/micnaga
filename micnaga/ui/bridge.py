@@ -28,8 +28,9 @@ from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
 from micnaga.types import SPEAKER_ME, Transcript
-from micnaga.ui import settings_schema, sound, startup
+from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
+    BrainPort,
     ConfigStore,
     Diagnostic,
     DiagnosticsProvider,
@@ -147,6 +148,34 @@ class PillApi:
         self._c.handle_pill_stop()
 
 
+# ============================================================================ secretaria
+
+LIBRARY_BRAIN_ACTIONS = frozenset({"acta", "apply", "undo", "dismiss", "analyze"})
+SETTINGS_BRAIN_ACTIONS = frozenset(
+    {
+        "status",
+        "claude_detect",
+        "claude_test",
+        "set_secret",
+        "odoo_test",
+        "learned",
+        "forget",
+        "restore",
+    }
+)
+
+
+def call_brain(
+    brain: BrainPort | None, allowed: frozenset[str], action: object, args: object
+) -> Result:
+    """Puerta unica JS -> Secretaria: solo acciones de esa superficie, argumentos dict."""
+    if brain is None:
+        return fail("secretaria.err.disabled")
+    if not isinstance(action, str) or action not in allowed:
+        return fail("secretaria.err.unknown")
+    return brain.api(action, args if isinstance(args, dict) else {})
+
+
 # ============================================================================ biblioteca
 
 _DEFAULT_SPEAKER_RE = re.compile(r"^Hablante \d+$")
@@ -185,6 +214,7 @@ class LibraryApi:
         config: Callable[[], Config],
         ops: LibraryOps | None = None,
         opener: Callable[[Path], None] | None = None,
+        brain: BrainPort | None = None,
     ) -> None:
         self._db_factory = db_factory
         self._root = meetings_root
@@ -192,6 +222,7 @@ class LibraryApi:
         self._config = config
         self._ops = ops
         self._opener = opener or _startfile
+        self._brain = brain
 
     # ---------------------------------------------------------------- lectura
 
@@ -200,6 +231,7 @@ class LibraryApi:
         return ok(
             voiceprints_enabled=cfg.privacy.voiceprints_enabled,
             can_edit=self._ops is not None,
+            secretaria=self._brain is not None,
         )
 
     def list_meetings(self, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
@@ -242,6 +274,23 @@ class LibraryApi:
             }
             for h in hits
         ]
+        if self._brain is not None:  # el texto de las actas tambien se encuentra
+            try:
+                label = i18n.t("library.acta_hit", self._config().ui.language)
+                for a in self._brain.search(query, 10):
+                    out.append(
+                        {
+                            "folder": a["folder"],
+                            "title": a["title"],
+                            "start": 0.0,
+                            "speaker_id": "",
+                            "speaker": label,
+                            "parts": split_snippet(str(a["snippet"])),
+                            "acta": True,
+                        }
+                    )
+            except Exception:
+                log.exception("acta search failed")
         return {
             "query": query,
             "hits": out,
@@ -345,6 +394,10 @@ class LibraryApi:
             return fail("library.err.op_failed")
         return ok(voiceprints=self.list_voiceprints())
 
+    def secretaria(self, action: str, args: dict[str, Any] | None = None) -> Result:
+        """Acta, propuestas (aplicar / deshacer / descartar) y «Analizar» de una reunion."""
+        return call_brain(self._brain, LIBRARY_BRAIN_ACTIONS, action, args)
+
     def open_folder(self, folder: str) -> Result:
         if not valid_folder_name(folder):
             return fail("library.err.not_found")
@@ -401,7 +454,9 @@ class SettingsApi:
         ops: LibraryOps | None = None,
         folder_picker: Callable[[str], str | None] | None = None,
         on_applied: Callable[[Config], None] | None = None,
+        brain: BrainPort | None = None,
     ) -> None:
+        self._brain = brain
         self._store = store
         self._cb = callbacks
         self._registry = registry
@@ -421,6 +476,7 @@ class SettingsApi:
             "schema": settings_schema.schema_for_js(),
             "has_diagnostics": self._diagnostics is not None,
             "has_voiceprints": self._ops is not None,
+            "has_secretaria": self._brain is not None,
         }
 
     def save_settings(self, values: dict[str, Any]) -> Result:
@@ -475,6 +531,10 @@ class SettingsApi:
             log.exception("delete_voiceprint failed")
             return fail("library.err.op_failed")
         return ok(voiceprints=self.list_voiceprints())
+
+    def secretaria(self, action: str, args: dict[str, Any] | None = None) -> Result:
+        """Conectar Claude / Odoo (los secretos entran y nunca salen) y «Lo que ha aprendido»."""
+        return call_brain(self._brain, SETTINGS_BRAIN_ACTIONS, action, args)
 
     def pick_folder(self, current: str = "") -> str | None:
         return self._picker(str(current)) if self._picker is not None else None

@@ -14,8 +14,8 @@ from typing import Any
 
 PROPOSAL_TYPES = (
     "vincular_a_oportunidad",
-    "crear_contacto",
     "actualizar_oportunidad",
+    "crear_contacto",
     "programar_actividad",
     "nota_en_historial",
 )
