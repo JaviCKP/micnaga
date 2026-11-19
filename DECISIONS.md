@@ -621,7 +621,7 @@ le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/sta
    (`detection.undo_s`) y, sin deshacer, la carpeta va a `_descartadas`. Sin respuesta = sigue
    grabando en provisional (la pastilla ofrece «¿Guardar?») y se decide al final.
 2. **Popup de fin** (mismo cristal que el popup): el micro libre `detection.end_confirm_s` (2 s)
-   abre «¿Ha terminado?» (Terminar / Seguir grabando; termina solo a los
+   abre «Reunión terminada» (Terminar / Seguir grabando; termina solo a los
    `detection.end_popup_timeout_s` = 10 s) o, sin confirmar, «¿La guardo?» (Guardar / Descartar; sin
    respuesta se aparta). La grabación sigue mientras se decide y luego se **recorta** al momento en
    que se soltó el micro (`capture.json → trim_end_samples`, aplicado e idempotente en
@@ -648,8 +648,12 @@ le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/sta
    `setTimeout`), y una comprobación a 1,2 s de que la ventana está visible (si no, se re-presenta y
    queda en el log). Un fallo al abrir la captura ya no deja el vigilante colgado (aviso + vuelta a
    vigilar).
-7. **Salida de la app**: solo «Salir», el fin de sesión de Windows o el instalador. La salida
-   inexplicada era un Ctrl+C de la consola que llegaba al manejador SIGINT de pywebview;
-   `app.ConsoleGuard` lo ignora (y lo registra). Si el bucle de la GUI termina por cualquier otra
+7. **Salida de la app**: solo «Salir», el fin de sesión de Windows o el instalador. **Un**
+   mecanismo reproducido: con la app lanzada desde una consola, un Ctrl+C de esa consola llega al
+   manejador SIGINT de pywebview y la app sale «limpiamente»; `app.ConsoleGuard` lo ignora (y lo
+   registra). No explica todo: la app real corre con `pythonw` (sin consola) y sus reinicios del
+   19/11 no dejan ninguna línea de cierre ni evento de fallo en el visor de eventos, así que
+   murió de forma abrupta por una causa aún desconocida. Por eso `faulthandler` escribe ahora en
+   `logs/crash.log`. Si el bucle de la GUI termina por cualquier otra
    cosa se registra el motivo y se recrean las ventanas sin tocar la grabación (máx. 5 en 10 min).
    Toda salida deja `shutting down (reason: …)` en el log.

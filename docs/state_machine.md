@@ -22,7 +22,7 @@ observable (para el icono de bandeja y el diagnóstico); `.phase` devuelve la fa
 | `PROMPTING` | Popup «¿Estás en una reu?» visible **y** grabación provisional en marcha. | rojo |
 | `RECORDING_CONFIRMED` | «Sí» (o «Grabar ahora»). Solo exige la duración mínima (`gates.min_duration_s`, 30 s). | rojo |
 | `RECORDING_PROVISIONAL` | El popup caducó sin respuesta: se sigue grabando; la pastilla ofrece «¿Guardar?». Se decide al final. | rojo |
-| `END_PROMPT` | El micro se soltó `end_confirm_s` (2 s): popup de fin. Confirmada: «¿Ha terminado?» (Terminar / Seguir grabando; sin respuesta en `end_popup_timeout_s` = 10 s, termina). Sin confirmar: «¿La guardo?» (Guardar / Descartar; sin respuesta, se aparta). La grabación sigue mientras tanto y luego se recorta al momento en que se soltó el micro. | rojo |
+| `END_PROMPT` | El micro se soltó `end_confirm_s` (2 s): popup de fin. Confirmada: «Reunión terminada» (Terminar / Seguir grabando; sin respuesta en `end_popup_timeout_s` = 10 s, termina). Sin confirmar: «¿La guardo?» (Guardar / Descartar; sin respuesta, se aparta). La grabación sigue mientras tanto y luego se recorta al momento en que se soltó el micro. | rojo |
 | `DISCARD_PENDING` | Tras un «No»/«Descartar»: la grabación está en pausa (nada se graba) y la pastilla muestra «Descartada · Deshacer» durante `undo_s` (8 s). Sin deshacer → `_descartadas`. | rojo |
 | `SUSPENDED` | «Pausar vigilancia 1 h». No se evalúan señales. | gris |
 | `PAUSED` *(solapamiento)* | Pausa privada activa sobre `PROMPTING` / `RECORDING_*`. | ámbar |
@@ -103,12 +103,14 @@ compuertas: la etapa 1 del pipeline aparta (no borra) lo que no las pasa.
   Meet (un Meet en Edge con el micro en Chrome no cuenta).
 * **Estable 5 s** = `now - primer_tick_con_ambas >= confirm_after_s`; cualquier caída en
   `CANDIDATE` reinicia la cuenta (los parpadeos no disparan).
-* **Fin**: `now - primer_tick_sin_señal >= end_after_s`, con reinicio si la señal vuelve (un
-  parpadeo de 10 s no termina la sesión). Con sondeo a 1 s, 15 s «seguidos» equivalen a 16 ticks.
+* **Fin**: `now - primer_tick_sin_señal >= end_confirm_s` (2 s) abre el popup de fin (no cierra
+  nada todavía); si la señal vuelve antes de responder, el popup se retira y se sigue grabando. El
+  vigilante pasa a ticks de 0,25 s mientras hay popup de fin o «Deshacer». `end_after_s` (15 s)
+  solo sirve para olvidar lo ignorado.
 * **Identidad pegajosa**: la sesión es *de su código*; otra pestaña de Meet no la mantiene viva.
   Si la sesión empezó sin código (título «Meet: Revisión semanal») la identidad es débil: vale
   cualquier Meet sin código, y si aparece uno con código, se adopta (lobby → llamada).
-* **Claves de ignorado**: `código` o `nocode:<navegador>` (Meet) y `app:<exe o paquete>` (genérica). Un «Ahora no» sobre un navegador ignora **ambas** (`código` y `app:<navegador>`), para que la ruta genérica no vuelva a disparar con ese mismo uso del micro. Las claves de app envejecen igual: se olvidan cuando la app suelta el micro `end_after_s`; un corte menor no las olvida.
+* **Claves de ignorado**: `código` o `nocode:<navegador>` (Meet) y `app:<exe o paquete>` (genérica). Un «No» sobre un navegador ignora **ambas** (`código` y `app:<navegador>`), para que la ruta genérica no vuelva a disparar con ese mismo uso del micro. Las claves de app envejecen igual: se olvidan cuando la app suelta el micro `end_after_s`; un corte menor no las olvida.
 * **Uso continuo**: cualquier corte del micro de una app reinicia su cuenta de `mic_grace_s`. Gana la app con más tiempo continuo; mientras hay sesión, otras apps no abren otra.
 * **Tras parar** (`user_stop`) se ignoran también todas las apps que tengan el micro en ese momento.
 * **Liveness del micro**: «en uso» exige un proceso vivo cuyo `create_time` sea anterior a `LastUsedTimeStart` (+10 s); así una entrada obsoleta (`Stop = 0` de un cuelgue) no cuenta ni tras reiniciar la app.
@@ -116,25 +118,32 @@ compuertas: la etapa 1 del pipeline aparta (no borra) lo que no las pasa.
   el título no entra en la clave porque los nombres de pestaña de UIA llevan decoraciones
   localizadas y la misma pestana saldría con dos claves) hasta colgar. «Colgar» = esa clave sin señal ≥ `end_after_s` (un parpadeo no la olvida). Un
   código distinto sí vuelve a preguntar, incluso con el ignorado aún abierto.
-* **`on_timeout = "discard"`** también ignora la reunión; si no, volvería a preguntar cada 5 s.
+* **`on_timeout = "discard"`** aparta la sesión (`unanswered`, recuperable) y también ignora la
+  reunión; si no, volvería a preguntar cada 5 s. El valor por defecto es `provisional`.
 * **Cuenta atrás del popup**: acumula tiempo solo mientras *no* haya ratón encima, *no* esté en
   pausa privada y *no* haya una señal caída. Lo último evita que el timeout (15 s) gane siempre al
   fin de reunión (15 s) y haga inalcanzable «la reunión acaba antes de responder».
-* **Parar (pastilla/tray)** vale en cualquier estado de grabación. En `PROMPTING` equivale a «Ahora
-  no». Tras parar, las reuniones aún vivas se ignoran (si no, preguntaría de nuevo a los 5 s).
-* **«Grabar ahora»**: en `PROMPTING` = «Grabar»; en `RECORDING_PROVISIONAL` confirma; en `CANDIDATE`
+* **Parar (pastilla/tray)** vale en cualquier estado de grabación. En `PROMPTING` equivale a «No»
+  (con «Deshacer»). Confirmada: se cierra y se encola. Sin confirmar: abre «¿La guardo?» (nada se
+  pierde sin un «No»). Tras parar, las reuniones aún vivas se ignoran.
+* **«Grabar ahora»**: en `PROMPTING` = «Sí»; en `RECORDING_*` provisional confirma; en
+  `END_PROMPT` = «Seguir grabando» / «Guardar»; en `DISCARD_PENDING` = «Deshacer»; en `CANDIDATE`
   o con una reunión visible adopta esa reunión (la termina la señal); sin reunión es una sesión
   **manual** que solo termina el usuario (no hay señales que la cierren) y a la que Meet no
   molesta con popups.
-* **Suspender**: en `IDLE/CANDIDATE` → `SUSPENDED` y olvida lo ignorado; en `PROMPTING` descarta el
-  popup; **grabando no interrumpe** (rige al terminar la sesión). Al expirar con las señales ya
+* **Suspender**: en `IDLE/CANDIDATE` → `SUSPENDED` y olvida lo ignorado; en `PROMPTING` retira el
+  popup y aparta la sesión (`suspended`, recuperable); **grabando no interrumpe** (rige al terminar la sesión). Al expirar con las señales ya
   activas, los 5 s de estabilidad empiezan de cero.
 * **Pausa privada** solo en `PROMPTING` / `RECORDING_*`; fuera, es un no-op. Si la reunión acaba
-  en pausa, igualmente se hace `stop_and_finalize` (el controlador cierra con la pausa activa).
+  en pausa, el cierre es el mismo (popup de fin) y el controlador cierra con la pausa activa.
 * **Títulos**: solo se toman del título de *ventana* (pestaña activa); los `TabItem` de UIA se usan
   únicamente para detectar Meet y su código. Limitación conocida: una sala sin código «ignorada»
   que pasa a tener código (lobby → llamada) cuenta como reunión nueva.
-* **Eventos tardíos** (clic en un popup que ya se cerró, hover sin popup) se ignoran.
+* **Eventos tardíos** (clic en un popup que ya se cerró, «Deshacer» caducado, hover sin popup)
+  se ignoran.
+* **Fallo al abrir la captura** (`recording_failed`): se retira lo que hubiera en pantalla, se
+  avisa con una notificación y se vuelve a vigilar (esa reunión se ignora hasta colgar; «Grabar
+  ahora» reintenta al momento).
 
 ## Interfaz del controlador
 

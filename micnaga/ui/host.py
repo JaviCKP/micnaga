@@ -170,6 +170,7 @@ class UiHost:
         self._popup_rect: Rect | None = None
         self._popup_mon: winapi.MonitorInfo | None = None
         self._popup_shown_at = 0.0
+        self._popup_leaving = False  # respondido / retirado: la comprobacion no lo re-presenta
         self._popup_on_timeout = "provisional"
         self._popup_total_s = 15.0
         self._popup_state_provider: Callable[[], tuple[float, bool] | None] | None = None
@@ -206,10 +207,18 @@ class UiHost:
         first = True
         while True:
             self._create_overlays()
-            self._factory.start(
-                functools.partial(self._bootstrap, on_ready if first else None, first=first),
-                icon=ICO_PATH,
-            )
+            try:
+                self._factory.start(
+                    functools.partial(self._bootstrap, on_ready if first else None, first=first),
+                    icon=ICO_PATH,
+                )
+            except Exception as exc:
+                if first:
+                    raise
+                # recrear la GUI fallo: se sale, con el motivo en el log (no hay ventanas)
+                log.exception("could not restart the GUI loop")
+                self.exit_reason = f"gui_restart_failed ({exc.__class__.__name__})"
+                break
             if not self._loop_ended():
                 break
             first = False
@@ -515,6 +524,7 @@ class UiHost:
             self._popup_state = "showing"
             self._popup_rect, self._popup_mon = rect, mon
             self._popup_shown_at = time.monotonic()
+            self._popup_leaving = False
             self._popup_on_timeout = str(payload["onTimeout"])
             self._popup_total_s = float(
                 countdown_total_s if countdown_total_s is not None else timeout_value
@@ -546,7 +556,13 @@ class UiHost:
         puso) se vuelve a colocar, a pintar y a mostrar, y se deja constancia en el log."""
         win = self._popup
         with self._lock:
-            if win is None or self._popup_state != "showing" or self._popup_shown_at != shown_at:
+            if (
+                win is None
+                or self._popup_state != "showing"
+                or self._popup_shown_at != shown_at
+                or self._popup_leaving
+                or self._stopping.is_set()
+            ):
                 return True
             rect = self._popup_rect
         visible = win.is_visible()
@@ -576,7 +592,7 @@ class UiHost:
         monitor_hint: MonitorHint = None,
         countdown_total_s: float = 10.0,
     ) -> None:
-        """«¿Ha terminado?» (Terminar / Seguir grabando) o «¿La guardo?» (Guardar / Descartar).
+        """«Reunión terminada» (Terminar / Seguir grabando) o «¿La guardo?» (Guardar / Descartar).
 
         Mismo cristal y ventana que el popup; la cuenta atras la lleva el vigilante."""
         win = self._popup
@@ -595,6 +611,7 @@ class UiHost:
             self._popup_mode = "end"
             self._popup_rect, self._popup_mon = rect, mon
             self._popup_shown_at = time.monotonic()
+            self._popup_leaving = False
             self._popup_total_s = float(countdown_total_s)
             self._popup_script = f"micnaga.popup.showEnd({json.dumps(payload)})"
         self._present_popup(win, rect)
@@ -605,10 +622,12 @@ class UiHost:
         with self._lock:
             if win is None or self._popup_state != "showing" or self._popup_mode != "end":
                 return
+        self._popup_leaving = True
         win.run_js(f"micnaga.popup.endClose({json.dumps(reason)})")
         threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
 
     def handle_end_decide(self, choice: str) -> None:
+        self._popup_leaving = True
         self._cb.on_end_decision(choice)  # type: ignore[arg-type]
 
     # ================================================================= «Descartada · Deshacer»
@@ -664,6 +683,7 @@ class UiHost:
         with self._lock:
             if win is None or self._popup_state != "showing":
                 return
+        self._popup_leaving = True
         win.run_js("micnaga.popup.end()")
         # red de seguridad: si el JS no contesta, se oculta igualmente
         threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
@@ -713,6 +733,7 @@ class UiHost:
 
     # -- eventos del JS (PopupApi)
     def handle_popup_decide(self, decision: str) -> None:
+        self._popup_leaving = True
         if decision == "record":
             self._pill.provisional = False
         elif decision == "timeout" and self._popup_on_timeout == "provisional":

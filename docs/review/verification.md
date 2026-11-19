@@ -6,8 +6,8 @@ en este PC; **Parcial** = comprobado en condiciones más fáciles que el criteri
 
 | Req. | Estado | Evidencia |
 | --- | --- | --- |
-| MIC-01 Detección | Verificado (cambiado) | Ruta genérica, cualquier app (`tests/watcher/*`; E2E con la UI real y `fakecall.exe`). Meet en Chrome probado en real; Edge/Brave y «< 3 s» sin medir. El popup sale a los 20 s + 20 s por diseño (petición del usuario, DECISIONS §18) |
-| MIC-02 Popup | Verificado | Ventana WebView2 real visible (`docs/screenshots/flow_02_popup.png`); comprobación de visibilidad a 1,2 s; tema claro/oscuro en `tests/ui/shots.py` |
+| MIC-01 Detección | Verificado (cambiado) | Ruta genérica, cualquier app (`tests/watcher/*`; E2E con la UI real y una fuente de señales guionizada «`fakecall.exe` tiene el micro», no el muestreador real). Meet en Chrome probado en real; Edge/Brave y «< 3 s» sin medir. El popup sale a los 20 s + 20 s por diseño (petición del usuario, DECISIONS §18) |
+| MIC-02 Popup | Parcial | El fallo real del usuario («no sale») **no se reprodujo**; hay mitigaciones con tests (`tests/ui/test_host.py`). Ventana WebView2 real con `IsWindowVisible` + captura PrintWindow (`flow_02_popup.png`), con la sesión RDP desconectada: falta que el usuario lo vea en una pantalla activa. Tema claro/oscuro en `tests/ui/shots.py` |
 | MIC-03 Dos pistas | Parcial | `tests/capture/*` (sincronía, relleno de silencios); desfase tras 1 h sin medir aquí |
 | MIC-04 Compuertas | Cambiado | Por petición del usuario, el «Sí» decide y las compuertas de voz están a 0; lo que no pasa se aparta (no se borra). `tests/pipeline/test_gates.py` mantiene los umbrales v1 |
 | MIC-05 Eco | Parcial | `docs/aec_comparison.md` (eco sintético); con altavoces reales sin medir |
@@ -32,4 +32,4 @@ Otras comprobaciones pedidas:
 * **Exclusión del pid propio**: `CaptureSessionMicSource` ignora `os.getpid()`
   (`tests/watcher/test_capture_sessions.py::test_own_process_and_excluded_apps_are_ignored`).
 * **Salida**: solo «Salir» / fin de sesión / instalador; el resto se registra y recrea la GUI
-  (`tests/ui/test_host_exit.py`).
+  (`tests/ui/test_host_exit.py`; recreación probada también con WebView2 real: `flow_09_popup_after_gui_restart.png`).

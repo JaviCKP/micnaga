@@ -65,7 +65,7 @@ def test_meet_path_popup_record_stop_enqueues_confirmed_job() -> None:
     assert json.loads(payload[len("micnaga.pill.show(") : -1])["elapsed"] == rig.rec.elapsed
     assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
 
-    rig.feed(OFF, 3)  # cuelga: el micro se suelta 2 s -> popup de fin «¿Ha terminado?»
+    rig.feed(OFF, 3)  # cuelga: el micro se suelta 2 s -> popup de fin «Reunión terminada»
     assert rig.watcher.state is WatcherState.END_PROMPT  # type: ignore[union-attr]
     assert _end_popup(rig)["confirmed"] is True
     assert rig.popup.visible

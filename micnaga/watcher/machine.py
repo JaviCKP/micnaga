@@ -16,7 +16,7 @@ Flujo (decide el usuario; DECISIONS §18, ``docs/state_machine.md``):
   aparta en «Descartadas» (recuperable N dias, nunca se borra al momento). Sin respuesta -> el
   popup se convierte en la pastilla provisional (con «¿Guardar?») y se decide al final.
 * **Fin**: la app suelta el micro ``end_confirm_s`` seguidos -> se anota el punto de recorte y
-  sale el popup de fin: confirmada «¿Ha terminado?» (Terminar / Seguir grabando; sin respuesta
+  sale el popup de fin: confirmada «Reunión terminada» (Terminar / Seguir grabando; sin respuesta
   en ``end_popup_timeout_s`` termina), sin confirmar «¿La guardo?» (Guardar / Descartar; sin
   respuesta se aparta sin transcribir). Si el micro vuelve antes de contestar, el popup de fin se
   retira y la grabacion sigue como estaba.
@@ -192,7 +192,7 @@ class ClearEnd:
 
 @dataclass(frozen=True)
 class ShowEndPopup:
-    confirmed: bool  # True: «¿Ha terminado?»; False: «¿La guardo?»
+    confirmed: bool  # True: «Reunión terminada»; False: «¿La guardo?»
     title: str | None
     monitor_hint: MonitorHint | None
     timeout_s: float
