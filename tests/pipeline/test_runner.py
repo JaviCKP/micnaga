@@ -116,6 +116,23 @@ def test_end_to_end_headphones_meeting(db: Database) -> None:
     assert events[-1].title == "Revisión semanal"
 
 
+def test_capture_title_names_the_transcript_and_the_final_folder(db: Database) -> None:
+    # como ``micnaga record --title Prueba-podcast``: la carpeta ya lleva el slug del titulo
+    name = "2026-11-18_1030_prueba-podcast"
+    session = make_session(name, SyntheticSpec(duration_s=45.0, title="Prueba-podcast"))
+    result = runner_for(db=db).run(session)
+    assert result.status == "done", result.reason
+    assert result.session_dir == session  # sin renombrar a ``..._reunion``
+    transcript = output.read_transcript(result.session_dir)
+    assert transcript.meeting.title == "Prueba-podcast"
+    md = (result.session_dir / paths.TRANSCRIPT_MD).read_text(encoding="utf-8")
+    assert md.startswith("# Prueba-podcast — ")
+    # una carpeta con otro nombre se renombra al slug del titulo, nunca al titulo por defecto
+    other = make_session("tmp-other", SyntheticSpec(duration_s=45.0, title="Prueba-podcast"))
+    renamed = runner_for(db=db).run(other)
+    assert renamed.session_dir.name == f"{name}-2"
+
+
 def test_second_meeting_with_the_same_title_gets_a_suffix(db: Database) -> None:
     first = runner_for(db=db).run(make_session("a"))
     second = runner_for(db=db).run(make_session("b"))

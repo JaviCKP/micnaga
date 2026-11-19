@@ -30,6 +30,7 @@ def test_record_command_records_and_finalizes(
     assert not list(session.glob("*.wav"))
     meta = read_capture_json(session)
     assert meta.extra["state"] == "finalized" and meta.output_kind == "speakers"
+    assert meta.meet_title == "Prueba Uno"  # el titulo llega a capture.json (y de ahi al procesado)
     assert meta.mic.samples > 1.5 * 16000
     text = capsys.readouterr().out
     assert "recording to" in text and "duration:" in text and "drift=" in text
@@ -43,6 +44,18 @@ def test_record_through_the_main_dispatcher(tmp_path: Path) -> None:
     assert code == 0
     (session,) = [d for d in out.iterdir() if d.is_dir()]
     assert (session / paths.AUDIO_ME_WAV).exists()  # --no-finalize deja los WAV
+
+
+def test_record_without_title_leaves_meet_title_empty(tmp_path: Path) -> None:
+    out = tmp_path / "meetings"
+    assert cli.run(["--synthetic", "--seconds", "1", "--out", str(out), "--no-finalize"]) == 0
+    (session,) = [d for d in out.iterdir() if d.is_dir()]
+    assert session.name.endswith("_grabacion")
+    assert read_capture_json(session).meet_title is None
+    out2 = tmp_path / "blank"
+    assert cli.run(["--synthetic", "--seconds", "1", "--out", str(out2), "--title", "  "]) == 0
+    (blank,) = [d for d in out2.iterdir() if d.is_dir()]
+    assert blank.name.endswith("_grabacion") and read_capture_json(blank).meet_title is None
 
 
 def test_record_defaults_to_the_meetings_root(tmp_path: Path, tmp_storage: Path) -> None:

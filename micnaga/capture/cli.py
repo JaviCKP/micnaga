@@ -7,6 +7,9 @@
 
 * ``--out DIR``: **raiz** bajo la que se crea la carpeta de la sesion
   (``AAAA-MM-DD_HHMM_titulo``); por defecto ``paths.meetings_root()``.
+* ``--title T``: titulo de la reunion. Va a ``capture.json`` (``meet_title``), de donde lo toman
+  el titulo de la transcripcion y el nombre final de la carpeta; sin el, la carpeta se llama
+  ``..._grabacion`` y el procesado usa el titulo por defecto.
 * Graba hasta Ctrl+C (o Ctrl+Pausa) o hasta ``--seconds``; imprime niveles cada 5 s.
 * Al terminar convierte a FLAC (``finalize_session``) salvo ``--no-finalize``.
 * ``--recover``: ejecuta la recuperacion de sesiones interrumpidas y sale.
@@ -34,6 +37,7 @@ from micnaga.config import load_config
 from micnaga.logging_setup import setup_logging
 
 PRINT_EVERY_S = 5.0
+DEFAULT_FOLDER = "grabacion"
 POLL_S = 0.25
 
 
@@ -45,7 +49,7 @@ def _parser() -> argparse.ArgumentParser:
     p.add_argument("--out", type=Path, help="carpeta raiz de las sesiones (por defecto la config)")
     p.add_argument("--seconds", type=float, help="parar tras N segundos (por defecto: Ctrl+C)")
     p.add_argument("--confirm", action="store_true", help="marcar la sesion como confirmada")
-    p.add_argument("--title", default="grabacion", help="titulo para el nombre de la carpeta")
+    p.add_argument("--title", help="titulo de la reunion (transcripcion y nombre de la carpeta)")
     p.add_argument("--no-finalize", action="store_true", help="dejar los WAV (sin pasar a FLAC)")
     p.add_argument(
         "--recover", action="store_true", help="recuperar sesiones interrumpidas y salir"
@@ -96,15 +100,16 @@ def run(argv: list[str]) -> int:
 
         backend = demo_backend()
     recorder = Recorder(config.capture, backend=backend, on_event=_print_event)
+    title = (args.title or "").strip() or None
     session = paths.unique_folder(
-        paths.ensure_dir(root), paths.meeting_folder_name(datetime.now(), args.title)
+        paths.ensure_dir(root), paths.meeting_folder_name(datetime.now(), title or DEFAULT_FOLDER)
     )
     previous = signal.signal(signal.SIGINT, _raise_interrupt)
     sigbreak = getattr(signal, "SIGBREAK", None)
     previous_break = signal.signal(sigbreak, _raise_interrupt) if sigbreak is not None else None
     try:
         try:
-            recorder.start(session, confirmed=args.confirm)
+            recorder.start(session, confirmed=args.confirm, meet_title=title)
         except CaptureError as exc:
             print(f"cannot record: {exc}", file=sys.stderr)
             return 1
