@@ -117,7 +117,7 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
   position: relative; display: grid; place-items: center; padding: 0; border: 0; border-radius: var(--r);
   transition: transform var(--dur-fast) var(--ease-out), background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease);
 }
-.btn-round:active { transform: scale(0.92); transition-duration: 60ms; }
+.btn-round:active { transform: scale(var(--press-scale-sm)); transition-duration: var(--dur-press); }
 /* «Ahora no» is the close mark in the corner: where a dismiss always lives */
 .btn-round.no { width: 24px; height: 24px; color: var(--text-3); background: transparent; }
 .btn-round.no::after { content: ""; position: absolute; inset: -6px; border-radius: inherit; }
@@ -125,9 +125,8 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 .btn-round.no .ico { width: 13px; height: 13px; stroke-width: 2; }
 
 .rec-wrap { position: relative; width: 52px; height: 52px; display: grid; place-items: center; margin-right: 4px; }
-.btn-round.rec { width: 40px; height: 40px; color: #0b0b0f; background: var(--warm); }
+.btn-round.rec { width: 40px; height: 40px; color: var(--warm-ink); background: var(--warm); }
 .btn-round.rec:hover { background: light-dark(#a9420f, #ffa06b); transform: scale(1.03); }
-.btn-round.rec:active { transform: scale(0.94); }
 .btn-round:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
 .btn-round.rec:focus-visible { outline-offset: 8px; }
 

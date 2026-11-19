@@ -25,7 +25,7 @@
 }
 .tab .ico { color: var(--text-3); width: 15px; height: 15px; transition: color var(--dur-hover) var(--ease); }
 .tab:hover { background: var(--hover); color: var(--text); }
-.tab:active { transform: scale(0.98); }
+.tab:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .tab[aria-selected="true"] { background: var(--accent-soft); color: var(--text); }
 .tab[aria-selected="true"] .ico { color: var(--accent); }
 .nav-brand { height: 14px; margin: auto 10px 0; opacity: 0.5; transition: opacity var(--dur) var(--ease); }

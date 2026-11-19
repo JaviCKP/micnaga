@@ -55,14 +55,15 @@
   max-width: 0; opacity: 0; overflow: hidden;
   transition: max-width var(--dur) var(--ease-out), opacity var(--dur-fast) var(--ease), margin var(--dur) var(--ease-out);
 }
-.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 104px; opacity: 1; margin-left: 2px; }
+/* hover-in: the bar widens first and the controls follow a beat later; hover-out: they leave at once */
+.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 104px; opacity: 1; margin-left: 2px; transition-delay: 0ms, 60ms, 0ms; }
 .pb {
   position: relative; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; flex: none;
   display: grid; place-items: center; background: transparent; color: var(--pill-text);
   transition: background-color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out), color var(--dur-hover) var(--ease);
 }
 .pb:hover { background: rgb(244 244 247 / 0.1); }
-.pb:active { transform: scale(0.9); background: rgb(244 244 247 / 0.16); transition-duration: 60ms; }
+.pb:active { transform: scale(var(--press-scale-sm)); background: rgb(244 244 247 / 0.16); transition-duration: var(--dur-press); }
 .pb:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .pb .ico { width: 15px; height: 15px; }
 /* stop: the one warm control */
@@ -142,7 +143,7 @@ body.pill-page { background: transparent; }
   transition: background-color var(--dur-hover) var(--ease), box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .pill-save:hover { background: rgb(244 244 247 / 0.1); box-shadow: inset 0 0 0 1px rgb(244 244 247 / 0.5); }
-.pill-save:active { transform: scale(0.95); }
+.pill-save:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .pill-save:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .save-ico { display: grid; }
 .save-ico .ico { width: 11px; height: 11px; stroke-width: 2.6; stroke-linecap: square; stroke-linejoin: miter; }
@@ -166,7 +167,7 @@ body.pill-page { background: transparent; }
   transition: background-color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .undo-btn:hover { background: #fff; }
-.undo-btn:active { transform: scale(0.95); }
+.undo-btn:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .undo-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .undo-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
   background: rgb(244 244 247 / 0.4); transform-origin: left center; transform: scaleX(var(--p, 1)); }

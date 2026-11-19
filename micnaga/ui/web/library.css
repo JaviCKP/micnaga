@@ -61,7 +61,7 @@
   transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .row:hover { background: var(--hover); color: var(--text); }
-.row:active { transform: scale(0.99); transition-duration: 60ms; }
+.row:active { transform: scale(var(--press-scale-lg)); transition-duration: var(--dur-press); }
 .row[aria-current]:not([aria-current="false"]) { background: var(--accent-soft); color: var(--text); }
 /* motion.js slides one highlight between rows instead: the rows themselves stay clear */
 .side-scroll.has-glide .row[aria-current]:not([aria-current="false"]) { background: transparent; }
@@ -122,7 +122,7 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
   transition: color var(--dur-hover) var(--ease), background-color var(--dur-hover) var(--ease), box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .orig-toggle:hover { color: var(--text); box-shadow: inset 0 0 0 1px var(--text-3); }
-.orig-toggle:active { transform: scale(var(--press-scale)); }
+.orig-toggle:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .orig-toggle[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); box-shadow: inset 0 0 0 1px var(--accent); }
 .orig-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .transcript.orig .ph .tx { color: var(--text-2); }
@@ -170,7 +170,7 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
   transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .mk:hover { background: var(--hover); color: var(--text); }
-.mk:active { transform: scale(var(--press-scale)); }
+.mk:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .mk time { font: 500 11px/1 var(--mono); color: var(--accent); }
 
 /* ---- transcript: turns, not a table ----------------------------------------------------- */
@@ -221,7 +221,7 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
   transition: transform var(--dur-fast) var(--ease-out), background-color var(--dur-hover) var(--ease), opacity var(--dur-fast) var(--ease);
 }
 .play:hover { background: light-dark(#000, #fff); }
-.play:active { transform: scale(0.92); transition-duration: 60ms; }
+.play:active { transform: scale(var(--press-scale-sm)); transition-duration: var(--dur-press); }
 .play:disabled { opacity: 0.3; }
 .play .swap { position: relative; width: 16px; height: 16px; display: block; }
 .play .swap > svg { position: absolute; inset: 0; width: 16px; height: 16px;
@@ -257,6 +257,7 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
   transition: background-color var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease), opacity var(--dur-hover) var(--ease);
 }
 .tr-btn:hover { background: var(--hover); }
+.tr-btn:active { background: var(--press); }
 .tr-btn[aria-pressed="true"] { color: var(--text); }
 .tr-btn[aria-pressed="false"] { color: var(--text-3); opacity: 0.5; }
 .tr-btn[aria-pressed="false"] .ico { stroke-dasharray: 2 2.4; }
@@ -335,7 +336,7 @@ dialog::backdrop { background: light-dark(rgb(243 243 240 / 0.72), rgb(0 0 0 / 0
   transition: box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .held-rec:hover { box-shadow: inset 0 0 0 1px var(--accent); color: var(--accent); }
-.held-rec:active { transform: scale(var(--press-scale)); }
+.held-rec:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .held-del { width: 26px; height: 26px; padding: 0; border: 0; border-radius: var(--r); display: grid; place-items: center; background: transparent; color: var(--text-3); cursor: default; }
 .held-del:hover { background: var(--hover); color: var(--text); }
 .held-del .ico { width: 13px; height: 13px; }

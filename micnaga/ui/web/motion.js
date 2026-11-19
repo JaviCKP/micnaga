@@ -59,10 +59,28 @@
     }).observe(speakers, { childList: true, subtree: true });
   }
 
+  // ---- Secretaria cards: revealed once per meeting ------------------------------------------
+  // secretaria.js rebuilds the whole panel on every render (and polls each second while it
+  // works), which would replay the cards' entrance each time. A card kind already shown for
+  // this meeting gets .seen before the frame is painted, so only what is new moves.
+  const sec = document.getElementById("sec");
+  if (sec && window.MutationObserver) {
+    const KINDS = [".sec-acta", ".sec-props", ".sec-live"];
+    let seen = new Set();
+    document.addEventListener("mic:meeting", () => { seen = new Set(); });
+    new MutationObserver(() => {
+      for (const k of KINDS) {
+        const card = sec.querySelector(k);
+        if (!card) continue;
+        if (seen.has(k)) card.classList.add("seen");
+        else seen.add(k);
+      }
+    }).observe(sec, { childList: true });
+  }
+
   // ---- «Aplicar»: a cascade, top to bottom ----------------------------------------------------
   // Only the rows that were ticked when «Aplicar» was pressed play the tick (a later re-render
   // shows them still), each one --stagger after the one above.
-  const sec = document.getElementById("sec");
   if (sec && window.MutationObserver) {
     let applying = null;
     document.addEventListener("click", (e) => {

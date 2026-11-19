@@ -60,7 +60,7 @@
   /* ---- ink ------------------------------------------------------------------------- */
   --text: light-dark(#0b0b0f, #f4f4f7);
   --text-2: light-dark(#45454f, #b9b9c4);
-  --text-3: light-dark(#66666f, #8c8c99);
+  --text-3: light-dark(#5e5e67, #8c8c99);           /* AA (4.5) on every light plane, the selected row included */
   --text-inv: light-dark(#f4f4f7, #0b0b0f);
 
   /* ---- lines (hairlines are the structure) ----------------------------------------- */
@@ -90,8 +90,9 @@
   --accent-ink: light-dark(#ffffff, #0b0b0f);        /* glyphs on an accent fill */
   --brand-violet: #9d5cb5;                            /* the Bitnaga mark's own violet */
 
-  --warm: light-dark(#c4501b, #ff8a4c);              /* recording, alerts: nothing else */
-  --warm-soft: light-dark(rgb(196 80 27 / 0.10), rgb(255 138 76 / 0.13));
+  --warm: light-dark(#ad4312, #ff8a4c);              /* recording, alerts: nothing else (AA as text in light) */
+  --warm-soft: light-dark(rgb(173 67 18 / 0.10), rgb(255 138 76 / 0.13));
+  --warm-ink: light-dark(#ffffff, #0b0b0f);           /* glyphs on a warm fill */
   --rec: var(--warm);
   --rec-top: var(--warm);
   --rec-bottom: var(--warm);
@@ -147,7 +148,10 @@
   --dur-morph: 400ms;
   --dur-enter: 420ms;
   --stagger: 45ms;
-  --press-scale: 0.97;
+  --dur-press: 60ms;                                  /* press-in is quicker than the release */
+  --press-scale: 0.97;                                /* buttons, chips */
+  --press-scale-sm: 0.92;                             /* icon-sized controls, checkboxes */
+  --press-scale-lg: 0.99;                             /* list rows, wide surfaces */
 }
 :root[data-theme="light"] { color-scheme: light; }
 :root[data-theme="dark"] { color-scheme: dark; }
@@ -155,12 +159,14 @@
 /* ---- motion off -------------------------------------------------------------------- */
 :root[data-motion="off"] {
   --dur-hover: 0.01ms; --dur-fast: 0.01ms; --dur: 0.01ms; --dur-slow: 0.01ms; --dur-morph: 0.01ms;
-  --dur-enter: 0.01ms; --stagger: 0ms;
+  --dur-enter: 0.01ms; --stagger: 0ms; --dur-press: 0.01ms;
+  --press-scale: 1; --press-scale-sm: 1; --press-scale-lg: 1;
 }
 @media (prefers-reduced-motion: reduce) {
   :root {
     --dur-hover: 0.01ms; --dur-fast: 0.01ms; --dur: 0.01ms; --dur-slow: 0.01ms; --dur-morph: 0.01ms;
-    --dur-enter: 0.01ms; --stagger: 0ms;
+    --dur-enter: 0.01ms; --stagger: 0ms; --dur-press: 0.01ms;
+    --press-scale: 1; --press-scale-sm: 1; --press-scale-lg: 1;
   }
 }
 :root[data-motion="off"] *, :root[data-motion="off"] *::before, :root[data-motion="off"] *::after {
@@ -283,15 +289,15 @@ kbd, .keycap {
     box-shadow var(--dur-hover) var(--ease), color var(--dur-hover) var(--ease), opacity var(--dur-fast) var(--ease);
 }
 .btn:hover { background: var(--hover); box-shadow: inset 0 0 0 1px var(--text-3); }
-.btn:active { transform: scale(var(--press-scale)); transition-duration: 60ms; }
+.btn:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .btn:disabled { opacity: 0.38; pointer-events: none; }
 .btn .ico { width: 15px; height: 15px; }
 .btn-primary { background: var(--text); color: var(--text-inv); box-shadow: none; }
 .btn-primary:hover { background: light-dark(#000, #fff); box-shadow: none; }
 .btn-primary:focus-visible { outline-color: var(--accent); }
-.btn-rec { color: #0b0b0f; background: var(--warm); box-shadow: none; }
-.btn-rec:hover { background: light-dark(#a9420f, #ffa06b); box-shadow: none; }
-.btn-rec kbd { color: inherit; box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.25); }
+.btn-rec { color: var(--warm-ink); background: var(--warm); box-shadow: none; }
+.btn-rec:hover { background: light-dark(#933810, #ffa06b); box-shadow: none; }
+.btn-rec kbd { color: inherit; box-shadow: inset 0 0 0 1px currentColor; opacity: 0.6; }
 .btn-ghost { background: transparent; box-shadow: none; color: var(--text-2); }
 .btn-ghost:hover { background: var(--hover); color: var(--text); box-shadow: none; }
 .btn-danger { color: var(--warm); background: transparent; box-shadow: inset 0 0 0 1px var(--warm-soft); }
@@ -308,7 +314,7 @@ kbd, .keycap {
 }
 .icon-btn::after { content: ""; position: absolute; inset: -5px; border-radius: inherit; } /* 40 px hit area */
 .icon-btn:hover { background: var(--hover); color: var(--text); }
-.icon-btn:active { transform: scale(0.92); background: var(--press); transition-duration: 60ms; }
+.icon-btn:active { transform: scale(var(--press-scale-sm)); background: var(--press); transition-duration: var(--dur-press); }
 .icon-btn[aria-pressed="true"] { color: var(--accent); background: var(--accent-soft); }
 
 /* ---- tooltips: [data-tip] shows on hover / keyboard focus (no title-attribute delay) ---- */

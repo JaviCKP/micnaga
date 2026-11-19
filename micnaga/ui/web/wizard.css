@@ -1,13 +1,20 @@
 /* First run, one click: a single branded moment over the dithered limb, then it closes itself. */
 .wiz {
   height: 100vh; display: flex; flex-direction: column; align-items: center; text-align: center;
-  padding: 96px 48px 28px;
+  padding: 96px 48px 32px;
 }
+/* everything reads in once, top to bottom (child 1 is the hidden ring hook, so h1 starts at 2) */
 .wiz > * { animation: rise var(--dur-enter) var(--ease-out) both; }
-.wiz > :nth-child(2) { animation-delay: 60ms; }
-.wiz > :nth-child(3) { animation-delay: 120ms; }
-.wiz > :nth-child(4) { animation-delay: 180ms; }
-@keyframes rise { from { opacity: 0; transform: translateY(8px); } }
+.wiz > :nth-child(3) { animation-delay: calc(1 * var(--stagger)); }
+.wiz > :nth-child(4), .wiz > :nth-child(5) { animation-delay: calc(2 * var(--stagger)); }
+.wiz > :nth-child(6) { animation-delay: calc(4 * var(--stagger)); }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+
+/* the limb stays in the empty lower half: nothing dithered behind the title, status or checks */
+.ambient {
+  -webkit-mask-image: linear-gradient(to top, #000 0, #000 34%, transparent 52%);
+  mask-image: linear-gradient(to top, #000 0, #000 34%, transparent 52%);
+}
 
 /* the old ring mark stays in the DOM for its progress hook (wizard.js), unseen */
 .mark { display: none; }
@@ -16,30 +23,39 @@
 .hero { margin-top: 0; font-size: 88px; line-height: 0.86; letter-spacing: 0.004em; }
 
 /* progress: a dithered violet bar (see tokens .progress) with the status under it in mono */
-.overall { position: relative; width: 280px; display: grid; gap: 12px; margin-top: 34px; }
+.overall { position: relative; width: 296px; display: grid; gap: 12px; margin-top: 36px; }
 .overall .progress { height: 4px; }
-.status { font: 500 11px/1.4 var(--mono); letter-spacing: 0.04em; color: var(--text-3); min-height: 16px; font-variant-ligatures: none; }
+.status {
+  font: 500 11px/1.4 var(--mono); letter-spacing: 0.04em; color: var(--text-2); min-height: 16px;
+  font-variant-ligatures: none; font-variant-numeric: tabular-nums;
+  transition: color var(--dur) var(--ease);
+}
 .wiz[data-state="done"] .status { color: var(--accent); }
 .wiz[data-state="failed"] .progress > i { background: var(--warm); }
 .wiz[data-state="done"] .progress > i { clip-path: inset(0); }
 .wiz[data-state="done"] .progress::after, .wiz[data-state="failed"] .progress::after { opacity: 0; }
 
-/* audio checks pass on their own: a dithered live level each, a filled square when heard */
-.checks { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; width: 280px; margin-top: 30px; }
-.chk {
-  display: flex; align-items: center; gap: 9px; height: 40px; padding: 0 10px 0 11px; border-radius: var(--r);
-  background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); color: var(--text-3);
-  transition: box-shadow var(--dur-slow) var(--ease), color var(--dur) var(--ease);
+/* audio checks pass on their own: one hairline strip split in two (no boxes inside boxes),
+   a dithered live level each side, a filled square when heard */
+.checks {
+  display: grid; grid-template-columns: 1fr 1fr; width: 296px; margin-top: 28px;
+  border-radius: var(--r); background: var(--bg); box-shadow: inset 0 0 0 1px var(--line-strong);
 }
+.chk {
+  display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 12px 0 14px;
+  color: var(--text-3);
+  transition: color var(--dur) var(--ease);
+}
+.chk + .chk { box-shadow: inset 1px 0 0 var(--line); }
 .chk .ico { width: 14px; height: 14px; flex: none; }
 .chk .wave { flex: 1; min-width: 0; width: auto; height: 16px; color: var(--meter-lo); }
 .chk .tick {
   display: grid; flex: none; width: 14px; height: 14px; place-items: center; border-radius: 2px;
   background: var(--accent); color: var(--accent-ink); opacity: 0; transform: scale(0.5);
-  transition: opacity var(--dur) var(--ease), transform var(--dur-slow) var(--ease-out);
+  transition: opacity var(--dur-fast) var(--ease), transform var(--dur-morph) var(--ease-out);
 }
 .chk .tick .ico { width: 10px; height: 10px; stroke-width: 3; stroke-linecap: square; stroke-linejoin: miter; }
-.chk[data-ok="true"] { color: var(--text-2); box-shadow: inset 0 0 0 1px var(--line-strong); }
+.chk[data-ok="true"] { color: var(--text); }
 .chk[data-ok="true"] .tick { opacity: 1; transform: none; }
 
 .fail { display: grid; justify-items: center; gap: 14px; margin-top: 24px; }
