@@ -635,6 +635,17 @@
   }
 
   // ------------------------------------------------------------------ the bar: message · undo · apply
+  // While the bar is pinned its capsule also covers the scroller's top fade band (`.stuck`), so
+  // no half-faded row peeks out between the header and the bar.
+  function syncStuck() {
+    const bar = document.querySelector(".sec-bar");
+    const tr = bar && bar.closest(".transcript");
+    if (!tr) return;
+    const stuck = tr.scrollTop > 0 && bar.getBoundingClientRect().top <= tr.getBoundingClientRect().top + 0.5;
+    bar.classList.toggle("stuck", stuck);
+  }
+  document.addEventListener("scroll", syncStuck, { capture: true, passive: true });
+
   function renderBar() {
     const bar = el("div", "sec-bar");
     bar.append(el("span", "sec-badge caps", mic.t("secretaria.proposals")));
