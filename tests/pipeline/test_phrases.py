@@ -71,6 +71,43 @@ def test_phrases_split_on_gap_speaker_and_sentence_end() -> None:
     assert phrases[0].start == 0.0 and phrases[0].end == 0.9
 
 
+def test_remote_phrase_is_cut_at_a_turn_boundary_without_pause() -> None:
+    # podcast real (01:13-01:19): la respuesta de S2 llega sin pausa en medio de la frase de S1;
+    # antes S1 «saltaba» por encima de S2 y las dos voces acababan en el mismo segmento
+    turns = [Turn("S1", 0.0, 2.0), Turn("S2", 2.0, 2.6), Turn("S1", 2.6, 5.0)]
+    words = [
+        w("Uy,", 0.2, 0.5),
+        w("qué", 0.6, 0.9),
+        w("bien,", 1.0, 1.5),
+        w("qué", 1.6, 1.9),
+        w("hora", 2.05, 2.3),  # S2
+        w("son", 2.32, 2.55),  # S2
+        w("Faltan", 2.65, 3.0),  # S1 otra vez, a 0,75 s de su palabra anterior
+        w("diez", 3.1, 3.4),
+    ]
+    pairs = list(zip(assign_speakers(words, turns), words, strict=True))
+    phrases = build_phrases(pairs)
+    assert [(p.speaker, p.text) for p in phrases] == [
+        ("S1", "Uy, qué bien, qué"),
+        ("S2", "hora son"),
+        ("S1", "Faltan diez"),
+    ]
+    # y el montaje no vuelve a unir las dos frases de S1 por encima de S2
+    merged = merge_segments(phrases)
+    assert [s.speaker for s in merged] == ["S1", "S2", "S1"]
+
+
+def test_mic_phrase_is_not_cut_by_overlapping_remote_words() -> None:
+    pairs = [
+        ("me", w("Yo", 0.0, 0.3)),
+        ("S1", w("sí", 0.35, 0.5)),  # pista remota, solapada en el tiempo con el micro
+        ("me", w("creo", 0.4, 0.7)),
+        ("me", w("que", 0.75, 0.9)),
+    ]
+    phrases = build_phrases(pairs)
+    assert [(p.speaker, p.text) for p in phrases] == [("me", "Yo creo que"), ("S1", "sí")]
+
+
 def test_merge_same_speaker_when_gap_below_threshold() -> None:
     phrases = [
         seg("me", 0, 2, "Primera frase."),

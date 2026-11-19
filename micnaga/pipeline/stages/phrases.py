@@ -6,7 +6,11 @@ Definiciones
 ------------
 * **Frase** (etapa 8): palabras consecutivas del mismo hablante; se corta cuando cambia el
   hablante, cuando el hueco entre palabras es >= ``PHRASE_GAP_S`` (0,8 s) o cuando la palabra
-  anterior termina en puntuacion de fin de frase (``. ? ! ...``).
+  anterior termina en puntuacion de fin de frase (``. ? ! ...``). El cambio de hablante se mira
+  **en el orden temporal de cada pista**: en la pista remota (todos los ``S<n>``) una frase de
+  ``S1`` se corta en cuanto aparece una palabra de ``S2``, aunque el hueco sea pequeno (antes cada
+  hablante se agrupaba por separado y una frase de ``S1`` podia «saltar» por encima de la
+  respuesta de ``S2``). La pista del micro (``me``) va aparte: puede solaparse con la remota.
 * **Segmento / parrafo** (etapa 11): frases consecutivas del mismo hablante con hueco
   < ``merge_gap_s`` (1,5 s) se unen; un parrafo se parte, en un fin de frase, cuando ya dura
   ``MAX_PARAGRAPH_S`` (45 s) o ``MAX_PARAGRAPH_CHARS`` (700) caracteres.
@@ -53,20 +57,26 @@ def build_phrases(
 ) -> list[Segment]:
     """Agrupa palabras (``(hablante, palabra)``) en frases; el resultado va ordenado por inicio.
 
-    Las palabras de cada hablante se tratan por separado (los hablantes pueden solaparse en el
-    tiempo: micro y sistema son pistas independientes).
+    Cada pista se recorre por separado y en orden temporal (micro y sistema son independientes
+    y pueden solaparse): ``me`` por un lado y todos los hablantes remotos juntos por otro, de
+    modo que un cambio de hablante remoto siempre corta la frase.
     """
-    per_speaker: dict[str, list[Word]] = {}
+    per_track: dict[str, list[tuple[str, Word]]] = {}
     for speaker, word in words_by_speaker:
-        per_speaker.setdefault(speaker, []).append(word)
+        track = SPEAKER_ME if speaker == SPEAKER_ME else "remote"
+        per_track.setdefault(track, []).append((speaker, word))
     phrases: list[Segment] = []
-    for speaker, words in per_speaker.items():
-        words.sort(key=lambda w: (w.s, w.e))
+    for items in per_track.values():
+        items.sort(key=lambda sw: (sw[1].s, sw[1].e))
+        speaker = items[0][0]
         current: list[Word] = []
-        for w in words:
-            if current and (w.s - current[-1].e >= gap_s or ends_sentence(current[-1].w)):
+        for sp, w in items:
+            if current and (
+                sp != speaker or w.s - current[-1].e >= gap_s or ends_sentence(current[-1].w)
+            ):
                 phrases.append(make_segment(speaker, current))
                 current = []
+            speaker = sp
             current.append(w)
         if current:
             phrases.append(make_segment(speaker, current))
