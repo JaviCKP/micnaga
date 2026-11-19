@@ -890,6 +890,11 @@ class Cleaner:
         if fresh:
             output.write_transcript(folder, updated)
             self._reindex(folder, updated, changed)
+        if stats.failed:
+            # alguna ventana no llego (limite de uso, tiempo): sin marca, la proxima pasada la
+            # completa (lo ya corregido conserva su ``text_original`` de la primera vez)
+            log.info("transcript cleanup incomplete: %d windows failed", stats.failed)
+            return
         marker = {
             "version": VERSION,
             "modelo": MODEL,

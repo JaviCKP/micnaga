@@ -374,18 +374,30 @@ def first_calls(terms: dict[str, Any], *, odoo: bool, gmail: bool, mail: bool = 
     return calls
 
 
-def missing(result: Any, *, odoo: bool, gmail: bool) -> list[str]:
-    """Que parte de la investigacion obligatoria no se hizo en esta ejecucion."""
-    from micnaga.brain.google import service_of
+def missing(
+    result: Any, *, odoo: bool, gmail: bool, mail_servers: list[str] | None = None
+) -> list[str]:
+    """Que parte de la investigacion obligatoria no se hizo en esta ejecucion.
+
+    Solo cuenta lo que se podia hacer: un servidor que no sale ``connected`` en ``system/init``
+    no se exige (repetir no lo arreglaria). El correo vale por Gmail o por cualquier servidor
+    extra de ``secretaria.mcp_servers`` (``mail_servers``)."""
+    from micnaga.brain import google as g
     from micnaga.brain.mcp import EVERY_ODOO_TOOL, LOCAL_TOOLS
 
     calls = list(getattr(result, "tool_calls", []) or [])
+    status = dict(getattr(result, "mcp_servers", {}) or {})
+    extra = [s for s in mail_servers or [] if status.get(s) == "connected"]
+    local_up = status.get("micnaga") == "connected"
+    gmail_up = gmail and status.get(g.SERVER["gmail"]) == "connected"
     out = []
-    if not any(c.server == "micnaga" and c.tool in LOCAL_TOOLS for c in calls):
+    if local_up and not any(c.server == "micnaga" and c.tool in LOCAL_TOOLS for c in calls):
         out.append("actas")
-    if odoo and not any(c.server == "micnaga" and c.tool in EVERY_ODOO_TOOL for c in calls):
+    in_odoo = any(c.server == "micnaga" and c.tool in EVERY_ODOO_TOOL for c in calls)
+    if odoo and local_up and not in_odoo:
         out.append("odoo")
-    if gmail and not any(service_of(c.name) == "gmail" for c in calls):
+    in_mail = any(g.service_of(c.name) == "gmail" or c.server in extra for c in calls)
+    if (gmail_up or extra) and not in_mail:
         out.append("gmail")
     return out
 
@@ -410,15 +422,16 @@ def reminder() -> str:
 
 
 def name_seen(name: str, transcript: Any, seen_text: str = "", extra: str = "") -> bool:
-    """El nombre propuesto para un hablante se dijo en la reunion, salio en una herramienta o
-    en el evento de Calendar: nada inventado."""
+    """El nombre propuesto para un hablante (cada palabra: nombre y apellidos) se dijo en la
+    reunion, salio en una herramienta, en el evento de Calendar o entre los participantes de las
+    reuniones candidatas (``extra``): nada inventado."""
     from micnaga.brain.cleanup import fold
 
     words = [w for w in fold(name).split() if len(w) > 2]
     if not words:
         return False
     hay = fold(" ".join(s.text for s in transcript.segments) + "\n" + seen_text + "\n" + extra)
-    return re.search(rf"\b{re.escape(words[0])}\b", hay) is not None
+    return all(re.search(rf"\b{re.escape(w)}\b", hay) is not None for w in words)
 
 
 def brief(

@@ -408,7 +408,9 @@ class Secretary:
 
         started = time.monotonic()
         result = self.runner.run(req, on_event=on_tool)
-        gaps = research.missing(result, odoo=with_crm, gmail="gmail" in services or bool(extra))
+        gaps = research.missing(
+            result, odoo=with_crm, gmail="gmail" in services, mail_servers=list(extra)
+        )
         remaining = self.budget_s - (time.monotonic() - started)
         if _placeholder(result.structured, transcript) or (gaps and remaining > 60):
             # visto en la evaluacion real: un «titulo: x» con todo vacio, o un acta sin haber
@@ -458,9 +460,10 @@ class Secretary:
             odoo_url=self.config.secretaria.odoo_url if with_crm else "",
         )
         acta.update(research.validate(data, transcript, seen))
-        calendar = ""
+        known = [n for m in candidates for n in m.get("participantes") or []]
+        calendar = "\n".join(known)
         if gplan is not None and gplan.context:
-            calendar = json.dumps(gplan.context, ensure_ascii=False)
+            calendar += "\n" + json.dumps(gplan.context, ensure_ascii=False)
         proposals = [  # un nombre para un hablante, solo si se dijo o se vio en alguna parte
             p
             for p in plan.build_corrections(data.get("correcciones"), transcript)

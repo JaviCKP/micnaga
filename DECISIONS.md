@@ -1047,16 +1047,22 @@ no había evento de Calendar. El acta salió en 9 s, con 2 turnos y 0 herramient
      - con Odoo, `buscar_empresas` / `buscar_contactos` / `proyectos`;
      - con Gmail o la herramienta de correo, una búsqueda `"X" OR "Y" newer_than:90d`.
    - **Un recordatorio corto al final del pedido**, después de la transcripción larga.
-   - **Si aun así falta una categoría** (actas, Odoo o Gmail), se repite **una vez** con
+   - **Si aun así falta una categoría** (actas, Odoo o correo), se repite **una vez** con
      «Falta investigar». Va en la misma repetición que el acta de relleno de §21.8.
+     - Solo se exige lo que estaba `connected` en `system/init`.
+     - El correo vale por Gmail o por un servidor extra de `secretaria.mcp_servers`.
+     - Un primer borrador exigía siempre Gmail en cuanto había un servidor extra, y la pasada
+       real de §21.7 se repetía siempre: 63 s frente a los 30 s de ahora para los dos casos.
    - **Tiempo acotado:** solo si quedan más de 60 s de `budget_s` (420 s) y con el tiempo que
      quede.
    - `buscar_en_reuniones` excluye la reunión actual y, si la frase entera no da nada, busca
      palabra a palabra.
 2. **Hablantes sin nombre:**
    - El brief trae pistas: «#12: `me` llama «Carlos» a alguien (solo puede ser `S1`)».
-   - Una propuesta `hablante` solo sobrevive si el nombre **se dijo** en la reunión, salió en
-     una herramienta o está en el evento (`research.name_seen`).
+   - Una propuesta `hablante` solo sobrevive si **cada palabra** del nombre (nombre y
+     apellidos) se dijo en la reunión, salió en una herramienta, está en el evento o entre los
+     participantes de las reuniones candidatas (`research.name_seen`). Un «Carlos Ruiz» cuando
+     solo se dijo «Carlos» no pasa.
    - La validación `Seen` de §21 no cambia.
 3. **Limpieza con Haiku** (`brain/cleanup.py`, prompt corto `prompts/limpieza.md`):
    - **Cuándo:** después del ASR y la diarización y antes del acta. La llama
@@ -1102,8 +1108,11 @@ no había evento de Calendar. El acta salió en 9 s, con 2 turnos y 0 herramient
    - Se regeneran MD y SRT y se reindexa `segments_fts`, que busca el texto nuevo.
    - Lo que se oyó, en los párrafos con alguna palabra cambiada, va a `original_fts` (tabla
      propia, renombrada con la carpeta). La búsqueda de la biblioteca encuentra las dos formas.
-   - Una vez por reunión (`limpieza.json`, con las cifras). Sin Claude se salta en silencio y
-     sin marca, así que se reintenta con la pasada siguiente.
+   - Una vez por reunión (`limpieza.json`, con las cifras).
+     - Sin Claude se salta en silencio y sin marca, así que se reintenta con la pasada
+       siguiente.
+     - Si falla alguna ventana (límite de uso, tiempo), se guarda lo corregido sin marca y la
+       pasada siguiente lo completa; el `text_original` de la primera vez se conserva.
    - Ajuste «Corregir transcripción con IA» (`secretaria.clean_transcript`, encendido; solo
      actúa con la Secretaria activada).
    - **Límite conocido:** «Fusionar hablantes» (`pipeline.merge_segments`) rehace los segmentos

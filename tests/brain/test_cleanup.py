@@ -262,6 +262,35 @@ def test_the_library_search_finds_the_heard_words_too(tmp_path: Path) -> None:
     assert "words" not in seg and "merged_from" not in view["transcript"]["segments"][0]
 
 
+def test_a_partial_run_is_completed_by_the_next_pass() -> None:
+    """Una ventana que no llega (limite de uso, tiempo): lo demas se guarda, sin marca; la
+    pasada siguiente termina y el original de la primera vez se conserva."""
+    from micnaga.brain.claude import ClaudeTimeoutError
+
+    folder = write_meeting(synthetic(), "2026-11-19_1000_revision")
+
+    class Flaky(Haiku):
+        def run_once(self, req: ClaudeRequest, on_event: Any = None) -> ClaudeResult:
+            if "#5 " in req.prompt.split("## Párrafos", 1)[-1]:
+                raise ClaudeTimeoutError("slow")
+            return super().run_once(req, on_event)
+
+    changes = [*CHANGES, {"ids": [5], "texto": "Bitnaga va bien; lo cerramos el lunes."}]
+    first = cleanup.Cleaner(Config(), Flaky(changes), with_db=with_db).run(folder)
+    assert first is not None and first.failed == 1 and first.merges == 1
+    assert not (folder / cleanup.MARKER).exists()
+    tr = output.read_transcript(folder)
+    assert tr.segments[0].merged_from == [0, 1] and tr.segments[4].text == LINES[5][3]
+
+    later = [{"ids": [4], "texto": "Bitnaga va bien; lo cerramos el lunes."}]  # indices nuevos
+    second = cleanup.Cleaner(Config(), Haiku(later), with_db=with_db).run(folder)
+    assert second is not None and second.failed == 0
+    tr = output.read_transcript(folder)
+    assert tr.segments[4].text == "Bitnaga va bien; lo cerramos el lunes."
+    assert tr.segments[0].text_original == f"{LINES[0][3]} {LINES[1][3]}"  # el de la 1.ª vez
+    assert (folder / cleanup.MARKER).exists()
+
+
 def test_without_claude_nothing_changes_and_it_is_tried_again_later() -> None:
     folder = write_meeting(synthetic(), "2026-11-19_1000_revision")
     before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")

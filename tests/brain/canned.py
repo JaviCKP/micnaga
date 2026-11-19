@@ -59,7 +59,7 @@ def structured(*, with_crm: bool = True) -> dict[str, Any]:
                 "tipo": "hablante",
                 "hablante": "S1",
                 "de": None,
-                "a": "Carlos Ruiz",
+                "a": "Carlos",
                 "seg": 3,
                 "motivo": "Javier le llama Carlos",
                 "confianza": 0.9,

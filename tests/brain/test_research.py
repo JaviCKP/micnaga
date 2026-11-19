@@ -348,16 +348,53 @@ def test_research_always_happens_without_named_speakers_or_calendar() -> None:
     assert ("hablante", "Carlos Ruiz") in kinds
 
 
-def test_a_speaker_name_nobody_said_is_dropped() -> None:
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Pedro Gómez",  # no se dice, ni sale en ninguna herramienta
+        "Carlos Pérez",  # «Carlos» se dice, pero el apellido es inventado
+    ],
+)
+def test_a_speaker_name_nobody_said_is_dropped(name: str) -> None:
     _, current = case.write_library(named=False)
     data = _acta()
-    data["correcciones"][0]["a"] = "Pedro Gómez"  # no se dice, ni sale en ninguna herramienta
+    data["correcciones"][0]["a"] = name
     runner = Scripted([_result(data, [("reuniones_con", {"texto": "Carlos"})])])
     out = Secretary(Config(), runner=runner, db_factory=open_database).analyze(  # type: ignore[arg-type]
         current, today="2026-11-19"
     )
     assert len(runner.requests) == 1  # investigo: no se repite
     assert all(p["tipo"] != "hablante" for p in out.acta["propuestas"])
+
+
+def _calls(*names: str, servers: dict[str, str] | None = None) -> ClaudeResult:
+    res = _result(_acta(), [])
+    res.tool_calls = [ToolCall(n, {}) for n in names]
+    res.mcp_servers = servers if servers is not None else {"micnaga": "connected"}
+    return res
+
+
+def test_what_counts_as_research_and_what_cannot_be_demanded() -> None:
+    gmail = "claude.ai Gmail"
+    up = {"micnaga": "connected", gmail: "connected", "correo": "connected"}
+    local = "mcp__micnaga__reuniones_con"
+    assert research.missing(_calls(servers=up), odoo=True, gmail=True) == [
+        "actas",
+        "odoo",
+        "gmail",
+    ]
+    done = _calls(local, "mcp__micnaga__buscar_empresas", "mcp__claude_ai_Gmail__search_threads")
+    done.mcp_servers = up
+    assert research.missing(done, odoo=True, gmail=True) == []
+    # el correo de un servidor extra (secretaria.mcp_servers) vale como busqueda de correo
+    extra = _calls(local, "mcp__correo__search_threads", servers=up)
+    assert research.missing(extra, odoo=False, gmail=False, mail_servers=["correo"]) == []
+    assert research.missing(_calls(local, servers=up), odoo=False, gmail=False) == []
+    # lo que no esta conectado no se exige: repetir no lo arreglaria
+    down = {"micnaga": "failed", gmail: "pending"}
+    assert research.missing(_calls(servers=down), odoo=True, gmail=True) == []
+    stub = _calls(local, servers={"micnaga": "connected", "correo": "failed"})
+    assert research.missing(stub, odoo=False, gmail=False, mail_servers=["correo"]) == []
 
 
 def test_terms_come_from_the_conversation() -> None:
