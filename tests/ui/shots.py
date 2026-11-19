@@ -423,9 +423,13 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         js="const open = (t) => [...document.querySelectorAll('.sec-p')]"
                         ".find((li) => li.textContent.includes(t)).querySelector('.sec-pedit')"
                         ".click();"
-                        "open('Tarea:'); setTimeout(() => { open('Evento:');"
+                        "open('Tarea:'); setTimeout(() => {"
+                        "const i = document.querySelector('.sec-edit input');"
+                        "i.value = 'Cuaderno de ejercicios (v2)';"
+                        "i.dispatchEvent(new Event('change')); }, 60);"
+                        "setTimeout(() => { open('Evento:');"
                         "[...document.querySelectorAll('.sec-gh')].pop()"
-                        ".scrollIntoView({block: 'start'}); }, 150);",
+                        ".scrollIntoView({block: 'start'}); }, 450);",
                     )
                     shot(
                         "secretaria_settings",

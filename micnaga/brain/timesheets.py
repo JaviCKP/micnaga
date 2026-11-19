@@ -345,15 +345,27 @@ def _overlap(a: tuple[int, int], b: tuple[int, int]) -> int:
     return max(0, min(a[1], b[1]) - max(a[0], b[0]))
 
 
+STRONG_MATCH = 85
+WEAK_MATCH = 70
+
+
 def guess_project(
     text: str, projects: list[dict[str, Any]], pattern: list[dict[str, Any]]
 ) -> dict[str, Any] | None:
     """Proyecto para un titulo (nombre del proyecto o descripciones habituales); si no, None."""
+    project, _score = guess_project_scored(text, projects, pattern)
+    return project
+
+
+def guess_project_scored(
+    text: str, projects: list[dict[str, Any]], pattern: list[dict[str, Any]]
+) -> tuple[dict[str, Any] | None, float]:
+    """Como ``guess_project`` pero con la puntuacion (0-100) del mejor parecido."""
     from rapidfuzz import fuzz
 
     q = _norm(text)
     if not q:
-        return None
+        return None, 0.0
     best: tuple[float, dict[str, Any] | None] = (0.0, None)
     for p in projects:
         score = fuzz.token_set_ratio(q, _norm(str(p.get("nombre") or "")))
@@ -364,7 +376,7 @@ def guess_project(
             score = fuzz.token_set_ratio(q, _norm(v)) - 5
             if score > best[0]:
                 best = (score, s["proyecto"])
-    return best[1] if best[0] >= 70 else None
+    return (best[1], best[0]) if best[0] >= WEAK_MATCH else (None, best[0])
 
 
 def propose_day(
@@ -376,8 +388,12 @@ def propose_day(
 ) -> list[dict[str, Any]]:
     """Lineas propuestas para un dia: lo que falte del patron + lo que respalda la evidencia.
 
-    Solo salen **marcadas** las lineas con evidencia real (reunion grabada o evento). Una evidencia
-    que cae dentro de una franja del patron la sustituye (con el proyecto de la franja).
+    * Una evidencia (reunion grabada o evento) que **cubre** una franja del patron (al menos la
+      mitad de la franja y con una duracion parecida) la sustituye, con el proyecto de la franja.
+    * Una evidencia corta dentro de una franja larga no la toca (ese rato ya esta en la franja).
+    * Una evidencia fuera de las franjas solo se propone si su titulo se parece a un proyecto.
+    * Solo sale **marcada** una linea con evidencia cuyo proyecto es seguro: la franja que cubre
+      o un parecido fuerte del titulo con un proyecto. El patron, nunca.
     """
     out: list[dict[str, Any]] = []
     covered = set()
@@ -398,18 +414,30 @@ def propose_day(
             a = minutes(ev.inicio)
             span = (a, a + round(hours * 60))
         slot_idx = None
+        inside_slot = False
         if span is not None:
             for i, s in enumerate(pattern):
-                if not s["inicio"] or i in covered or i in used_slots:
+                if not s["inicio"]:
                     continue
                 srange = (minutes(s["inicio"]), minutes(s["fin"]))
-                if _overlap(span, srange) * 2 >= min(span[1] - span[0], srange[1] - srange[0]):
+                length = max(1, srange[1] - srange[0])
+                ov = _overlap(span, srange)
+                if not ov:
+                    continue
+                similar = 0.5 <= (span[1] - span[0]) / length <= 1.5
+                if ov * 2 >= length and similar and i not in covered and i not in used_slots:
                     slot_idx = i
                     break
-        project = guess_project(ev.titulo, projects, pattern)
+                inside_slot = True
+        if slot_idx is None and inside_slot:
+            continue  # rato dentro de una franja (o de algo ya registrado): ya contado
+        project, score = guess_project_scored(ev.titulo, projects, pattern)
+        sure = score >= STRONG_MATCH
         if slot_idx is not None:
             used_slots.add(slot_idx)
-            project = project or pattern[slot_idx]["proyecto"]
+            if not sure:  # el titulo no dice otra cosa: el proyecto de la franja que cubre
+                project = pattern[slot_idx]["proyecto"]
+            sure = True
         if project is None:
             continue  # sin proyecto claro no se inventa uno
         span_txt = ""
@@ -425,7 +453,7 @@ def propose_day(
                 "horas": hours,
                 "descripcion": f"{ev.titulo}{span_txt}"[:200],
                 "origen": ev.origen,
-                "checked": True,
+                "checked": sure,
                 "variantes": [],
             }
         )

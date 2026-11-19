@@ -382,7 +382,9 @@ class Executor:
             profile = None
         transcript = output.read_transcript(self.folder)
         try:
-            new = plan.rebuild(raw, transcript, o, profile=profile, today=self.today)
+            new = plan.rebuild(
+                raw, transcript, o, profile=profile, today=self.today, user_edit=user_edit
+            )
         except ValueError as exc:
             from micnaga.brain.timesheets import LineError
 

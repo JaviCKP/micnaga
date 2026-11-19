@@ -652,6 +652,70 @@ def test_hours_panel_plan_apply_undo_and_days_off(fake_odoo: FakeOdoo) -> None:
     assert out["libres"] == ["2026-11-06"]
 
 
+def test_short_or_unrelated_evidence_never_pre_checks_a_guessed_project(
+    fake_odoo: FakeOdoo,
+) -> None:
+    from micnaga.brain.timesheets import Evidence
+
+    c = client(fake_odoo)
+    lines = c.timesheet_lines("2026-09-01", "2026-11-19")
+    pattern = timesheets.learn_pattern(lines)
+    projects = c.projects()
+    # 15 min dentro de la franja de 9:00-13:30: la franja sigue, sin linea extra
+    short = [Evidence("2026-11-12", "Llamada rápida", "10:00", 0.25, "reunion")]
+    out = timesheets.propose_day("2026-11-12", pattern, [], short, projects)
+    assert [(ln["origen"], ln["horas"], ln["checked"]) for ln in out] == [
+        ("patron", 4.5, False),
+        ("patron", 0.5, False),
+        ("patron", 2.0, False),
+        ("patron", 1.0, False),
+    ]
+    # fuera de las franjas: solo si el titulo se parece MUCHO a un proyecto sale marcada
+    evening = [
+        Evidence("2026-11-12", "Plataforma Atlas: revisión", "18:00", 1.0, "calendario"),
+        Evidence("2026-11-12", "Cena con amigos", "21:00", 2.0, "calendario"),
+    ]
+    out = timesheets.propose_day("2026-11-12", pattern, [], evening, projects)
+    extra = [ln for ln in out if ln["origen"] != "patron"]
+    assert [(ln["proyecto_id"], ln["checked"]) for ln in extra] == [(PROJECT_ATLAS, True)]
+
+
+def test_user_typed_contact_details_are_kept(fake_odoo: FakeOdoo, meeting: Path) -> None:
+    c = client(fake_odoo, read_only=True)
+    prof = capabilities.discover(c)
+    props = plan.build_crm(
+        [_raw("crear_contacto", {"nombre": "Ana Ruiz", "empresa_id": 41})],
+        business_transcript(),
+        c,
+        profile=prof,
+        today=TODAY,
+    )
+    _acta_with(meeting, props)
+    ex = Executor(meeting, odoo=lambda: client(fake_odoo), today=TODAY)
+    acta = ex.edit(props[0]["id"], {"email": "ana@cliente.es", "telefono": "600 000 000"})
+    d = acta["propuestas"][0]["datos"]
+    assert (d["email"], d["telefono"]) == ("ana@cliente.es", "600 000 000")
+
+
+def test_daily_odoo_check_backs_off_after_a_failure() -> None:
+    from micnaga.brain.service import BrainService
+
+    cfg = Config()
+    cfg.secretaria.enabled = True
+    cfg.secretaria.odoo_url, cfg.secretaria.odoo_db = "http://127.0.0.1:9", "x"
+    cfg.secretaria.odoo_login = "y"
+    calls: list[int] = []
+
+    def factory(_cfg: Config) -> Any:
+        calls.append(1)
+        raise OdooError("Odoo is not responding", "offline")
+
+    svc = BrainService(lambda: cfg, odoo_factory=factory)
+    svc._odoo_daily()
+    svc._odoo_daily()
+    assert calls == [1]  # el segundo tic no reintenta (una hora de espera)
+
+
 def test_weekly_nudge_only_on_friday_afternoon_once(fake_odoo: FakeOdoo) -> None:
     fri = datetime(2026, 11, 20, 16, 0)
     assert horas.should_nudge(fri, enabled=True, last=None)

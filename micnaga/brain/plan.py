@@ -204,10 +204,12 @@ def build_crm(
     *,
     profile: dict[str, Any] | None = None,
     today: date | None = None,
+    user_edit: bool = False,
 ) -> list[dict[str, Any]]:
     """Valida el plan del modelo. Con ``odoo`` (cliente de lectura) revalida cada registro y
     decide que sale marcado; sin el, nada sale marcado. ``profile``: perfil de capacidades
-    (sin el, solo los tipos de CRM de siempre)."""
+    (sin el, solo los tipos de CRM de siempre). ``user_edit``: lo escribio el usuario en la
+    revision (un correo o telefono tecleado no tiene por que haberse dictado en la reunion)."""
     from micnaga.brain import capabilities
 
     n = len(transcript.segments)
@@ -252,7 +254,7 @@ def build_crm(
             if p["tipo"] in _BUSINESS or _business_target(d):
                 ok = _validate_business(p, d, ctx)
             else:
-                ok = _validate_crm(p, d, blob, odoo, stages_cache)
+                ok = _validate_crm(p, d, blob, odoo, stages_cache, user_edit=user_edit)
                 datos = p.get("datos") or {}
                 if ok and p["tipo"] in ("nota_en_historial", "programar_actividad"):
                     ok = datos.get("modelo") in targets
@@ -512,7 +514,13 @@ def _expand_hours(p: dict[str, Any], d: dict[str, Any], ctx: _Ctx) -> list[dict[
 
 
 def _validate_crm(
-    p: dict[str, Any], d: dict[str, Any], blob: str, odoo: Any | None, stages: Any
+    p: dict[str, Any],
+    d: dict[str, Any],
+    blob: str,
+    odoo: Any | None,
+    stages: Any,
+    *,
+    user_edit: bool = False,
 ) -> bool:
     kind = p["tipo"]
     lead_id, partner_id = _int(d.get("oportunidad_id")), _int(d.get("partner_id"))
@@ -552,10 +560,11 @@ def _validate_crm(
         if not name:
             return False
         email = sc.clean_text(d.get("email"), 120) or None
-        if email and (not _EMAIL.match(email) or email.casefold().replace(" ", "") not in blob):
-            email = None  # solo si se dicto en la reunion
+        said = user_edit or (email or "").casefold().replace(" ", "") in blob
+        if email and (not _EMAIL.match(email) or not said):
+            email = None  # solo si se dicto en la reunion (o lo escribio el usuario)
         phone = sc.clean_text(d.get("telefono"), 40) or None
-        if phone and re.sub(r"\D", "", phone) not in re.sub(r"\D", "", blob):
+        if phone and not user_edit and re.sub(r"\D", "", phone) not in re.sub(r"\D", "", blob):
             phone = None
         datos = {
             "nombre": name,
@@ -802,6 +811,7 @@ def rebuild(
     *,
     profile: dict[str, Any] | None,
     today: date,
+    user_edit: bool = False,
 ) -> dict[str, Any]:
     """Una propuesta (forma del modelo) -> item validado, o ``ValueError`` con el motivo.
 
@@ -814,7 +824,7 @@ def rebuild(
             {**d, "fecha": (d.get("fechas") or [d.get("fecha")])[0]},
             explicit=d.get("explicito") is True,
         )
-    out = build_crm([raw], transcript, odoo, profile=profile, today=today)
+    out = build_crm([raw], transcript, odoo, profile=profile, today=today, user_edit=user_edit)
     if raw["tipo"] in sc.CORRECTION_TYPES or not out:
         raise ValueError("invalid")
     return out[0]

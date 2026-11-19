@@ -41,6 +41,7 @@ log = logging.getLogger(__name__)
 TOAST_WAIT_S = 120.0
 TICK_S = 60.0
 BOOT_WINDOW_H = 24
+ODOO_RETRY_S = 3600.0
 
 Notify = Callable[[str, str, float, int, int], None]
 """``notify(carpeta, titulo, duracion_s, hablantes, propuestas)``."""
@@ -78,6 +79,7 @@ class BrainService:
         self._started_at = time.time()
         self._nudge: Nudge | None = None
         self.now: Callable[[], datetime] = datetime.now
+        self._odoo_failed_at = 0.0
 
     def set_nudge(self, nudge: Nudge | None) -> None:
         """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
@@ -250,8 +252,8 @@ class BrainService:
     def _odoo_daily(self) -> None:
         """Perfil de capacidades una vez al dia y, el viernes por la tarde, el aviso de horas."""
         cfg = self.config.secretaria
-        if not cfg.odoo_url:
-            return
+        if not cfg.odoo_url or time.monotonic() - self._odoo_failed_at < ODOO_RETRY_S:
+            return  # sin Odoo o fallo reciente: no se reintenta el login en cada tic
         try:
             from micnaga.brain import capabilities, horas
 
@@ -274,6 +276,7 @@ class BrainService:
             if gaps and self._nudge is not None:
                 self._nudge(len(gaps))
         except Exception as exc:
+            self._odoo_failed_at = time.monotonic()
             log.info("odoo daily check skipped: %s", getattr(exc, "kind", type(exc).__name__))
 
     def _secretary(self) -> Any:

@@ -46,7 +46,8 @@
     if (!S.open) return;
     if (!r || !r.ok) { renderError(mic.t((r && r.error) || "library.err.op_failed")); return; }
     S.plan = r;
-    S.collapsed = new Set(r.dias.slice(3).map((d) => d.fecha));   // first days open, the rest folded
+    // first days open, the rest folded; a day with pre-checked lines is never folded
+    S.collapsed = new Set(r.dias.slice(3).filter((d) => !d.lineas.some((l) => l.checked)).map((d) => d.fecha));
     render();
     const first = document.querySelector(".hx-apply");
     if (first) first.focus({ preventScroll: true });
