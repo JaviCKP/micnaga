@@ -593,9 +593,14 @@ class LibraryApi:
         return fail("library.err.op_failed")
 
     def _hq_alive(self, meeting: Path) -> bool:
+        from micnaga.pipeline import hq
+        from micnaga.pipeline.worker import mutex_exists
+
         with self._hq_lock:
             proc = self._hq_procs.get(meeting.name)
-        return proc is not None and proc.poll() is None
+        if proc is not None and proc.poll() is None:
+            return True
+        return mutex_exists(hq.mutex_name(meeting))  # lanzado por otra ventana o antes
 
     def _hq_status(self, meeting: Path) -> dict[str, Any] | None:
         from micnaga.pipeline import hq

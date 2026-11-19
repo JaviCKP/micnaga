@@ -313,6 +313,13 @@
   function hqOffer() {
     hqShow("", null, [mic.t("library.hq_restore"), hqRestore]);
   }
+  function hqPhase(fase, v) {
+    if (fase === "descarga") return mic.t("library.hq_phase_descarga", v);
+    if (fase === "prepara") return mic.t("library.hq_phase_prepara", v);
+    if (fase === "transcribe") return mic.t("library.hq_phase_transcribe", v);
+    if (fase === "ensambla") return mic.t("library.hq_phase_ensambla", v);
+    return mic.t("library.hq_phase_cola", v);
+  }
   async function hqAsk() {
     if (!$("hq-bar").hidden) { hqHide(); return; }
     const r = await mic.call("hq", "info", S.folder);
@@ -320,7 +327,8 @@
     if (r.status && r.status.state === "running") { hqPoll(); return; }
     $("hq-btn").setAttribute("aria-pressed", "true");
     const vars = { min: r.minutes, mb: r.download_mb };
-    hqShow(mic.t(r.download_mb ? "library.hq_ask_dl" : "library.hq_ask", vars),
+    const ask = r.download_mb ? mic.t("library.hq_ask_dl", vars) : mic.t("library.hq_ask", vars);
+    hqShow(ask,
       [mic.t("library.hq_go"), hqStart], [mic.t("library.hq_cancel"), hqHide]);
   }
   async function hqStart() {
@@ -335,7 +343,7 @@
     const st = (r && r.ok && r.status) || null;
     if (st && st.state === "running") {
       const pct = Math.round((st.pct || 0) * 100);
-      hqShow(mic.t("library.hq_phase_" + (st.fase || "cola"), { pct }), null,
+      hqShow(hqPhase(st.fase, { pct }), null,
         [mic.t("library.hq_cancel"), () => mic.call("hq", "cancel", folder)]);
       const bar = $("hq-progress");
       bar.hidden = false;

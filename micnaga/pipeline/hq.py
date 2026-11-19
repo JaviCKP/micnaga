@@ -3,7 +3,8 @@
 Bajo demanda, desde la cabecera de la reunion. Corre en un **proceso aparte** (``micnaga hq``,
 prioridad BELOW_NORMAL, como el worker) y deja su estado en ``hq_estado.json`` dentro de la
 carpeta; la biblioteca lo lee para la linea de progreso. Cancelar = el fichero ``hq.cancelar``
-(se mira entre bloques) y, si no basta, terminar el proceso: nada se escribe hasta el final.
+(se mira entre bloques y durante la descarga). Nada se escribe hasta el final, asi que un cierre
+brusco del proceso deja la transcripcion intacta.
 
 * **Modelo**: ``processing.hq_model`` (``large-v3`` por defecto, ``large-v3-turbo`` como opcion;
   DECISIONS §HQ). Se descarga al primer uso con el descargador de ``micnaga.models`` (URL con
@@ -344,9 +345,10 @@ def improve(
     is_cancelled = cancelled or (lambda: (folder / CANCEL).is_file())
     t0 = time.monotonic()
     current = Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
-    created_work = _ensure_vad(folder, config, report)
     work = paths.work_dir(folder)
+    created_work = not work.is_dir()  # si se crea aqui, se borra al final (tambien si falla)
     try:
+        _ensure_vad(folder, config, report)
         vad: dict[str, Any] = json.loads((work / "05_vad.json").read_text(encoding="utf-8"))
         sr = config.capture.sample_rate
         total = sum(b - a for t in ("mic", "system") for a, b in vad[t]["chunks"]) or 1.0
