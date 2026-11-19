@@ -758,6 +758,9 @@ class UiHost:
             self._pillwin.run_js(f"micnaga.pill.setTitle({json.dumps(title or '')})")
 
     def _open_from_toast(self, folder: str) -> None:
+        resolve = getattr(self._brain, "resolve_folder", None)
+        if resolve is not None:  # la Secretaria pudo retitular la reunion despues del aviso
+            folder = str(resolve(folder))
         self.open_library(folder=folder)
         self._cb.on_open_meeting(folder)
 

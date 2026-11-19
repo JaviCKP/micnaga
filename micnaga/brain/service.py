@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
@@ -68,6 +69,7 @@ class BrainService:
         self._waiters: dict[str, list[Callable[[str, int], None]]] = {}
         self._renames: dict[str, str] = {}
         self._queued: set[str] = set()
+        self._started_at = time.time()
 
     # ------------------------------------------------------------------ ciclo de vida
 
@@ -92,6 +94,7 @@ class BrainService:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._started_at = time.time()
         self._thread = threading.Thread(target=self._run, name="micnaga-secretaria", daemon=True)
         self._thread.start()
         threading.Thread(target=self._boot, name="micnaga-secretaria-boot", daemon=True).start()
@@ -117,7 +120,8 @@ class BrainService:
                     folder = root / rec.folder
                     has = (folder / paths.TRANSCRIPT_JSON).is_file()
                     if has and not (folder / acta_io.ACTA_JSON).is_file():
-                        bstore.enqueue(db, rec.folder)
+                        # lo que fallo antes (sin sesion de Claude, sin red...) vuelve a probar
+                        bstore.enqueue(db, rec.folder, failed_before=self._started_at)
                 due = bstore.due(db)
             finally:
                 db.close()
@@ -364,6 +368,15 @@ class BrainService:
 
     # ------------------------------------------------------------------ estado
 
+    def resolve_folder(self, folder: str) -> str:
+        """Nombre actual de una carpeta que la Secretaria renombro (por su titulo)."""
+        with self._lock:
+            seen: set[str] = set()
+            while folder in self._renames and folder not in seen:
+                seen.add(folder)
+                folder = self._renames[folder]
+        return folder
+
     def status(self, folder: str) -> dict[str, Any] | None:
         with self._lock:
             s = self._status.get(folder)
@@ -403,6 +416,12 @@ class BrainService:
                 moved = self._renames.get(str(args.get("folder")))
             return {"ok": False, "error": "library.err.not_found", "moved": moved}
         acta = acta_io.read_acta(path)
+        if acta is not None:
+            from micnaga.brain.plan import relabel
+            from micnaga.pipeline import output
+
+            with contextlib.suppress(OSError, ValueError, KeyError):
+                relabel(acta, output.read_transcript(path))
         db = self._db()
         try:
             run = bstore.get_run(db, path.name)

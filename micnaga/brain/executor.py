@@ -148,8 +148,15 @@ class Executor:
                 p["estado"] = "aplicada" if undo is not None else "descartada"
                 p["deshacer"] = undo
                 p["error"] = None
+                if p.get("tipo") == "hablante":
+                    self._relabel(acta)  # la nota de Odoo que venga despues ya lleva el nombre
             acta_io.write_acta(self.folder, acta)  # cada linea queda registrada al momento
         return acta
+
+    def _relabel(self, acta: dict[str, Any]) -> None:
+        from micnaga.brain.plan import relabel
+
+        relabel(acta, output.read_transcript(self.folder))
 
     def _apply_one(self, p: dict[str, Any], acta: dict[str, Any]) -> dict[str, Any] | None:
         kind, d = p.get("tipo"), p.get("datos") or {}
@@ -249,6 +256,8 @@ class Executor:
             else:
                 p["estado"] = "deshecha"
                 p["error"] = None
+                if p.get("tipo") == "hablante":
+                    self._relabel(acta)
             acta_io.write_acta(self.folder, acta)
         return acta
 

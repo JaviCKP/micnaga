@@ -92,6 +92,19 @@ def build_acta(data: dict[str, Any], transcript: Transcript) -> dict[str, Any]:
     }
 
 
+def relabel(acta: dict[str, Any], transcript: Transcript) -> dict[str, Any]:
+    """Pone los nombres ACTUALES de los hablantes en las tareas (``responsable_id``): tras
+    renombrar a «Hablante 2» como «Marta Gil», el acta, ``acta.md`` y la nota de Odoo dicen
+    «Marta Gil»."""
+    for t in acta.get("tareas") or []:
+        sid = t.get("responsable_id")
+        if sid:
+            name = speaker_name(transcript, sid)
+            if name:
+                t["responsable"] = name
+    return acta
+
+
 # ============================================================================== correcciones
 
 

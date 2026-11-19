@@ -91,8 +91,13 @@ def get_run(db: Database, folder: str) -> Run | None:
     return None if row is None else _run(row)
 
 
-def enqueue(db: Database, folder: str, *, force: bool = False) -> Run:
-    """Crea o reabre la pasada de una reunion (``force`` reabre aunque este hecha)."""
+def enqueue(
+    db: Database, folder: str, *, force: bool = False, failed_before: float | None = None
+) -> Run:
+    """Crea o reabre la pasada de una reunion (``force`` reabre aunque este hecha).
+
+    ``failed_before``: reabre solo si fallo antes de ese instante (al arrancar la app: lo que
+    fallo sin sesion o sin red vuelve a probar, sin pisar un fallo de esta misma sesion)."""
     now = time.time()
     with db.transaction() as conn:
         conn.execute(
@@ -105,6 +110,13 @@ def enqueue(db: Database, folder: str, *, force: bool = False) -> Run:
                 "UPDATE secretary_runs SET state = 'pending', attempts = 0, error = NULL,"
                 " error_kind = NULL, next_try = 0, updated_at = ? WHERE folder = ?",
                 (now, folder),
+            )
+        elif failed_before is not None:
+            conn.execute(
+                "UPDATE secretary_runs SET state = 'pending', attempts = 0, error = NULL,"
+                " error_kind = NULL, next_try = 0, updated_at = ?"
+                " WHERE folder = ? AND state = 'failed' AND updated_at < ?",
+                (now, folder, failed_before),
             )
         row = conn.execute("SELECT * FROM secretary_runs WHERE folder = ?", (folder,)).fetchone()
     return _run(row)

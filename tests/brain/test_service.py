@@ -110,6 +110,33 @@ def test_slow_pass_does_not_hold_the_toast(meeting: Path) -> None:
         svc.stop()
 
 
+def test_boot_retries_what_failed_for_lack_of_a_claude_session(
+    fake_claude: FakeClaude, secrets_file: Path
+) -> None:
+    now = datetime.now().astimezone().replace(microsecond=0).isoformat()
+    folder = write_meeting(business_transcript(start=now), "2026-11-19_0900_reunion")
+    with open_database() as db:
+        bstore.ensure_schema(db)
+        bstore.enqueue(db, folder.name)
+        assert bstore.claim(db, folder.name)
+        bstore.fail(db, folder.name, "not logged in", "auth")
+        assert bstore.due(db) == []  # sin reintento automatico mientras la app sigue
+    log = fake_claude({"structured": canned.structured(with_crm=False)})
+    svc = BrainService(lambda: cfg())  # la app arranca de nuevo (ya con sesion)
+    svc.start()
+    try:
+        for _ in range(100):
+            if svc.resolve_folder(folder.name) != folder.name:
+                break
+            threading.Event().wait(0.1)
+        assert Path(str(log) + ".count").read_text() == "1"
+        final = svc.resolve_folder(folder.name)
+        assert final.endswith("_dental-triana-alcance-ampliado")
+        assert svc.resolve_folder("otra") == "otra"
+    finally:
+        svc.stop()
+
+
 def test_boot_picks_up_recent_meetings_without_acta(
     fake_claude: FakeClaude, secrets_file: Path
 ) -> None:
@@ -173,3 +200,21 @@ def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> N
     learned = svc.api("learned", {})
     assert learned["ok"] and len(learned["items"]) == 1
     assert svc.api("forget", {"index": 0})["items"] == []
+
+
+def test_boot_reopens_only_failures_from_before_this_start() -> None:
+    with open_database() as db:
+        bstore.ensure_schema(db)
+        for name in ("antes", "ahora"):
+            bstore.enqueue(db, name)
+            assert bstore.claim(db, name)
+        bstore.fail(db, "antes", "not logged in", "auth")
+        started = datetime.now().timestamp() + 1
+        bstore.fail(db, "ahora", "no network", "offline")  # fallo de esta sesion: se respeta
+        with db.transaction() as conn:
+            conn.execute(
+                "UPDATE secretary_runs SET updated_at = ? WHERE folder = 'ahora'", (started + 1,)
+            )
+        assert bstore.enqueue(db, "antes", failed_before=started).state == "pending"
+        again = bstore.enqueue(db, "ahora", failed_before=started)
+        assert again.state == "failed" and again.error_kind == "offline"

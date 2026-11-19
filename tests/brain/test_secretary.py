@@ -232,7 +232,11 @@ def test_apply_then_undo_everything(
     lead = fake_odoo.data["crm.lead"][0]
     assert (lead["stage_id"], lead["expected_revenue"]) == (3, 6900)
     notes = [m for m in fake_odoo.data["mail.message"] if m["res_id"] == 205]
-    assert any("Dental Triana: alcance ampliado" in str(m["body"]) for m in notes)
+    note = next(str(m["body"]) for m in notes if "alcance ampliado" in str(m["body"]))
+    # los hablantes ya renombrados en esa misma aplicacion salen con su nombre en la nota
+    assert "Marta Gil: Lista de plantillas" in note and "Hablante 2" not in note
+    assert acta_io.read_acta(folder)["tareas"][1]["responsable"] == "Marta Gil"  # type: ignore[index]
+    assert "Marta Gil: Lista" in (folder / acta_io.ACTA_MD).read_text(encoding="utf-8")
     acts = [a for a in fake_odoo.data["mail.activity"] if a.get("summary", "").startswith("Enviar")]
     assert acts and acts[0]["res_model_id"] == 300 and acts[0]["user_id"] == 7
 
