@@ -6,10 +6,12 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from micnaga import paths
 from micnaga.brain import acta as acta_io
 from micnaga.brain import research
-from micnaga.brain.claude import ClaudeRequest
+from micnaga.brain.claude import ClaudeOutputError, ClaudeRequest
 from micnaga.brain.mcp import Tools
 from micnaga.brain.secretary import Secretary
 from micnaga.config import Config
@@ -209,3 +211,58 @@ def test_a_full_pass_reads_the_previous_acta_and_fills_since(
     assert [x["estado"] for x in acta["desde_la_ultima"]] == ["hecho", "abierto"]
     assert acta["contexto"] and acta["fuentes"][0]["ref"] == case.PRIOR
     assert "## Desde la última vez" in (res.folder / "acta.md").read_text(encoding="utf-8")
+
+
+def test_people_come_from_named_speakers_and_the_calendar_event_but_not_me(
+    tmp_path: Path,
+) -> None:
+    from micnaga.brain.google import context
+
+    tr = case.transcript(case.CURRENT_LINES, "2026-11-19T10:30:00+01:00", s1="Hablante 1")
+    ev = {
+        "summary": "Dental Triana",
+        "attendees": [
+            {"email": "yo@example.com", "displayName": "Javier", "self": True},
+            {"email": "carlos@dentaltriana.example", "displayName": "Carlos Ruiz"},
+            {"email": "sala@resource.calendar.google.com", "resource": True},
+        ],
+    }
+    (tmp_path / "contexto_google.json").write_text(
+        json.dumps(context.to_context(ev)), encoding="utf-8"
+    )
+    assert research.people_for(tr, tmp_path) == ["Carlos Ruiz"]
+
+
+def test_a_namesake_from_another_client_is_not_a_candidate() -> None:
+    case.write_library()
+    with open_database() as db:
+        root = paths.meetings_root()
+        assert research.related(db, root, ["Carlos Pérez"], exclude=case.CURRENT) == []
+        assert [m["carpeta"] for m in research.related(db, root, ["Carlos"], exclude=None)] == [
+            case.PRIOR
+        ]
+
+
+def test_a_placeholder_acta_is_run_again_then_rejected(
+    fake_claude: FakeClaude, secrets_file: Path
+) -> None:
+    """Visto una vez con el modelo real: «titulo: x» y todo vacio. Se repite y, si sigue, falla
+    (la cola lo reintenta luego) en vez de guardar un acta vacia."""
+    _, current = case.write_library()
+    empty: dict[str, Any] = {
+        "titulo": "x",
+        "resumen": [],
+        "decisiones": [],
+        "tareas": [],
+        "preguntas_abiertas": [],
+        "proximos_pasos": [],
+        "correcciones": [],
+        "aprendizajes": [],
+        "contexto": None,
+        "desde_la_ultima": [],
+        "fuentes": [],
+    }
+    fake_claude({"structured": empty})
+    with pytest.raises(ClaudeOutputError):
+        Secretary(Config()).analyze(current, today="2026-11-19")
+    assert not (current / "acta.json").exists()

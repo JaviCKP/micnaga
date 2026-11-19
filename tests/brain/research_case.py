@@ -38,14 +38,14 @@ CURRENT_LINES = [
 ]
 
 
-def transcript(lines: list[tuple[str, str]], start: str) -> Transcript:
+def transcript(lines: list[tuple[str, str]], start: str, *, s1: str = "Carlos Ruiz") -> Transcript:
     segs, t = [], 1.0
     for spk, text in lines:
         segs.append(Segment(t, t + 4, spk, text))
         t += 5
     return Transcript(
         meeting=MeetingInfo(title="Reunión", start=start, duration_s=t),
-        speakers=[Speaker("me", "Yo"), Speaker("S1", "Carlos Ruiz")],
+        speakers=[Speaker("me", "Yo"), Speaker("S1", s1)],
         segments=segs,
         markers=[],
         engines=EnginesInfo(asr="parakeet"),
@@ -94,11 +94,13 @@ PRIOR_ACTA: dict[str, Any] = {
 }
 
 
-def write_library() -> tuple[Path, Path]:
-    """Las dos reuniones en la biblioteca de prueba; la anterior con su acta."""
+def write_library(*, named: bool = True) -> tuple[Path, Path]:
+    """Las dos reuniones en la biblioteca de prueba; la anterior con su acta. ``named=False``:
+    en la actual el cliente aun es «Hablante 1» (lo normal al analizar)."""
     prior = write_meeting(transcript(PRIOR_LINES, "2026-11-12T10:00:00+01:00"), PRIOR)
     acta_io.write_acta(prior, PRIOR_ACTA)
-    current = write_meeting(transcript(CURRENT_LINES, "2026-11-19T10:30:00+01:00"), CURRENT)
+    s1 = "Carlos Ruiz" if named else "Hablante 1"
+    current = write_meeting(transcript(CURRENT_LINES, "2026-11-19T10:30:00+01:00", s1=s1), CURRENT)
     return prior, current
 
 

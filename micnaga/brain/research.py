@@ -204,12 +204,19 @@ def related(
     rows: dict[str, dict[str, Any]] = {}
     for name in dict.fromkeys(p for p in people if p):
         for m in meetings_with(db, root, name, exclude=exclude, limit=20):
-            if not m["con_acta"]:
-                continue
+            if not m["con_acta"] or not any(_same_person(name, p) for p in m["participantes"]):
+                continue  # «Carlos» de otro cliente no cuenta: nombre completo si lo hay
             score[m["carpeta"]] = score.get(m["carpeta"], 0) + 1
             rows[m["carpeta"]] = m
     ranked = sorted(rows.values(), key=lambda m: (score[m["carpeta"]], m["fecha"]), reverse=True)
     return ranked[:limit]
+
+
+def _same_person(a: str, b: str) -> bool:
+    wa, wb = norm(a).split(), norm(b).split()
+    if len(wa) > 1 and len(wb) > 1:
+        return wa[:2] == wb[:2]  # nombre y primer apellido
+    return bool(wa and wb and wa[0] == wb[0])
 
 
 def people_for(transcript: Any, folder: Path) -> list[str]:
@@ -217,8 +224,10 @@ def people_for(transcript: Any, folder: Path) -> list[str]:
     names = _names(list(transcript.speakers))
     try:
         ctx = json.loads((folder / "contexto_google.json").read_text(encoding="utf-8"))
-        for a in ctx.get("asistentes") or []:
-            n = a.get("nombre") if isinstance(a, dict) else None
+        for a in ctx.get("asistentes") or []:  # google.context.to_context
+            if not isinstance(a, dict) or a.get("self"):
+                continue
+            n = a.get("nombre")
             if isinstance(n, str) and n.strip():
                 names.append(n.strip())
     except (OSError, ValueError, AttributeError):
@@ -341,7 +350,8 @@ class Seen:
         candidates: list[dict[str, Any]],
         odoo_url: str = "",
     ) -> None:
-        self.text = "\n".join(tool_texts)
+        text = "\n".join(tool_texts)  # JSON de las herramientas: URLs con «\/» o «&»
+        self.text = text + "\n" + text.replace("\\/", "/").replace("\\u0026", "&")
         self.root = root
         self.current = current
         self.candidates = {m["carpeta"] for m in candidates}

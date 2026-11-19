@@ -790,7 +790,7 @@ Basada en `integ/all` (popup nuevo + Secretaria). Verificado contra el Odoo 19.0
 
 Código nuevo en `micnaga/brain/google/`; cambios pequeños y aditivos en el runner, `secretary`,
 `executor`, `service`, `bridge`, la configuración y la interfaz. Guía:
-`docs/ONBOARDING_google.md`.
+`docs/ONBOARDING.md` §7.
 
 1. **Sin tokens de Google.** Micnaga usa los conectores oficiales de la cuenta de claude.ai del
    usuario; toda llamada, de lectura o de escritura, pasa por `claude -p`. Solo con la sesión de
@@ -957,7 +957,22 @@ que trae de fuera. El prompt pasa a la v3.
      correo como prueba. Deja las plantillas «abierto», con la tarea de Odoo como prueba.
    - No duplica la tarea existente: propone una nota en ella. Crea la acción nueva en el proyecto
      del cliente, con fecha y descripción.
-   - Medido: 12,8-14,3 s de `claude`, 6-7 turnos, unos 0,03-0,07 $ equivalentes, salida de unos
-     1,7-1,9 k tokens.
+   - Dos variantes:
+     - Cliente ya nombrado: 12,8-14,3 s de `claude`, 6-9 turnos, unos 0,03-0,07 $ equivalentes y
+       1,7-1,9 k tokens de salida.
+     - Cliente aún «Hablante 1», lo normal al analizar: no hay candidatas, así que el modelo lo
+       busca con `reuniones_con` por el nombre que se dice. 17-18 s, 10 turnos, unos 0,04 $.
    - Hasta que el brief no dijo «**siempre** una búsqueda de correo», el modelo no buscaba en el
      correo.
+   - Gmail y Drive reales devuelven `viewUrl` en el texto del resultado (comprobado: solo nombres
+     de campo). `Seen` recibe además el `structuredContent` y deshace `\/` y `\u0026`.
+   - Pasada real con Google y la investigación a la vez (transcripción sintética): 9,2 s, 4
+     turnos, `reuniones_con` y una búsqueda real en Gmail.
+8. **Acta de relleno**: una vez, el modelo real devolvió «titulo: x» con todo vacío. Ahora una
+   reunión con contenido cuyo acta llega sin resumen y con un título de relleno se analiza otra
+   vez; si se repite, `ClaudeOutputError` (la cola reintenta luego) y nunca se guarda vacía.
+9. **Candidatas**: solo con el mismo nombre y primer apellido (o el mismo nombre si solo hay uno).
+   Así un «Carlos» de otro cliente no cuenta. El propio usuario (`self` en el evento) no cuenta.
+10. **Sin verificar**: la investigación con Gmail real sobre un cliente real (solo con el correo
+    stub y una reunión sintética) y la línea de progreso con datos reales en la vista (solo los
+    textos, con el `claude` falso).

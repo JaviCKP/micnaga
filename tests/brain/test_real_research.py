@@ -36,9 +36,12 @@ def _find(items: list[dict[str, Any]], word: str) -> list[dict[str, Any]]:
     return [x for x in items if word in _n(str(x.get("texto", "")))]
 
 
-def test_real_research_first_then_a_better_acta(fake_odoo: FakeOdoo) -> None:
+@pytest.mark.parametrize("named", [True, False], ids=["named", "hablante_1"])
+def test_real_research_first_then_a_better_acta(fake_odoo: FakeOdoo, named: bool) -> None:
+    """``hablante_1``: el cliente aun no tiene nombre (lo normal al analizar); solo se le nombra
+    en la conversacion, asi que no hay candidatas y el modelo tiene que buscarlo."""
     case.seed_odoo(fake_odoo)
-    _, current = case.write_library()
+    _, current = case.write_library(named=named)
     cfg = odoo_config(Config(), fake_odoo)
     cfg.secretaria.mcp_servers = [case.mail_stub_spec(sys.executable)]
     seen: list[dict[str, Any]] = []
@@ -48,6 +51,7 @@ def test_real_research_first_then_a_better_acta(fake_odoo: FakeOdoo) -> None:
     acta, r = res.acta, res.result
     assert r is not None
     report = {
+        "case": "named" if named else "hablante_1",
         "wall_s": wall,
         "claude_s": r.duration_s,
         "turns": r.num_turns,

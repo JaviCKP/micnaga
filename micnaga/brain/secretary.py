@@ -363,8 +363,12 @@ class Secretary:
             )
 
         result = self.runner.run(req, on_event=on_tool)
+        if _placeholder(result.structured, transcript):
+            # visto una vez en la evaluacion real: un «titulo: x» con todo vacio. Otra pasada.
+            log.warning("claude returned a placeholder acta: running the analysis again")
+            result = self.runner.run(req, on_event=on_tool)
         data = result.structured
-        if data is None:
+        if data is None or _placeholder(data, transcript):
             raise ClaudeOutputError("claude returned no structured output")
         if with_crm and result.mcp_servers.get(MCP_SERVER) != "connected":
             log.warning(
@@ -376,7 +380,8 @@ class Secretary:
         status({"fase": "comprobando"})
         acta = plan.build_acta(data, transcript)
         seen = research.Seen(
-            [r.text for r in result.tool_results],
+            [r.text for r in result.tool_results]
+            + [json.dumps(r.structured, ensure_ascii=False) for r in result.tool_results],
             root=paths.meetings_root(self.config),
             current=folder.name,
             candidates=candidates,
@@ -489,6 +494,14 @@ def retitle_meeting(
         )
     )
     return folder, False
+
+
+def _placeholder(data: dict[str, Any] | None, transcript: Transcript) -> bool:
+    """Un acta vacia para una reunion con contenido (titulo de relleno, sin resumen)."""
+    if data is None or len(transcript.segments) < 3:
+        return False
+    title = str(data.get("titulo") or "").strip()
+    return not data.get("resumen") and len(title) < 4
 
 
 def _first_arg(args: dict[str, Any]) -> str | None:
