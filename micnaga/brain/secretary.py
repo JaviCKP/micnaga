@@ -20,6 +20,7 @@ La transcripcion nunca depende de esto: un fallo deja la reunion exactamente com
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -38,6 +39,7 @@ from micnaga.brain import acta as acta_io
 from micnaga.brain import store as bstore
 from micnaga.brain.claude import (
     _ENV_ALLOW,
+    ClaudeError,
     ClaudeOutputError,
     ClaudeRequest,
     ClaudeResult,
@@ -204,8 +206,11 @@ class Secretary:
         odoo_factory: OdooFactory | None = None,
         db_factory: Callable[[], Any] | None = None,
         timeout_s: float = 300.0,
+        budget_s: float = 420.0,
     ) -> None:
         self.config = config
+        self.budget_s = budget_s
+        """Tope de la pasada entera (con su posible repeticion por no haber investigado)."""
         self.runner = runner or ClaudeRunner(auth=config.secretaria.auth)  # type: ignore[arg-type]
         self._odoo_factory = odoo_factory or default_odoo_factory
         self._db_factory = db_factory
@@ -239,22 +244,61 @@ class Secretary:
             log.exception("google preparation failed: analysing without Google")
         return None
 
-    def _candidates(self, folder: Path, transcript: Transcript) -> list[dict[str, Any]]:
-        """Reuniones anteriores con los mismos participantes (``micnaga.brain.research``)."""
+    def _candidates(
+        self, folder: Path, transcript: Transcript, terms: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Reuniones anteriores con los mismos participantes y, aunque nadie tenga nombre, las
+        que hablan de lo mismo (empresas, nombres y siglas dichos; ``micnaga.brain.research``)."""
         try:
             from micnaga.brain import research
 
             people = research.people_for(transcript, folder)
-            if not people:
+            words = research.search_terms(terms or {})
+            if not people and not words:
                 return []
             root = paths.meetings_root(self.config)
-            found: list[dict[str, Any]] = self._with_db(
-                lambda db: research.related(db, root, people, exclude=folder.name)
-            )
-            return found
+
+            def lookup(db: Any) -> list[dict[str, Any]]:
+                found = research.related(db, root, people, exclude=folder.name) if people else []
+                seen = {m["carpeta"] for m in found}
+                more = research.prior_by_terms(db, root, words, exclude=folder.name)
+                found += [m for m in more if m["carpeta"] not in seen]
+                return found[: research.MAX_RELATED + 1]
+
+            out: list[dict[str, Any]] = self._with_db(lookup)
+            return out
         except Exception:
             log.exception("previous meetings lookup failed")
             return []
+
+    # ------------------------------------------------------------------ limpieza
+
+    def clean(self, folder: Path, *, on_status: StatusCallback | None = None) -> Any:
+        """Limpieza de la transcripcion con Haiku (``micnaga.brain.cleanup``), una vez por
+        reunion y antes del acta. Nunca falla: sin Claude se salta en silencio."""
+        if not self.config.secretaria.clean_transcript:
+            return None
+        try:
+            from micnaga.brain.cleanup import Cleaner
+
+            stats = Cleaner(self.config, self.runner, with_db=self._with_db).run(
+                folder, on_status=on_status
+            )
+            if stats is not None:
+                log.info(
+                    "transcript cleanup: %d/%d segments, %d merges, %d rejected, %.1f s, $%.4f%s",
+                    stats.corrected,
+                    stats.segments,
+                    stats.merges,
+                    stats.rejected,
+                    stats.seconds,
+                    stats.cost_usd,
+                    f" (skipped: {stats.skipped})" if stats.skipped else "",
+                )
+            return stats
+        except Exception:
+            log.exception("transcript cleanup failed: keeping the ASR text")
+            return None
 
     def _profile(self, client: Any) -> dict[str, Any] | None:
         """Perfil de capacidades (guardado si es de hoy). Sin el, solo lo de CRM de siempre."""
@@ -338,19 +382,19 @@ class Secretary:
         )
         from micnaga.brain import research
 
-        candidates = self._candidates(folder, transcript)
+        terms = research.extract(transcript)
+        candidates = self._candidates(folder, transcript, terms)
         gplan = self._google(folder)  # Google (solo lectura): micnaga.brain.google.analysis
+        services = list(gplan.services) if gplan else []
         research.extend(
             req,
             research.brief(
-                candidates,
-                odoo=with_crm,
-                google=list(gplan.services) if gplan else [],
-                mail=bool(extra),
+                candidates, odoo=with_crm, google=services, mail=bool(extra), terms=terms
             ),
         )
         if gplan is not None:
             gplan.extend(req, today=today or datetime.now().date().isoformat())
+        req.prompt += research.reminder()  # tras una transcripcion larga, lo ultimo que lee
 
         def on_tool(call: ToolCall) -> None:
             status(
@@ -362,11 +406,39 @@ class Secretary:
                 }
             )
 
+        started = time.monotonic()
         result = self.runner.run(req, on_event=on_tool)
-        if _placeholder(result.structured, transcript):
-            # visto una vez en la evaluacion real: un «titulo: x» con todo vacio. Otra pasada.
-            log.warning("claude returned a placeholder acta: running the analysis again")
-            result = self.runner.run(req, on_event=on_tool)
+        gaps = research.missing(
+            result, odoo=with_crm, gmail="gmail" in services, mail_servers=list(extra)
+        )
+        remaining = self.budget_s - (time.monotonic() - started)
+        if _placeholder(result.structured, transcript) or (gaps and remaining > 60):
+            # visto en la evaluacion real: un «titulo: x» con todo vacio, o un acta sin haber
+            # investigado nada (47 min, 0 herramientas). Una sola repeticion, con tope de tiempo.
+            log.warning("acta without research (%s) or placeholder: running it again", gaps)
+            retry = replace(req, timeout_s=max(60.0, min(req.timeout_s, remaining)))
+            if gaps:
+                calls = research.first_calls(
+                    terms, odoo=with_crm, gmail="gmail" in services, mail=bool(extra)
+                )
+                retry.prompt = req.prompt + research.nudge(gaps, calls)
+            first = result
+            try:
+                result = self.runner.run(retry, on_event=on_tool)
+            except ClaudeError:
+                if _placeholder(first.structured, transcript) or first.structured is None:
+                    raise
+                log.warning("second pass failed: keeping the first acta")
+                result = first
+            else:
+                if _placeholder(result.structured, transcript) and not _placeholder(
+                    first.structured, transcript
+                ):
+                    result = first
+            if result is not first:
+                result.cost_usd += first.cost_usd
+                result.tool_calls = first.tool_calls + result.tool_calls
+                result.tool_results = first.tool_results + result.tool_results
         data = result.structured
         if data is None or _placeholder(data, transcript):
             raise ClaudeOutputError("claude returned no structured output")
@@ -388,7 +460,16 @@ class Secretary:
             odoo_url=self.config.secretaria.odoo_url if with_crm else "",
         )
         acta.update(research.validate(data, transcript, seen))
-        proposals = plan.build_corrections(data.get("correcciones"), transcript)
+        known = [n for m in candidates for n in m.get("participantes") or []]
+        calendar = "\n".join(known)
+        if gplan is not None and gplan.context:
+            calendar += "\n" + json.dumps(gplan.context, ensure_ascii=False)
+        proposals = [  # un nombre para un hablante, solo si se dijo o se vio en alguna parte
+            p
+            for p in plan.build_corrections(data.get("correcciones"), transcript)
+            if p["tipo"] != "hablante"
+            or research.name_seen(p["datos"]["a"], transcript, seen.text, calendar)
+        ]
         if odoo is not None and odoo_info.get("estado") == "conectado":
             proposals += plan.build_crm(
                 data.get("propuestas"),
@@ -403,6 +484,7 @@ class Secretary:
         if odoo is not None and odoo_info.get("estado") == "conectado":
             acta["opciones"] = plan.options(odoo, profile, proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
+        _remember_names(result, acta)
         acta.update(
             version=acta_io.ACTA_VERSION,
             prompt_version=PROMPT_VERSION,
@@ -442,11 +524,14 @@ class Secretary:
             db.close()
 
     def _index(self, folder: Path, acta: dict[str, Any]) -> None:
+        from micnaga.brain import full_acta
+
+        text = acta_io.fts_text(acta)
+        with contextlib.suppress(OSError):  # el acta completa tambien se encuentra
+            text += "\n" + (folder / full_acta.FILE).read_text(encoding="utf-8")
         try:
             self._with_db(
-                lambda db: bstore.index_acta(
-                    db, folder.name, acta.get("titulo") or "", acta_io.fts_text(acta)
-                )
+                lambda db: bstore.index_acta(db, folder.name, acta.get("titulo") or "", text)
             )
         except Exception:
             log.exception("could not index the acta")
@@ -502,6 +587,24 @@ def _placeholder(data: dict[str, Any] | None, transcript: Transcript) -> bool:
         return False
     title = str(data.get("titulo") or "").strip()
     return not data.get("resumen") and len(title) < 4
+
+
+def _remember_names(result: ClaudeResult, acta: dict[str, Any]) -> None:
+    """Nombres de Odoo vistos en esta pasada (proyectos, empresas, contactos): vocabulario para
+    la limpieza de las proximas transcripciones."""
+    try:
+        from micnaga.brain import cleanup
+
+        texts = [
+            r.text
+            for r in result.tool_results
+            if r.name.rsplit("__", 1)[-1] in ("proyectos", "buscar_empresas", "buscar_contactos")
+        ]
+        names = cleanup.names_in_results(texts)
+        names += [str(p.get("nombre")) for p in (acta.get("opciones") or {}).get("proyectos") or []]
+        cleanup.remember_names(names)
+    except Exception:
+        log.debug("could not remember Odoo names", exc_info=True)
 
 
 def _first_arg(args: dict[str, Any]) -> str | None:

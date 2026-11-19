@@ -19,4 +19,4 @@ Este paquete es ligero al importarse: nada de numpy ni modelos. Modulos:
 
 from __future__ import annotations
 
-PROMPT_VERSION = 3
+PROMPT_VERSION = 4

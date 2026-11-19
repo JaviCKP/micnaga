@@ -11,7 +11,7 @@ import pytest
 from micnaga import paths
 from micnaga.brain import acta as acta_io
 from micnaga.brain import research
-from micnaga.brain.claude import ClaudeOutputError, ClaudeRequest
+from micnaga.brain.claude import ClaudeOutputError, ClaudeRequest, ClaudeResult, ToolCall
 from micnaga.brain.mcp import Tools
 from micnaga.brain.secretary import Secretary
 from micnaga.config import Config
@@ -266,3 +266,148 @@ def test_a_placeholder_acta_is_run_again_then_rejected(
     with pytest.raises(ClaudeOutputError):
         Secretary(Config()).analyze(current, today="2026-11-19")
     assert not (current / "acta.json").exists()
+
+
+# ============================================================================== investigar siempre
+
+
+class Scripted:
+    """Un runner falso en proceso: devuelve los resultados en orden y guarda los pedidos."""
+
+    def __init__(self, results: list[ClaudeResult]) -> None:
+        self.results = results
+        self.requests: list[ClaudeRequest] = []
+
+    def run(self, req: ClaudeRequest, on_event: Any = None) -> ClaudeResult:
+        self.requests.append(req)
+        return self.results.pop(0)
+
+    run_once = run
+
+
+def _acta(**extra: Any) -> dict[str, Any]:
+    return {
+        "titulo": "Dental Triana · acceso al panel",
+        "resumen": ["El presupuesto está aprobado; falta el acceso de recepción al panel."],
+        "decisiones": [],
+        "tareas": [],
+        "preguntas_abiertas": [],
+        "proximos_pasos": [],
+        "correcciones": [
+            {"tipo": "hablante", "hablante": "S1", "a": "Carlos Ruiz", "de": None, "seg": 0},
+            {"tipo": "palabra", "de": "panel", "a": "Panel", "seg": 3},
+        ],
+        "aprendizajes": [],
+        "contexto": None,
+        "desde_la_ultima": [],
+        "fuentes": [],
+        **extra,
+    }
+
+
+def _result(data: dict[str, Any], calls: list[tuple[str, dict[str, Any]]]) -> ClaudeResult:
+    return ClaudeResult(
+        structured=data,
+        text="",
+        cost_usd=0.02,
+        usage={},
+        duration_s=2.0,
+        num_turns=2 + len(calls),
+        model="claude-fake",
+        mcp_servers={"micnaga": "connected"},
+        tool_calls=[ToolCall(f"mcp__micnaga__{t}", a) for t, a in calls],
+    )
+
+
+def test_research_always_happens_without_named_speakers_or_calendar() -> None:
+    """La reunion real: el otro hablante sigue «Hablante 1», sin evento de Calendar; el modelo
+    contesto en 2 turnos sin una sola herramienta. Ahora: candidatos sacados de la propia
+    conversacion, las llamadas exactas del primer turno en el pedido, un recordatorio al final
+    y, si aun asi no investiga, una segunda pasada con «Falta investigar»."""
+    _, current = case.write_library(named=False)
+    assert research.people_for(output_transcript(current), current) == []  # nadie con nombre
+    assert not (current / "contexto_google.json").exists()
+    runner = Scripted(
+        [
+            _result(_acta(), []),  # contesta sin investigar
+            _result(_acta(), [("reuniones_con", {"texto": "Carlos"})]),
+        ]
+    )
+    sec = Secretary(Config(), runner=runner, db_factory=open_database)  # type: ignore[arg-type]
+    out = sec.analyze(current, today="2026-11-19")
+    first, second = (r.prompt for r in runner.requests)
+    assert '`reuniones_con("Carlos")`' in first and "`buscar_en_reuniones(" in first
+    assert f"`{case.PRIOR}`" in first  # la anterior, encontrada por el nombre dicho
+    assert "llama «Carlos» a alguien (solo puede ser `S1`)" in first  # pista para nombrarlo
+    assert first.rstrip().endswith(
+        "escribe el acta con lo que encuentres."
+    )  # tras la transcripcion
+    assert "## Falta investigar" in second and "reuniones anteriores" in second
+    assert out.acta["tool_calls"] == 1
+    kinds = [(p["tipo"], p["datos"].get("a")) for p in out.acta["propuestas"]]
+    assert ("hablante", "Carlos Ruiz") in kinds
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "Pedro Gómez",  # no se dice, ni sale en ninguna herramienta
+        "Carlos Pérez",  # «Carlos» se dice, pero el apellido es inventado
+    ],
+)
+def test_a_speaker_name_nobody_said_is_dropped(name: str) -> None:
+    _, current = case.write_library(named=False)
+    data = _acta()
+    data["correcciones"][0]["a"] = name
+    runner = Scripted([_result(data, [("reuniones_con", {"texto": "Carlos"})])])
+    out = Secretary(Config(), runner=runner, db_factory=open_database).analyze(  # type: ignore[arg-type]
+        current, today="2026-11-19"
+    )
+    assert len(runner.requests) == 1  # investigo: no se repite
+    assert all(p["tipo"] != "hablante" for p in out.acta["propuestas"])
+
+
+def _calls(*names: str, servers: dict[str, str] | None = None) -> ClaudeResult:
+    res = _result(_acta(), [])
+    res.tool_calls = [ToolCall(n, {}) for n in names]
+    res.mcp_servers = servers if servers is not None else {"micnaga": "connected"}
+    return res
+
+
+def test_what_counts_as_research_and_what_cannot_be_demanded() -> None:
+    gmail = "claude.ai Gmail"
+    up = {"micnaga": "connected", gmail: "connected", "correo": "connected"}
+    local = "mcp__micnaga__reuniones_con"
+    assert research.missing(_calls(servers=up), odoo=True, gmail=True) == [
+        "actas",
+        "odoo",
+        "gmail",
+    ]
+    done = _calls(local, "mcp__micnaga__buscar_empresas", "mcp__claude_ai_Gmail__search_threads")
+    done.mcp_servers = up
+    assert research.missing(done, odoo=True, gmail=True) == []
+    # el correo de un servidor extra (secretaria.mcp_servers) vale como busqueda de correo
+    extra = _calls(local, "mcp__correo__search_threads", servers=up)
+    assert research.missing(extra, odoo=False, gmail=False, mail_servers=["correo"]) == []
+    assert research.missing(_calls(local, servers=up), odoo=False, gmail=False) == []
+    # lo que no esta conectado no se exige: repetir no lo arreglaria
+    down = {"micnaga": "failed", gmail: "pending"}
+    assert research.missing(_calls(servers=down), odoo=True, gmail=True) == []
+    stub = _calls(local, servers={"micnaga": "connected", "correo": "failed"})
+    assert research.missing(stub, odoo=False, gmail=False, mail_servers=["correo"]) == []
+
+
+def test_terms_come_from_the_conversation() -> None:
+    tr = case.transcript(case.CURRENT_LINES, "2026-11-19T10:30:00+01:00", s1="Hablante 1")
+    terms = research.extract(tr)
+    assert terms["personas"] == ["Carlos"]
+    assert "WhatsApp" in terms["entidades"]
+    calls = research.first_calls(terms, odoo=True, gmail=True)
+    assert '`buscar_empresas("WhatsApp")`' in calls and '`buscar_contactos("Carlos")`' in calls
+    assert any("newer_than:90d" in c for c in calls)
+
+
+def output_transcript(folder: Path) -> Any:
+    from micnaga.pipeline import output
+
+    return output.read_transcript(folder)

@@ -1029,3 +1029,152 @@ bonito, simple y sin texto de relleno.
 9. **Sin verificar**: la revisión con Google real (la lista blanca y las lecturas son las del
    análisis, ya medidas en §20) y con el `claude` real dentro de la ventana (las capturas usan el
    falso; la latencia real es la del punto 5).
+
+## 23. Investigar siempre, transcripción limpia con Haiku y «Acta completa» (rama `feat/brain-cleanup`)
+
+Origen: una reunión real de 47 min con 2 hablantes. El otro hablante seguía como «Hablante 1» y
+no había evento de Calendar. El acta salió en 9 s, con 2 turnos y 0 herramientas (Odoo
+`conectado`): el modelo **decidió** no investigar. El prompt pasa a la v4.
+
+1. **Investigar siempre** (`research.extract`, `prior_by_terms`, `first_calls`, `missing`):
+   - **Candidatos sacados de la conversación** (heurística en Python, sin modelo):
+     - nombres dichos en voz alta («gracias, Pedro», «soy Marta»);
+     - entidades: palabras con mayúscula fuera del inicio de frase, siglas y el título;
+     - temas: palabras largas frecuentes.
+   - **Reuniones candidatas también por esos términos**, no solo por participantes.
+   - **El brief lleva las llamadas exactas del primer turno, con sus argumentos**:
+     - `buscar_en_reuniones("…")` y `reuniones_con("…")`;
+     - con Odoo, `buscar_empresas` / `buscar_contactos` / `proyectos`;
+     - con Gmail o la herramienta de correo, una búsqueda `"X" OR "Y" newer_than:90d`.
+   - **Un recordatorio corto al final del pedido**, después de la transcripción larga.
+   - **Si aun así falta una categoría** (actas, Odoo o correo), se repite **una vez** con
+     «Falta investigar». Va en la misma repetición que el acta de relleno de §21.8.
+     - Solo se exige lo que estaba `connected` en `system/init`.
+     - El correo vale por Gmail o por un servidor extra de `secretaria.mcp_servers`.
+     - Un primer borrador exigía siempre Gmail en cuanto había un servidor extra, y la pasada
+       real de §21.7 se repetía siempre: 63 s frente a los 30 s de ahora para los dos casos.
+   - **Tiempo acotado:** solo si quedan más de 60 s de `budget_s` (420 s) y con el tiempo que
+     quede.
+   - `buscar_en_reuniones` excluye la reunión actual y, si la frase entera no da nada, busca
+     palabra a palabra.
+2. **Hablantes sin nombre:**
+   - El brief trae pistas: «#12: `me` llama «Carlos» a alguien (solo puede ser `S1`)».
+   - Una propuesta `hablante` solo sobrevive si **cada palabra** del nombre (nombre y
+     apellidos) se dijo en la reunión, salió en una herramienta, está en el evento o entre los
+     participantes de las reuniones candidatas (`research.name_seen`). Un «Carlos Ruiz» cuando
+     solo se dijo «Carlos» no pasa.
+   - La validación `Seen` de §21 no cambia.
+3. **Limpieza con Haiku** (`brain/cleanup.py`, prompt corto `prompts/limpieza.md`):
+   - **Cuándo:** después del ASR y la diarización y antes del acta. La llama
+     `Secretary.clean` desde `BrainService._process`; no toca `pipeline/`.
+   - **La llamada:** `claude -p --model haiku` sin herramientas ni MCP, con `--json-schema`
+     `{cambios: [{ids, texto}]}`.
+   - **Ventanas:** de 5 párrafos (≤ 3000 caracteres) con 2 párrafos anteriores de solo lectura,
+     para poder unir en el borde y mantener nombres. 24 en paralelo, 60 s por ventana y 90 s en
+     total.
+   - **Vocabulario:**
+     - el glosario, `learned.md` y el contexto propio;
+     - `secretaria/vocabulario.json`: nombres de Odoo vistos en pasadas anteriores (proyectos,
+       empresas, contactos), que se rellena al terminar cada acta;
+     - los asistentes del evento, los hablantes con nombre y los participantes de otras
+       reuniones;
+     - los términos que se repiten en esta.
+4. **La seguridad está en Python** (`check`):
+   - **Comparación:** tokens normalizados (minúsculas, sin tildes ni puntuación). Cada número,
+     dicho o escrito, es un token con su valor: «cuatrocientos cincuenta mil» = «450.000»,
+     «tres coma cinco» = «3,5», «veinte por ciento» = «20 %».
+   - **Gratis:** puntuación (también los puntos falsos dentro del párrafo), mayúsculas, tildes,
+     cifras y palabras mal partidas o pegadas («micro soft» → «Microsoft»).
+   - **Cuentan como sustitución:**
+     - una palabra cambiada, que tiene que parecerse a lo oído (≥ 0,5);
+     - una sigla deletreada («pe cu ce» → «PQC») o una palabra del vocabulario (≥ 0,4) cuestan
+       1;
+     - el total ≤ max(2, 0,35 × tokens).
+   - **Se rechazan:**
+     - más de 2 palabras añadidas o quitadas (sin quitar muletillas ni añadir frases);
+     - cifras, meses o días que no se dijeron;
+     - un cambio de longitud > 30 %.
+   - **Uniones de párrafos** (petición del usuario: el ASR pone puntos falsos y parte frases):
+     mismo hablante, ids seguidos, pausas ≤ 1,5 s, ≤ 4 párrafos y ≤ 1600 caracteres; nunca se
+     parte un párrafo.
+   - **Al guardar se vuelve a leer la transcripción:** lo que la biblioteca cambió mientras
+     tanto no se pisa.
+5. **El original se conserva:**
+   - `Segment.text_original` (opcional, `types.py`) y `merged_from` en las uniones. El JSON de
+     siempre no cambia si no hay limpieza.
+   - Las palabras se realinean con el texto nuevo (`remap_words`): mismos tiempos donde la
+     palabra es la misma y tramo repartido donde cambió. `" ".join(w.w) == text` sigue valiendo
+     para el SRT y para el prompt.
+   - Se regeneran MD y SRT y se reindexa `segments_fts`, que busca el texto nuevo.
+   - Lo que se oyó, en los párrafos con alguna palabra cambiada, va a `original_fts` (tabla
+     propia, renombrada con la carpeta). La búsqueda de la biblioteca encuentra las dos formas.
+   - Una vez por reunión (`limpieza.json`, con las cifras).
+     - Sin Claude se salta en silencio y sin marca, así que se reintenta con la pasada
+       siguiente.
+     - Si falla alguna ventana (límite de uso, tiempo), se guarda lo corregido sin marca y la
+       pasada siguiente lo completa; el `text_original` de la primera vez se conserva.
+   - Ajuste «Corregir transcripción con IA» (`secretaria.clean_transcript`, encendido; solo
+     actúa con la Secretaria activada).
+   - **Límite conocido:** «Fusionar hablantes» (`pipeline.merge_segments`) rehace los segmentos
+     sin `text_original`. No se toca `pipeline/`.
+6. **Interfaz:**
+   - Las palabras corregidas llevan un subrayado punteado muy suave; al pasar el ratón,
+     «Se oyó: …». La puntuación, las tildes y las mayúsculas no se marcan.
+   - Un «Original» pequeño en la cabecera muestra el texto del ASR.
+   - La fase «Corrigiendo la transcripción…» aparece en la línea viva.
+7. **«Acta completa»** (`brain/full_acta.py`, `prompts/acta_completa.md`, `fullacta.js`):
+   - **Solo a petición:** botón junto a «Rehacer» en la tarjeta del acta.
+   - **La llamada:** un `claude -p` de solo lectura con el modelo del acta y
+     `--include-partial-messages` (el texto llega en streaming a la vista).
+     - **Entrada:** la transcripción limpia; el acta breve con `fuentes` / `contexto` /
+       `desde_la_ultima`, para no repetir la investigación; hablantes, fecha y duración;
+       `learned.md`.
+     - **Herramientas:** solo las locales de la biblioteca (`MICNAGA_TOOLS` vacío), con un tope
+       de 8 turnos.
+   - **Formato:** Markdown en estilo de acta formal: encabezado, orden del día, una sección por
+     tema con `[mm:ss]`, decisiones con motivo, acuerdos y tareas, preguntas, próximos pasos y
+     fuentes. Unas 450 palabras por cada 12 min.
+   - **Validación como en §21:**
+     - URLs no vistas → texto;
+     - actas inexistentes o no vistas, `modelo:id` no leídos y `[mm:ss]` fuera de la reunión →
+       fuera.
+   - **Dónde se guarda:** `acta_completa.md` + `acta_completa.json`, con la huella de la
+     transcripción: «desactualizada» si cambió. También se indexa en `acta_fts`.
+   - **Vista:** de documento dentro del panel. Cada `[mm:ss]` reproduce ese momento; acciones
+     Copiar, Abrir archivo y Regenerar. La segunda vez abre al instante (caché).
+8. **Medido** (sesión Max de este PC; coste en dólares equivalentes de `claude -p`):
+   - **Pruebas reales sintéticas:**
+     - limpieza (`test_real_cleanup.py`, 10 párrafos con errores sembrados): 3 pasadas de 3,
+       6,5-8,4 s y unos 0,0013 $. Arregla la sigla, el nombre del cliente, «cuatrocientos» y el
+       punto falso, y une la frase partida; la frase rara pero correcta queda intacta.
+       - Antes de esas tres, una pasada en la que Haiku dejó «cuatrocientos» en letra; desde
+         entonces el prompt lleva el ejemplo.
+     - «Acta completa» (`test_real_full_acta.py`): 10,3 s, 528 palabras, 10 secciones,
+       0,028 $.
+   - **La reunión real de 47 min** (copia en carpetas temporales, configuración y secretos
+     reales en solo lectura, sin escrituras en Odoo ni en Google; Google apagado en esta
+     configuración):
+     - **Limpieza:** 216 párrafos en 44 ventanas.
+       - 40,6 s con 24 en paralelo (ventana mediana 14,6 s, máxima 27,1 s); 0,077 $.
+       - 100 párrafos corregidos, 1 unión y 21 cambios rechazados: 8 sustituciones poco
+         parecidas, 7 uniones con pausa > 1,5 s, 5 cifras no dichas y 1 palabra quitada.
+       - Con 8 en paralelo eran 80 s; con 16, 57-60 s.
+     - **Acta:** 17,2 s, 7 turnos y 5 herramientas (`buscar_en_reuniones`, `reuniones_con` ×2,
+       `buscar_contactos`, `proyectos`); 0,135 $. Antes: 0 herramientas.
+     - **Acta completa:** 39,4 s, 2173 palabras, 16 secciones, 66 marcas de tiempo; 0,15 $.
+9. **De dónde salen los puntos falsos** (diagnóstico; no se toca `pipeline/`):
+   - La etapa 6 transcribe **por bloque de VAD**, y Parakeet puntúa cada bloque por separado:
+     un corte de VAD a mitad de frase deja un «.» y la mayúscula siguiente.
+   - La etapa 8 (`phrases.build_phrases`) corta la frase en **cada** fin de frase del ASR.
+   - La etapa 11 (`merge_segments`) vuelve a unir las del mismo hablante con pausa < 1,5 s,
+     salvo que el párrafo ya dure ≥ 45 s o tenga ≥ 700 caracteres y la palabra anterior termine
+     en punto.
+   - **Recuento en la reunión real** (45 fronteras entre párrafos del mismo hablante):
+     - 19 con pausa < 1,5 s, todas por el tope de longitud de un párrafo que acaba en «.»;
+     - 26 por una pausa ≥ 1,5 s;
+     - además, 286 «x. Y» y 7 «x. y» dentro de los párrafos.
+10. **Sin verificar:**
+    - La investigación con Gmail real (Google está apagado en la configuración real).
+    - El «Acta completa» y el subrayado dentro de la ventana WebView2: las capturas
+      (`python -m tests.ui.shots --only cleanup`) son de Chromium.
+    - 24 `claude -p` a la vez en el portátil i5-1245U (memoria y límites de uso).
