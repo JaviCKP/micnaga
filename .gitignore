@@ -27,3 +27,4 @@ config.toml
 
 # Capturas de ventanas reales: contienen parte del escritorio del usuario
 docs/screenshots/real_*.png
+.claude/worktrees/
