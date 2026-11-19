@@ -11,7 +11,7 @@ from micnaga.pipeline.stages.phrases import (
     text_similarity,
 )
 from micnaga.pipeline.stages.s05_vad import as_spans
-from micnaga.pipeline.stages.s08_assign import assign_speakers
+from micnaga.pipeline.stages.s08_assign import assign_speakers, snap_changes_to_sentence_ends
 from micnaga.types import Segment, SpeechRegion, Turn, Word
 
 
@@ -95,6 +95,42 @@ def test_remote_phrase_is_cut_at_a_turn_boundary_without_pause() -> None:
     # y el montaje no vuelve a unir las dos frases de S1 por encima de S2
     merged = merge_segments(phrases)
     assert [s.speaker for s in merged] == ["S1", "S2", "S1"]
+
+
+def _timed(texts: str, step: float = 0.3) -> list[Word]:
+    return [w(t, i * step, i * step + step) for i, t in enumerate(texts.split())]
+
+
+def test_speaker_change_inside_a_sentence_moves_to_the_sentence_end() -> None:
+    # podcast real: la frontera de la diarizacion cae en «hemos | llegado a la vida.»
+    times = [73.82, 74.38, 74.62, 74.86, 74.94, 74.94, 75.1, 75.34, 75.58, 75.82, 75.9, 76.3]
+    texts = "Juan, hemos llegado a la vida. Porque debo ir a trabajar."
+    words = [w(t, a, b) for t, a, b in zip(texts.split(), times, times[1:], strict=False)]
+    spk = ["S2", "S2", "S1", "S1", "S1", "S1", "S1", "S1", "S1", "S1", "S1"]
+    out = snap_changes_to_sentence_ends(words, spk)
+    assert out == ["S2"] * 6 + ["S1"] * 5
+    # retrasar: «Uy, qué bien. | ¿Qué» -> el «¿Qué» suelto vuelve con su oracion
+    words = _timed("Vale, perfecto. Hasta luego entonces. ¿Qué hora es?")
+    spk = ["S1", "S1", "S1", "S1", "S1", "S2", "S2", "S2"]
+    assert snap_changes_to_sentence_ends(words, spk) == spk  # ya cae en fin de oracion
+    spk = ["S1", "S1", "S1", "S1", "S2", "S2", "S2", "S2"]  # «Hasta luego | entonces.»
+    assert snap_changes_to_sentence_ends(words, spk) == ["S1"] * 5 + ["S2"] * 3
+
+
+def test_sentence_end_snap_keeps_real_short_replies_and_pauses() -> None:
+    # «Vale.» de S2 sin pausa tras una oracion sin punto de S1: S2 solo tiene esa palabra
+    words = _timed("entonces lo hacemos asi Vale. Bien")
+    spk = ["S1", "S1", "S1", "S1", "S2", "S1"]
+    assert snap_changes_to_sentence_ends(words, spk) == spk
+    # con pausa en el cambio no se toca nada
+    words = [w("vamos", 0.0, 0.3), w("a", 0.3, 0.5), w("ver", 1.0, 1.3), w("eso.", 1.3, 1.6)]
+    spk = ["S1", "S1", "S2", "S2"]
+    assert snap_changes_to_sentence_ends(words, spk) == spk
+    # demasiado lejos (> 0,6 s) o demasiadas palabras: tampoco
+    words = _timed("uno dos tres cuatro cinco seis siete ocho.")
+    spk = ["S1", "S1", "S2", "S2", "S2", "S2", "S2", "S2"]
+    assert snap_changes_to_sentence_ends(words, spk) == spk
+    assert snap_changes_to_sentence_ends([], []) == []
 
 
 def test_mic_phrase_is_not_cut_by_overlapping_remote_words() -> None:
