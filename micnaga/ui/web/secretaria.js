@@ -40,6 +40,12 @@
     historial_reciente: "secretaria.st.history",
     actividades_pendientes: "secretaria.st.activities",
     buscar_en_reuniones: "secretaria.st.meetings",
+    mis_partes_de_horas: "secretaria.st.hours",
+    proyectos: "secretaria.st.projects",
+    tareas: "secretaria.st.tasks",
+    calendario: "secretaria.st.calendar",
+    mis_actividades: "secretaria.st.my_activities",
+    mis_gastos: "secretaria.st.expenses",
   };
   function statusText(st) {
     if (!st) return mic.t("secretaria.st.reading");
@@ -116,7 +122,15 @@
       case "hablante": return mic.t("secretaria.p.speaker", { de: d.de, a: d.a });
       case "palabra": return mic.t("secretaria.p.word", { de: d.de, a: d.a, n: d.n || 1 });
       case "vincular_a_oportunidad": return mic.t("secretaria.p.link", { name: d.nombre || "#" + d.id });
-      case "nota_en_historial": return mic.t("secretaria.p.note", { name: d.nombre || "#" + d.id });
+      case "nota_en_historial":
+        return d.modelo === "project.task" || d.modelo === "project.project"
+          ? mic.t("secretaria.p.note_on", { name: d.nombre || "#" + d.id })
+          : mic.t("secretaria.p.note", { name: d.nombre || "#" + d.id });
+      case "crear_tarea":
+        return mic.t("secretaria.p.task", { what: d.nombre, proj: d.proyecto || "", d: d.fecha ? " · " + fmtDay(d.fecha) : "" });
+      case "crear_evento":
+        return mic.t("secretaria.p.event", { what: d.nombre, d: fmtDay(d.fecha) + (d.hora_inicio ? " " + d.hora_inicio : "") });
+      case "crear_gasto": return mic.t("secretaria.p.expense", { what: d.nombre, amount: money(d.importe) });
       case "crear_contacto": {
         const bits = [d.nombre, d.cargo, d.empresa].filter(Boolean).join(" · ");
         return mic.t("secretaria.p.contact", { who: bits });
@@ -138,7 +152,64 @@
     cambio_en_odoo: "secretaria.w.changed",
     parecida_pendiente: "secretaria.w.dup_activity",
     sin_comprobar: "secretaria.w.unchecked",
+    tarea_parecida: "secretaria.w.task_similar",
+    evento_parecido: "secretaria.w.event_similar",
   };
+
+  // ------------------------------------------------------------------ editable bits
+  const hfmt = (h) => (Math.round(h * 100) / 100).toLocaleString("es-ES", { maximumFractionDigits: 2 });
+
+  /** An hours line of the acta: hours and description edit in place (Python re-validates). */
+  function hoursLine(p, cb) {
+    const d = p.datos || {};
+    const box = el("span", "sec-pt sec-hours");
+    const main = el("span", "sec-pmain sec-hrow");
+    const h = el("input", "field-input num sec-hin");
+    h.type = "number"; h.min = "0.25"; h.max = "12"; h.step = "0.25";
+    h.value = String(d.horas);
+    h.disabled = p.estado !== "pendiente";
+    h.setAttribute("aria-label", mic.t("secretaria.horas.hours"));
+    const desc = el("input", "field-input sec-din");
+    desc.type = "text";
+    desc.value = d.descripcion || "";
+    desc.disabled = p.estado !== "pendiente";
+    desc.setAttribute("aria-label", mic.t("secretaria.horas.desc"));
+    main.append(h, el("span", "sec-hproj", d.proyecto || ""), desc);
+    box.append(main);
+    const save = async (changes) => {
+      const r = await call("edit", { folder: S.folder, id: p.id, cambios: changes });
+      if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
+      S.acta = r.acta;
+      cb.checked = true;
+      cb.dispatchEvent(new Event("change"));
+    };
+    h.addEventListener("change", () => save({ horas: parseFloat(h.value) }));
+    desc.addEventListener("change", () => save({ descripcion: desc.value }));
+    return box;
+  }
+
+  /** Attendees of an event: OFF by default; nobody is invited unless switched on here. */
+  function invites(p) {
+    const d = p.datos || {};
+    if (!d.invitados || !d.invitados.length) return null;
+    const row = el("span", "sec-inv");
+    row.append(el("span", "sec-inv-l", mic.t("secretaria.invite")));
+    for (const g of d.invitados) {
+      const b = el("button", "sec-chipbtn", g.nombre);
+      b.type = "button";
+      b.setAttribute("aria-pressed", String(!!g.on));
+      b.disabled = p.estado !== "pendiente";
+      b.addEventListener("click", async (e) => {
+        e.preventDefault();
+        const on = d.invitados.filter((x) => (x.id === g.id ? !x.on : x.on)).map((x) => x.id);
+        const r = await call("edit", { folder: S.folder, id: p.id, cambios: { invitados_on: on } });
+        if (r && r.ok) { S.acta = r.acta; render(); }
+      });
+      row.append(b);
+    }
+    row.append(el("span", "sec-inv-n", mic.t("secretaria.invite_note")));
+    return row;
+  }
 
   function renderProposals(a) {
     const props = (a.propuestas || []).filter((p) => p.estado !== "descartada");
@@ -170,14 +241,27 @@
     if (odooState && odooState !== "conectado" && odooState !== "sin_configurar") {
       box.append(el("p", "sec-warn", mic.t("secretaria.odoo." + odooState)));
     }
-    const groups = [["crm", "secretaria.group.crm"], ["correcciones", "secretaria.group.fix"]];
+    const groups = [
+      ["horas", "secretaria.group.horas"],
+      ["agenda", "secretaria.group.agenda"],
+      ["crm", "secretaria.group.crm"],
+      ["correcciones", "secretaria.group.fix"],
+    ];
     const checks = [];
     for (const [g, key] of groups) {
       const items = props.filter((p) => p.grupo === g);
       if (!items.length) continue;
       box.append(el("h4", "caps sec-gh", mic.t(key)));
       const ul = el("ul", "sec-plist");
+      let lastDay = null;
       for (const p of items) {
+        if (g === "horas" && p.datos && p.datos.fecha !== lastDay) {
+          lastDay = p.datos.fecha;
+          const total = items.filter((x) => x.datos && x.datos.fecha === lastDay).reduce((a, x) => a + (+x.datos.horas || 0), 0);
+          const dh = el("li", "sec-day");
+          dh.append(el("span", "sec-dayname", fmtDay(lastDay)), el("span", "sec-daytot tnum", hfmt(total) + " h"));
+          ul.append(dh);
+        }
         const li = el("li", "sec-p");
         li.dataset.state = p.estado;
         const lab = el("label", "sec-pl");
@@ -189,8 +273,8 @@
         checks.push(cb);
         const mark = el("span", "sec-mark");
         mark.innerHTML = p.estado === "aplicada" ? mic.icon("check") : p.estado === "fallida" ? mic.icon("x") : "";
-        const txt = el("span", "sec-pt");
-        txt.append(el("span", "sec-pmain", proposalText(p)));
+        const txt = g === "horas" ? hoursLine(p, cb) : el("span", "sec-pt");
+        if (g !== "horas") txt.append(el("span", "sec-pmain", proposalText(p)));
         const sub = [];
         if (p.motivo) sub.push(p.motivo);
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
@@ -198,6 +282,7 @@
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));
         lab.append(cb, mark, txt);
         li.append(lab);
+        if (p.tipo === "crear_evento") { const inv = invites(p); if (inv) txt.append(inv); }
         const s = stamp(p.t);
         if (s) li.append(s);
         if (p.estado === "aplicada") {

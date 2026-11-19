@@ -88,6 +88,8 @@ class UiCallbacks:
     on_resume_watching: Callable[[], None] = _noop
     on_open_library: Callable[[], None] = _noop
     on_open_settings: Callable[[], None] = _noop
+    on_open_timesheets: Callable[[], None] = _noop
+    """«Rellenar partes de horas» (bandeja o aviso del viernes)."""
     on_quit: Callable[[], None] = _noop
     # notificacion «Lista»
     on_open_meeting: Callable[[str], None] = _noop

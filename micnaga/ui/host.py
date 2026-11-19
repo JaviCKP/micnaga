@@ -308,7 +308,11 @@ class UiHost:
             self._restore_surfaces()
             return
         if self._want_tray:
-            self._tray = Tray(self._tray_callbacks(), language=self._config.ui.language)
+            self._tray = Tray(
+                self._tray_callbacks(),
+                language=self._config.ui.language,
+                timesheets=self._timesheets_available,
+            )
             self._tray.start()
         self._start_theme_watch()
         if on_ready is not None:
@@ -980,12 +984,36 @@ class UiHost:
             on_resume_watching=cb.on_resume_watching,
             on_open_library=self._tray_open_library,
             on_open_settings=self._tray_open_settings,
+            on_open_timesheets=self._tray_open_timesheets,
             on_quit=self._tray_quit,
         )
 
     def _tray_open_library(self) -> None:
         self.open_library()
         self._cb.on_open_library()
+
+    def _tray_open_timesheets(self) -> None:
+        self.open_timesheets()
+        self._cb.on_open_timesheets()
+
+    def _timesheets_available(self) -> bool:
+        """«Rellenar partes de horas» activo: Secretaria con Odoo que permite registrar horas
+        (segun el ultimo perfil de capacidades guardado; sin red)."""
+        sec = self._config.secretaria
+        if self._brain is None or not (sec.enabled and sec.odoo_url):
+            return False
+        try:
+            return bool(self._brain.api("caps", {}).get("horas"))
+        except Exception:
+            return False
+
+    def open_timesheets(self) -> None:
+        """La biblioteca con el panel «Partes de horas» abierto."""
+        self.open_library(view="horas")
+
+    def notify_hours(self, days: int) -> None:
+        """Aviso del viernes: faltan partes de horas esta semana."""
+        self._toast.show_hours(days, self.open_timesheets)
 
     def _tray_open_settings(self) -> None:
         self.open_settings()
@@ -1023,6 +1051,9 @@ class UiHost:
     def set_brain(self, brain: BrainPort | None) -> None:
         """La Secretaria (la crea el integrador); las ventanas abiertas despues la usan."""
         self._brain = brain
+        setter = getattr(brain, "set_nudge", None)
+        if setter is not None:
+            setter(self.notify_hours)
 
     def set_pill_title(self, title: str | None) -> None:
         """Titulo provisional en directo: se ve en la pastilla al pasar el raton."""
@@ -1108,14 +1139,19 @@ class UiHost:
             brain=self._brain,
         )
 
-    def open_library(self, folder: str | None = None, seek_s: float | None = None) -> None:
-        """Abre la biblioteca (opcionalmente directamente en una reunion y un instante)."""
+    def open_library(
+        self, folder: str | None = None, seek_s: float | None = None, view: str | None = None
+    ) -> None:
+        """Abre la biblioteca (opcionalmente directamente en una reunion y un instante, o en el
+        panel ``view="horas"``)."""
         t = i18n.t("library.window_title", self._config.ui.language)
         params: dict[str, Any] = {}
         if folder:
             params["folder"] = folder
             if seek_s is not None:
                 params["t"] = f"{seek_s:.2f}"
+        if view == "horas":
+            params["view"] = "horas"
         spec = self._normal_spec(
             "library", "library.html", t, 1120, 720, self.library_api(), params, min_size=(820, 540)
         )
@@ -1125,6 +1161,8 @@ class UiHost:
             if folder
             else None
         )
+        if view == "horas":
+            js = "window.micnaga && micnaga.horas && micnaga.horas.open()"
         self._open_normal(spec, js=js)
 
     def settings_api(self) -> SettingsApi:

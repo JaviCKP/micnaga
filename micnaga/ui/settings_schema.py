@@ -209,6 +209,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             _f("secretaria.odoo_url", "text"),
             _f("secretaria.odoo_db", "text"),
             _f("secretaria.odoo_login", "text"),
+            _f("secretaria.horas_nudge", "bool"),
             _f("secretaria.live_title", "bool", advanced=True),
             _f(
                 "secretaria.model_acta",
