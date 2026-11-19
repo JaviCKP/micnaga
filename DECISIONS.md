@@ -245,7 +245,21 @@ Fusionado desde `docs/agent_reports/wave1_*.md` (los informes siguen ahí con el
 9. `output_kind`: `speakers` si alguna vez hubo altavoces; `headphones` solo si todo fue auriculares.
    Bluetooth manos libres cuenta como auriculares (factor de forma o nombre).
 10. PortAudio en modo callback, búferes de 100 ms. Fuente caída → pista en ceros + reintento cada 1 s;
-    si fallan las dos al inicio, `start()` falla y limpia.
+    si fallan las dos al inicio, `start()` falla y limpia (también cierra el backend: ni
+    `PyAudio` ni hilo colgando).
+10b. **Un solo hilo para PortAudio por `WasapiBackend`** (PyAudioWPatch issue #23: algunos
+    controladores fallan si los objetos de PortAudio se usan desde varios hilos). `PyAudio()`,
+    enumeración/resolución, `pa.open`, `stop_stream`/`close`, `terminate` y el reinicio por
+    `DeviceNotFound` van a un hilo daemon propio (`wasapi.PortAudioThread`, con COM); el
+    `Recorder` y los protocolos de `sources.py` no cambian. Esperas acotadas (abrir 4 s, cerrar
+    3 s, por debajo del `JOIN_TIMEOUT_S` de 5 s del grabador); con el hilo colgado las llamadas
+    siguientes fallan en el acto y `close()` no espera. El backend es reutilizable tras
+    `close()` (el hilo vuelve a arrancar si el anterior ya salió). **No confirmable sin
+    conectar/desconectar dispositivos reales**: arreglo de diseño probado con un `PyAudio` falso
+    que registra el hilo de cada llamada. Pendiente: `Pa_Initialize` cuenta referencias en
+    todo el proceso; si el `LevelMonitor` del asistente (otro backend) sigue abierto cuando
+    empieza una grabación (`_on_levels_monitor` solo lo arranca si no se graba, pero nada lo
+    para al empezar a grabar), el reinicio de PortAudio no refrescaría la lista.
 11. RAM medida como memoria privada. `app.py` debe fijar `OPENBLAS_NUM_THREADS=1` antes de importar numpy.
 12. **Dispositivos reales no verificados:** desde la shell de los agentes PyAudioWPatch ve 0 dispositivos
     y COM no encuentra endpoints; nada se grabó de verdad. Medido en sintético: 2,2 % de un núcleo, 43 MB.

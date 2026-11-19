@@ -21,16 +21,38 @@ Decisiones
   dispositivo conectado despues puede no aparecer. Si no se encuentra el dispositivo nuevo, se
   reinicializa PortAudio (parar los dos flujos, ``terminate``, nuevo ``PyAudio()``, reabrir los
   dos); el micro pierde unos cientos de ms que quedan como ceros. (Sin verificar en hardware.)
+  ``Pa_Initialize`` cuenta referencias en todo el proceso: si otro ``WasapiBackend`` (p. ej. el
+  ``LevelMonitor`` del asistente) tiene PortAudio abierto a la vez, el reinicio no refresca la
+  lista de dispositivos.
+* **Un solo hilo para PortAudio.** Algunos controladores WASAPI fallan si los objetos de
+  PortAudio se usan desde varios hilos (PyAudioWPatch, issue #23), y el grabador abre en el hilo
+  de quien llama a ``start``, reengancha desde el hilo de cada pista y cierra desde otros. Por
+  eso **todo** lo que toca PortAudio en un ``WasapiBackend`` (crear ``PyAudio()``, enumerar y
+  resolver dispositivos, ``pa.open``, ``stop_stream``/``close``, ``terminate`` y el reinicio)
+  se ejecuta en un hilo propio del backend (:class:`PortAudioThread`, con COM inicializado).
+  Lo que se pide desde ese mismo hilo se ejecuta en linea (el reinicio llama a
+  ``_suspend``/``_resume`` desde dentro de la apertura). El callback sigue en el hilo de
+  PortAudio y ``read()`` sigue siendo una lectura de cola sin bloqueos en el hilo de la pista;
+  ``probe()`` (solo COM) se queda en el hilo de quien sondea.
+  Toda espera esta acotada (``OPEN_TIMEOUT_S``/``CLOSE_TIMEOUT_S``, por debajo de los 5 s con
+  que ``Recorder.stop`` espera a sus hilos): un controlador colgado da ``PortAudioTimeout`` (un
+  ``SourceError``), se registra y se sigue; mientras siga colgado, las llamadas siguientes
+  fallan en el acto. Una apertura que termina tarde cierra su propio flujo. ``close()`` pide al
+  hilo que cierre todo, haga ``terminate`` y salga, y lo espera como mucho ``CLOSE_TIMEOUT_S``;
+  es idempotente y, si el backend se vuelve a usar, el hilo arranca de nuevo (solo cuando el
+  anterior ya ha salido, para no tener dos hilos con PortAudio). **No se puede confirmar sin
+  conectar y desconectar dispositivos reales**: es un arreglo de diseno probado con fakes.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import queue
 import threading
 import time
 from collections.abc import Callable, Iterable
-from typing import Any
+from typing import Any, Generic, TypeVar, cast
 
 import numpy as np
 
@@ -46,6 +68,13 @@ from micnaga.capture.sources import (
 log = logging.getLogger(__name__)
 
 BUFFER_S = 0.1
+OPEN_TIMEOUT_S = 4.0
+"""Espera maxima de una apertura (incluido un reinicio de PortAudio)."""
+CLOSE_TIMEOUT_S = 3.0
+"""Espera maxima de un cierre y de la salida del hilo en ``WasapiBackend.close``."""
+THREAD_NAME = "micnaga-portaudio"
+
+T = TypeVar("T")
 
 Resolver = Callable[[Any, bool], dict[str, Any]]
 """``(PyAudio, permitir_defecto) -> info dict`` del dispositivo de PortAudio de un punto final.
@@ -57,6 +86,10 @@ desfasado si PortAudio no se ha reiniciado)."""
 
 class DeviceNotFound(SourceError):
     """PortAudio no ve (todavia) el dispositivo pedido: se reinicializa PortAudio y se reintenta."""
+
+
+class PortAudioTimeout(SourceError):
+    """El hilo de PortAudio no respondio a tiempo (controlador colgado)."""
 
 
 def _norm(name: str) -> str:
@@ -86,8 +119,179 @@ def pick_device(endpoint_name: str, candidates: Iterable[dict[str, Any]]) -> dic
     return None
 
 
+# ------------------------------------------------------------------ hilo de PortAudio
+
+
+class _Job(Generic[T]):
+    """Una llamada encolada al hilo de PortAudio."""
+
+    def __init__(self, fn: Callable[[], T], on_abandoned: Callable[[T], None] | None) -> None:
+        self.fn = fn
+        self.on_abandoned = on_abandoned
+        self.lock = threading.Lock()
+        self.done = threading.Event()
+        self.abandoned = False
+        """Quien llamo dejo de esperar (tiempo agotado)."""
+        self.result: T | None = None
+        self.error: Exception | None = None
+
+    def run(self) -> None:
+        """Se ejecuta en el hilo de PortAudio."""
+        with self.lock:
+            if self.abandoned:  # caduco en la cola: ya nadie espera el resultado
+                self.done.set()
+                return
+        result: T | None = None
+        error: Exception | None = None
+        try:
+            result = self.fn()
+        except Exception as exc:
+            error = exc
+        with self.lock:
+            self.result, self.error = result, error
+            self.done.set()
+            late = self.abandoned
+        if not late:
+            return
+        if error is not None:
+            log.warning("late PortAudio call failed: %s", error)
+        elif self.on_abandoned is not None:
+            log.warning("late PortAudio call finished; undoing it")
+            try:
+                self.on_abandoned(cast(T, result))
+            except Exception:
+                log.exception("undoing a late PortAudio call failed")
+
+    def outcome(self) -> T:
+        if self.error is not None:
+            raise self.error
+        return cast(T, self.result)
+
+
+class PortAudioThread:
+    """Hilo dedicado (daemon) que ejecuta en serie las llamadas a PortAudio.
+
+    Arranca con el primer :meth:`call`; :meth:`stop` le pide salir (antes ejecuta ``on_exit`` en
+    el propio hilo) y espera un tiempo acotado. Tras ``stop`` puede volver a arrancar.
+    """
+
+    def __init__(
+        self, name: str = THREAD_NAME, *, on_exit: Callable[[], None] | None = None
+    ) -> None:
+        self._name = name
+        self._on_exit = on_exit
+        self._lock = threading.Lock()
+        self._thread: threading.Thread | None = None
+        self._queue: queue.SimpleQueue[_Job[Any] | None] | None = None
+        self._stuck: _Job[Any] | None = None
+        self._local = threading.local()
+
+    @property
+    def thread(self) -> threading.Thread | None:
+        """El hilo actual o el ultimo (puede haber terminado)."""
+        return self._thread
+
+    @property
+    def running(self) -> bool:
+        """Arrancado y sin peticion de salida."""
+        return self._queue is not None
+
+    def on_thread(self) -> bool:
+        return bool(getattr(self._local, "owner", False))
+
+    def call(
+        self,
+        fn: Callable[[], T],
+        *,
+        timeout: float,
+        on_abandoned: Callable[[T], None] | None = None,
+    ) -> T:
+        """Ejecuta ``fn`` en el hilo (en linea si ya se esta en el) y devuelve su resultado.
+
+        Lanza ``PortAudioTimeout`` si no termina en ``timeout`` s o si el hilo sigue colgado de
+        una llamada anterior. Si ``fn`` termina despues de agotarse el tiempo, se llama a
+        ``on_abandoned(resultado)`` en el hilo (p. ej. para cerrar un flujo que nadie recogera).
+        """
+        if self.on_thread():
+            return fn()
+        with self._lock:
+            stuck = self._stuck
+            if stuck is not None and not stuck.done.is_set():
+                raise PortAudioTimeout("PortAudio thread is still stuck in a previous call")
+            q = self._ensure_started()
+            job: _Job[T] = _Job(fn, on_abandoned)
+            q.put(job)
+        if not job.done.wait(timeout):
+            with job.lock:
+                timed_out = not job.done.is_set()
+                if timed_out:
+                    job.abandoned = True
+            if timed_out:
+                with self._lock:
+                    self._stuck = job
+                raise PortAudioTimeout(f"PortAudio call did not finish in {timeout:.1f} s")
+        return job.outcome()
+
+    def _ensure_started(self) -> queue.SimpleQueue[_Job[Any] | None]:
+        """Con ``self._lock`` tomado."""
+        old = self._thread
+        if self._queue is not None and old is not None and old.is_alive():
+            return self._queue
+        if old is not None and old.is_alive():
+            raise PortAudioTimeout("the previous PortAudio thread has not exited yet")
+        q: queue.SimpleQueue[_Job[Any] | None] = queue.SimpleQueue()
+        thread = threading.Thread(target=self._run, args=(q,), name=self._name, daemon=True)
+        self._thread, self._queue, self._stuck = thread, q, None
+        thread.start()
+        return q
+
+    def stop(self, timeout: float) -> bool:
+        """Pide salir y espera como mucho ``timeout`` s (nada si se sabe colgado).
+
+        Devuelve ``True`` si el hilo ya no existe. Idempotente.
+        """
+        with self._lock:
+            thread, q, stuck = self._thread, self._queue, self._stuck
+            self._queue = None
+        if thread is None:
+            return True
+        if q is not None:
+            q.put(None)
+        if self.on_thread():  # no puede esperarse a si mismo: saldra al acabar la llamada
+            return True
+        hung = stuck is not None and not stuck.done.is_set()
+        thread.join(0.0 if hung else timeout)
+        if thread.is_alive():
+            log.error("PortAudio thread did not exit in %.1f s (driver hung?)", timeout)
+            return False
+        return True
+
+    def _run(self, q: queue.SimpleQueue[_Job[Any] | None]) -> None:
+        self._local.owner = True
+        with contextlib.ExitStack() as stack:
+            try:
+                stack.enter_context(devices.com_initialized())
+            except Exception:
+                log.warning("could not initialise COM on the PortAudio thread", exc_info=True)
+            try:
+                while (job := q.get()) is not None:
+                    job.run()
+            finally:
+                if self._on_exit is not None:
+                    try:
+                        self._on_exit()
+                    except Exception:
+                        log.exception("PortAudio cleanup failed")
+
+
+# ------------------------------------------------------------------ fuentes y backend
+
+
 class PortAudioSource:
-    """Un flujo de PortAudio en modo callback con paquetes sellados con QPC."""
+    """Un flujo de PortAudio en modo callback con paquetes sellados con QPC.
+
+    ``open``/``close`` se ejecutan en el hilo de PortAudio del backend; ``read`` no.
+    """
 
     def __init__(
         self,
@@ -111,9 +315,14 @@ class PortAudioSource:
     # --- ciclo de vida
 
     def open(self) -> None:
-        self._open_stream(self._backend.pyaudio())
+        self._backend.call(
+            lambda: self._open_stream(self._backend.pyaudio()),
+            timeout=self._backend.open_timeout_s,
+            on_abandoned=lambda _none: self._suspend(),
+        )
 
     def _open_stream(self, pa: Any) -> None:
+        """En el hilo de PortAudio."""
         import pyaudiowpatch as pyaudio
 
         dev = self._resolver(pa, self._allow_default)
@@ -142,7 +351,8 @@ class PortAudioSource:
             raise SourceError(f"cannot open {self.info.name!r}: {exc}") from exc
 
     def _suspend(self) -> None:
-        """Para el flujo sin marcar la fuente como cerrada (reinicio de PortAudio)."""
+        """Para el flujo sin marcar la fuente como cerrada (reinicio de PortAudio). En el hilo
+        de PortAudio."""
         stream, self._stream = self._stream, None
         if stream is not None:
             try:
@@ -152,6 +362,9 @@ class PortAudioSource:
                 log.exception("closing stream for %s", self.info.name)
 
     def _resume(self, pa: Any) -> None:
+        """Reabre tras un reinicio de PortAudio. En el hilo de PortAudio."""
+        if self._closed:
+            return
         self._allow_default = True
         try:
             self._open_stream(pa)
@@ -172,51 +385,122 @@ class PortAudioSource:
         if self._closed:
             return
         self._closed = True
+        if not self._backend.can_call():
+            return  # el backend ya se cerro: su hilo cerro todos los flujos al salir
+        try:
+            self._backend.call(self._close_here, timeout=self._backend.close_timeout_s)
+        except PortAudioTimeout as exc:
+            log.error("closing %s: %s", self.info.name, exc)
+
+    def _close_here(self) -> None:
         self._suspend()
         self._backend.forget(self)
 
 
 class WasapiBackend:
-    """Implementa ``CaptureBackend`` sobre PyAudioWPatch + pycaw."""
+    """Implementa ``CaptureBackend`` sobre PyAudioWPatch + pycaw.
 
-    def __init__(self) -> None:
+    ``_pa`` y ``_sources`` solo se tocan desde el hilo de PortAudio (:class:`PortAudioThread`),
+    asi que no necesitan cerrojo.
+    """
+
+    def __init__(
+        self,
+        *,
+        open_timeout_s: float = OPEN_TIMEOUT_S,
+        close_timeout_s: float = CLOSE_TIMEOUT_S,
+    ) -> None:
+        self.open_timeout_s = open_timeout_s
+        self.close_timeout_s = close_timeout_s
         self._pa: Any = None
-        self._lock = threading.RLock()
         self._sources: list[PortAudioSource] = []
+        self._runner = PortAudioThread(on_exit=self._shutdown_here)
 
-    # --- PortAudio
+    # --- hilo de PortAudio
+
+    @property
+    def portaudio_thread(self) -> threading.Thread | None:
+        """El hilo de PortAudio actual o el ultimo (diagnostico y tests)."""
+        return self._runner.thread
+
+    def can_call(self) -> bool:
+        """Hay un hilo de PortAudio en marcha al que pedir algo (o ya se esta en el)."""
+        return self._runner.running or self._runner.on_thread()
+
+    def call(
+        self,
+        fn: Callable[[], T],
+        *,
+        timeout: float,
+        on_abandoned: Callable[[T], None] | None = None,
+    ) -> T:
+        """Ejecuta ``fn`` en el hilo de PortAudio (ver :meth:`PortAudioThread.call`)."""
+        return self._runner.call(fn, timeout=timeout, on_abandoned=on_abandoned)
 
     def pyaudio(self) -> Any:
-        with self._lock:
-            if self._pa is None:
-                import pyaudiowpatch as pyaudio
+        """La instancia de ``PyAudio`` (creada en el hilo de PortAudio)."""
+        return self.call(self._pyaudio_here, timeout=self.open_timeout_s)
 
-                self._pa = pyaudio.PyAudio()
-            return self._pa
+    def _pyaudio_here(self) -> Any:
+        if self._pa is None:
+            import pyaudiowpatch as pyaudio
+
+            self._pa = pyaudio.PyAudio()
+        return self._pa
 
     def forget(self, src: PortAudioSource) -> None:
-        with self._lock:
-            if src in self._sources:
-                self._sources.remove(src)
+        """En el hilo de PortAudio."""
+        if src in self._sources:
+            self._sources.remove(src)
 
     def _reinit_portaudio(self) -> None:
         """Reinicia PortAudio para que vea los dispositivos nuevos (ver docstring del modulo)."""
+        self.call(self._reinit_here, timeout=self.open_timeout_s)
+
+    def _reinit_here(self) -> None:
         import pyaudiowpatch as pyaudio
 
-        with self._lock:
-            log.info("re-initialising PortAudio to refresh the device list")
-            sources = list(self._sources)
-            for s in sources:
-                s._suspend()
-            if self._pa is not None:
-                self._pa.terminate()
-            self._pa = pyaudio.PyAudio()
-            for s in sources:
-                s._resume(self._pa)
+        log.info("re-initialising PortAudio to refresh the device list")
+        sources = list(self._sources)
+        for s in sources:
+            s._suspend()
+        pa, self._pa = self._pa, None
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                log.exception("PortAudio terminate failed")
+        self._pa = pyaudio.PyAudio()
+        for s in sources:
+            s._resume(self._pa)
+
+    def _shutdown_here(self) -> None:
+        """Cierra todos los flujos y hace ``terminate`` (al salir el hilo de PortAudio)."""
+        for s in list(self._sources):
+            try:
+                s.close()
+            except Exception:
+                log.exception("closing source %s failed", s.info.name)
+        self._sources.clear()
+        pa, self._pa = self._pa, None
+        if pa is not None:
+            try:
+                pa.terminate()
+            except Exception:
+                log.exception("PortAudio terminate failed")
 
     # --- fabrica
 
     def open_system(self) -> AudioSource:
+        return self._open_job(self._open_system_here)
+
+    def open_mic(self) -> AudioSource:
+        return self._open_job(self._open_mic_here)
+
+    def _open_job(self, fn: Callable[[], PortAudioSource]) -> AudioSource:
+        return self.call(fn, timeout=self.open_timeout_s, on_abandoned=_close_late_source)
+
+    def _open_system_here(self) -> PortAudioSource:
         with devices.com_initialized():
             info = devices.default_endpoint(devices.E_RENDER, devices.E_CONSOLE)
         if info is None:
@@ -234,9 +518,9 @@ class WasapiBackend:
             except (OSError, LookupError) as exc:
                 raise SourceError(f"no loopback for {info.name!r}: {exc}") from exc
 
-        return self._open(info, resolve, retry_after_reinit=True)
+        return self._open_here(info, resolve)
 
-    def open_mic(self) -> AudioSource:
+    def _open_mic_here(self) -> PortAudioSource:
         with devices.com_initialized():
             info = devices.default_endpoint(devices.E_CAPTURE, devices.E_COMMUNICATIONS)
         if info is None:
@@ -266,27 +550,25 @@ class WasapiBackend:
             except (OSError, LookupError) as exc:
                 raise SourceError(f"no capture device: {exc}") from exc
 
-        return self._open(info, resolve, retry_after_reinit=True)
+        return self._open_here(info, resolve)
 
-    def _open(
-        self, info: EndpointInfo, resolve: Resolver, *, retry_after_reinit: bool
-    ) -> AudioSource:
+    def _open_here(self, info: EndpointInfo, resolve: Resolver) -> PortAudioSource:
+        """En el hilo de PortAudio: abre y, si PortAudio no ve el dispositivo, reinicia y
+        reintenta aceptando el dispositivo por defecto."""
         src = PortAudioSource(self, info, resolve)
         try:
             src.open()
         except DeviceNotFound:
-            if not retry_after_reinit:
-                raise
             self._reinit_portaudio()
             src = PortAudioSource(self, info, resolve, allow_default=True)
             src.open()
-        with self._lock:
-            self._sources.append(src)
+        self._sources.append(src)
         return src
 
     # --- sondeo y cierre
 
     def probe(self) -> EndpointSnapshot | None:
+        """Solo COM (sin PortAudio): se queda en el hilo de quien sondea."""
         try:
             return devices.poll_ids()
         except Exception:
@@ -294,9 +576,12 @@ class WasapiBackend:
             return None
 
     def close(self) -> None:
-        with self._lock:
-            for s in list(self._sources):
-                s.close()
-            if self._pa is not None:
-                self._pa.terminate()
-                self._pa = None
+        """Cierra los flujos, hace ``terminate`` y para el hilo (espera acotada). Idempotente;
+        si el backend se vuelve a usar, el hilo arranca de nuevo."""
+        if not self._runner.stop(self.close_timeout_s):
+            log.error("PortAudio backend close did not complete; continuing")
+
+
+def _close_late_source(src: PortAudioSource) -> None:
+    """Una apertura que termino tras agotarse la espera: nadie usara la fuente."""
+    src.close()
