@@ -160,6 +160,29 @@ class PassthroughAec:
         return mic.copy()
 
 
+VAD_FRAME = 512
+
+
+class FakeStatefulVad:
+    """«Silero» de energia por tramas de 512 muestras con la interfaz con estado
+    (``probs_from``) del procesado en vivo. Sin estado real: trocear da lo mismo."""
+
+    def probs(self, audio_16k: AudioArray) -> NDArray[np.float32]:
+        return self.probs_from(audio_16k, None)[0]
+
+    def probs_from(self, audio_16k: AudioArray, carry: Any) -> tuple[NDArray[np.float32], Any]:
+        from micnaga.pipeline.vad import VadCarry
+
+        x = np.asarray(audio_16k, dtype=np.float32)
+        n = -(-len(x) // VAD_FRAME)
+        padded = np.zeros(n * VAD_FRAME, dtype=np.float32)
+        padded[: len(x)] = x
+        rms = np.sqrt(np.mean(padded.reshape(n, VAD_FRAME).astype(np.float64) ** 2, axis=1))
+        probs = np.where(rms > ENERGY_THRESHOLD, 0.9, 0.05).astype(np.float32)
+        out = carry or VadCarry(np.zeros((2, 1, 128), np.float32), np.zeros(64, np.float32))
+        return probs, out
+
+
 def identity_align(
     mic: AudioArray, system: AudioArray, meta: CaptureMeta
 ) -> tuple[AudioArray, AudioArray]:
@@ -190,6 +213,19 @@ def fake_deps(script: Sequence[dict[str, Any]] = ()) -> Deps:
         group_regions=group,
         align_tracks=identity_align,
     )
+
+
+def fake_live_deps(script: Sequence[dict[str, Any]] = ()) -> Deps:
+    """``fake_deps`` con VAD por probabilidades (etapa 5 y procesado en vivo con el mismo)."""
+    deps = fake_deps(script)
+    vad = FakeStatefulVad()
+
+    def probs(audio: AudioArray, sr: int, config: Config) -> NDArray[np.float32]:
+        return vad.probs(audio)
+
+    deps.speech_probs = probs
+    deps.live_vad = lambda _c: vad
+    return deps
 
 
 def load_script(session: Path) -> list[dict[str, Any]]:

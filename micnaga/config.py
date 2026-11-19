@@ -78,6 +78,7 @@ class ProcessingConfig:
     aec: str = "auto"  # auto | webrtc | speex | off
     threads: int = 6
     low_priority: bool = True  # BELOW_NORMAL_PRIORITY_CLASS en el worker
+    live: bool = True  # transcribir mientras se graba (proceso aparte, prioridad baja)
     echo_similarity: float = 0.8  # etapa 9 (rapidfuzz, 0..1)
     merge_gap_s: float = 1.5  # etapa 11
     glossary: list[str] = field(default_factory=list)  # MIC-16

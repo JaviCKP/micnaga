@@ -192,6 +192,8 @@ class PipelineRunner:
                 before = sum(STAGE_WEIGHTS[: stage.index - 1]) / total
                 span = STAGE_WEIGHTS[stage.index - 1] / total
                 self._set_stage(job, stage, before)
+                if stage.index == 2 and not is_stage_done(session, stages[5]):
+                    self._finish_live(session, deps, meta, stages, job_id)
                 if is_stage_done(session, stage):
                     times[stage.name] = 0.0
                     skipped.append(stage.name)
@@ -219,6 +221,47 @@ class PipelineRunner:
             return self._discard(job, session, discard.reason, times)
         except Exception as exc:
             return self._fail(job, session, exc, times)
+
+    def _finish_live(
+        self,
+        session: Path,
+        deps: Deps,
+        meta: CaptureMeta,
+        stages: tuple[Stage, ...],
+        job_id: int | None,
+    ) -> None:
+        """Si hubo procesado en vivo, completa la cola y deja hechas las etapas 2-6.
+
+        Cualquier fallo borra ``work/live/`` y el pipeline sigue por lotes (nunca se pierde una
+        reunion por el procesado en vivo)."""
+        from micnaga.pipeline import live
+
+        if not live.has_cache(session):
+            return
+        engines = live.engines_from_deps(deps)
+        if engines is None or not self.config.processing.live:
+            live.discard_cache(session)
+            return
+        total = float(sum(STAGE_WEIGHTS))
+        before = sum(STAGE_WEIGHTS[:1]) / total
+        span = sum(STAGE_WEIGHTS[1:6]) / total
+
+        def progress(frac: float) -> None:
+            self._progress(job_id, stages[1], before + span * frac)
+
+        ctx = StageContext(session, self.config, deps, meta, progress)
+        t0 = time.perf_counter()
+        try:
+            done = live.finish(ctx, stages[1:6], engines, on_progress=progress)
+        except Exception:
+            log.exception("live processing could not be completed; processing in batch")
+            done = False
+        if not done:
+            for later in stages[1:]:
+                clear_marker(session, later)
+            live.discard_cache(session)
+            return
+        log.info("live processing completed in %.1f s", time.perf_counter() - t0)
 
     @staticmethod
     def _load_meta(session: Path) -> CaptureMeta:

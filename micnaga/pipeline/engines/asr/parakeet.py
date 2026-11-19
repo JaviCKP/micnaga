@@ -12,7 +12,8 @@ mayusculas por si mismo.
 * Ficheros: ``<models_dir>/parakeet-tdt-0.6b-v3-int8/{encoder-model.int8.onnx,
   decoder_joint-model.int8.onnx, vocab.txt, config.json}``. El preprocesador de mel va dentro
   del paquete ``onnx_asr``. Nunca se descarga nada desde aqui (carga con ``path=``).
-* ``processing.threads`` -> ``intra_op_num_threads`` de todas las sesiones ONNX.
+* ``processing.threads`` -> ``intra_op_num_threads`` de todas las sesiones ONNX, sin espera
+  activa (``engines.ort_options``: con prioridad baja y el equipo ocupado era 10 veces mas lento).
 * Fin de palabra: inicio de la siguiente palabra, con tope de 0,32 s tras el ultimo token (el
   modelo no da duraciones); en pausas largas la palabra no se estira.
 * ``p`` de la palabra: media geometrica de las probabilidades de sus tokens.
@@ -105,15 +106,13 @@ class ParakeetEngine:
     def __init__(self, model_dir: str, threads: int) -> None:
         try:
             import onnx_asr
-            import onnxruntime as ort
         except ImportError as exc:
             raise EngineUnavailableError(
                 f"onnx-asr is not installed: {exc} (pip install micnaga[asr])"
             ) from exc
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = max(1, threads)
-        so.inter_op_num_threads = 1
-        so.log_severity_level = 3
+        from micnaga.pipeline.engines.ort_options import session_options
+
+        so = session_options(threads)
         try:
             self._model: Any = onnx_asr.load_model(
                 "nemo-conformer-tdt",

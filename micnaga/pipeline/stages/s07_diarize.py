@@ -32,10 +32,14 @@ import logging
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from numpy.typing import NDArray
+
 from micnaga.pipeline.engines.diar import postfilter
-from micnaga.pipeline.engines.diar.base import SpeakerEmbedder
+from micnaga.pipeline.engines.diar.base import Diarizer, SpeakerEmbedder
 from micnaga.pipeline.stages.base import StageContext, StageResult, engine_scope
 from micnaga.registry import EngineUnavailableError
+from micnaga.types import AudioArray, Turn
 
 log = logging.getLogger(__name__)
 
@@ -73,6 +77,34 @@ def _write_embeddings(ctx: StageContext, embeddings: dict[str, list[float]]) -> 
     return True
 
 
+def _system_probs(ctx: StageContext, n_samples: int) -> NDArray[np.float32] | None:
+    """Probabilidades de voz de la pista remota que guardo la etapa 5 (si casan con el audio)."""
+    from micnaga.pipeline.stages.s05_vad import PROBS, load_probs
+    from micnaga.pipeline.vad import FRAME, MODEL_SR
+
+    probs = load_probs(ctx.path(PROBS))
+    system = None if probs is None else probs.get("system")
+    if system is None or ctx.sr != MODEL_SR or len(system) != -(-n_samples // FRAME):
+        return None
+    return system
+
+
+def _diarize(ctx: StageContext, diarizer: Diarizer, audio: AudioArray) -> list[Turn]:
+    """Diariza; el ONNX reutiliza el VAD de la etapa 5 o las ventanas del procesado en vivo."""
+    with_probs = getattr(diarizer, "diarize_with_probs", None)
+    if callable(with_probs):
+        from micnaga.pipeline import live
+
+        precomputed = live.load_diar_windows(ctx, diarizer)
+        if precomputed is not None:
+            log.info("diarization from %d precomputed windows (live)", len(precomputed[1]))
+            return list(diarizer.turns_from_embeddings(audio, *precomputed, None))  # type: ignore[attr-defined]
+        probs = _system_probs(ctx, len(audio))
+        if probs is not None:
+            return list(with_probs(audio, ctx.sr, None, probs))
+    return diarizer.diarize(audio, ctx.sr, None)
+
+
 def run(ctx: StageContext) -> StageResult:
     # nada de una ejecucion anterior: ni en claro (versiones antiguas) ni cifrado obsoleto
     remove_legacy_embeddings(ctx.work)
@@ -97,7 +129,7 @@ def run(ctx: StageContext) -> StageResult:
     with engine_scope(diarizer):
         audio = ctx.conditioned("system")
         ctx.progress(0.1)
-        raw_turns = diarizer.diarize(audio, ctx.sr, None)
+        raw_turns = _diarize(ctx, diarizer, audio)
         ctx.progress(0.7)
         emb_engine = diarizer if isinstance(diarizer, SpeakerEmbedder) else None
         minor = postfilter.speakers_to_absorb(raw_turns)

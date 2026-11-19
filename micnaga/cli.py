@@ -14,6 +14,7 @@ comando    funcion                                       dueno
 record     ``micnaga.capture.cli:run``                   capture/
 process    ``micnaga.pipeline.cli:run_process``          pipeline/
 worker     ``micnaga.pipeline.cli:run_worker``           pipeline/
+live       ``micnaga.pipeline.cli:run_live``             pipeline/
 bench      ``micnaga.bench.cli:run``                     bench/  (``python -m micnaga.bench``)
 app        ``micnaga.app:run``                           app.py (bandeja, vigilante, UI)
 tools      ``micnaga.brain.mcp:run``                     brain/ (servidor MCP stdio)
@@ -40,6 +41,7 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "record": ("micnaga.capture.cli", "run"),
     "process": ("micnaga.pipeline.cli", "run_process"),
     "worker": ("micnaga.pipeline.cli", "run_worker"),
+    "live": ("micnaga.pipeline.cli", "run_live"),
     "bench": ("micnaga.bench.cli", "run"),
     "app": ("micnaga.app", "run"),
     "tools": ("micnaga.brain.mcp", "run"),
@@ -51,6 +53,7 @@ HELP: dict[str, str] = {
     "record": "grabar micro + sistema en dos pistas",
     "process": "procesar una sesion grabada (transcribir)",
     "worker": "proceso de trabajo: consume la cola de procesado",
+    "live": "(interno) procesado en vivo de la sesion que se graba",
     "bench": "banco de pruebas",
     "app": "bandeja, vigilante y ventanas",
     "tools": "servidor MCP de solo lectura de la Secretaria (lo lanza claude -p)",

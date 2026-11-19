@@ -136,3 +136,59 @@ def run_worker(argv: list[str]) -> int:
             sink.close()
             db.close()
     return EXIT_OK
+
+
+def _live_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        prog="micnaga live",
+        description="(interno) Procesa en vivo la sesion que se esta grabando.",
+    )
+    p.add_argument("session_dir", type=Path, help="carpeta de la sesion que se graba")
+    return p
+
+
+def run_live(argv: list[str]) -> int:
+    """Proceso en vivo (lo lanza la app al empezar a grabar; sale al parar la grabacion)."""
+    args = _live_parser().parse_args(argv)
+    session: Path = args.session_dir.resolve()
+    from micnaga.config import ConfigError, load_config
+
+    try:
+        config = load_config()
+    except ConfigError as exc:
+        print(f"micnaga live: config invalida: {exc}", file=sys.stderr)
+        return EXIT_USAGE
+    # Pocos hilos y prioridad baja ANTES de importar numpy/onnxruntime: nunca molestar a la
+    # captura ni a la reunion.
+    from micnaga.pipeline.worker import apply_thread_limits, live_threads, set_low_priority
+
+    threads = live_threads(config)
+    apply_thread_limits(threads)
+    set_low_priority()
+    config.processing.threads = threads
+
+    from micnaga.logging_setup import setup_logging
+
+    setup_logging("live")
+    import logging
+
+    log = logging.getLogger("micnaga.live")
+    from micnaga.pipeline import live as live_mod
+    from micnaga.pipeline.worker import NamedMutex
+
+    with NamedMutex(live_mod.mutex_name(session)) as lock:
+        if not lock.acquire():
+            return EXIT_OK  # ya hay un proceso en vivo para esta sesion
+        from micnaga.pipeline.stages.base import default_deps
+
+        engines = live_mod.engines_from_deps(default_deps())
+        if engines is None:
+            return EXIT_OK
+        log.info("live processing started (%d threads)", threads)
+        try:
+            reason = live_mod.run_live(session, config, engines)
+        except Exception:
+            log.exception("live processing failed; the worker will process in batch")
+            return EXIT_FAILED
+        log.info("live processing stopped: %s", reason)
+    return EXIT_OK
