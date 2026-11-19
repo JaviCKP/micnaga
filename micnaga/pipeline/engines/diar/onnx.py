@@ -14,8 +14,9 @@ Solo ``numpy``, ``scipy`` y ``onnxruntime`` (nada de torch, torchaudio, scikit-l
    resto se asigna al centroide mas cercano. Despues: reasignacion al centroide, fusion de
    clusters pequenos parecidos y suavizado de ventanas aisladas.
 5. Etiquetas por ventana -> turnos (cada ventana "posee" desde el punto medio con la anterior
-   hasta el punto medio con la siguiente = resolucion de solapes por punto medio), fusion de turnos
-   contiguos del mismo hablante y renumeracion ``S1..Sn`` por primera aparicion.
+   hasta el punto medio con la siguiente = resolucion de solapes por punto medio; en un cambio de
+   hablante la frontera se mueve al instante mas silencioso entre los dos centros), fusion de
+   turnos contiguos del mismo hablante y renumeracion ``S1..Sn`` por primera aparicion.
 
 ``embed`` (``SpeakerEmbedder``, MIC-11) devuelve por hablante la media L2-normalizada de embeddings
 de ventanas de 3 s, igual que el adaptador ``diarize``: las huellas son intercambiables.
@@ -75,6 +76,7 @@ BATCH = 32
 EMBED_WINDOW_S = 3.0
 EMBED_MAX_WINDOWS = 20
 EMBED_MIN_S = 0.8
+ENERGY_FRAME_S = 0.01  # tramas para colocar las fronteras de turno en la pausa mas cercana
 
 
 # ======================================================================== fbank
@@ -282,18 +284,48 @@ def window_starts(length_s: float, window_s: float = WINDOW_S, hop_s: float = HO
     return starts
 
 
+def frame_energy(audio: AudioArray) -> NDArray[np.float32]:
+    """Energia en dB por trama de 10 ms (``ENERGY_FRAME_S``) de ``audio`` mono 16 kHz."""
+    step = int(ENERGY_FRAME_S * MODEL_SR)
+    n = len(audio) // step
+    if n == 0:
+        return np.zeros(0, dtype=np.float32)
+    x = np.asarray(audio[: n * step], dtype=np.float32).reshape(n, step)
+    power = np.mean(np.square(x, dtype=np.float32), axis=1)
+    return np.asarray(10.0 * np.log10(power + 1e-10), dtype=np.float32)
+
+
+def quietest_point(energy: NDArray[np.float32], a: float, b: float) -> float:
+    """Instante (s) de menor energia (media movil de 50 ms) entre ``a`` y ``b``.
+
+    Si no hay tramas en el intervalo devuelve el punto medio.
+    """
+    f0 = max(0, int(np.ceil(a / ENERGY_FRAME_S)))
+    f1 = min(len(energy), int(b / ENERGY_FRAME_S))
+    if f1 - f0 < 1:
+        return (a + b) / 2
+    k = 5
+    pad = np.pad(energy, (k // 2, k // 2), mode="edge")
+    smooth = np.convolve(pad, np.ones(k, dtype=np.float32) / k, mode="valid")
+    return (f0 + int(np.argmin(smooth[f0:f1])) + 0.5) * ENERGY_FRAME_S
+
+
 def turns_from_windows(
     spans: Sequence[tuple[float, float]],
     labels: Sequence[int],
     regions: Sequence[tuple[float, float]],
     region_of: Sequence[int],
     merge_gap_s: float = MERGE_GAP_S,
+    energy: NDArray[np.float32] | None = None,
 ) -> list[tuple[float, float, int]]:
     """Convierte etiquetas por ventana en segmentos ``(inicio, fin, etiqueta)`` sin solapes.
 
     Cada ventana abarca desde el punto medio entre su centro y el de la anterior hasta el punto
     medio con la siguiente (solapes resueltos por punto medio); la primera y la ultima de cada
-    tramo llegan al borde del tramo. Los segmentos contiguos con la misma etiqueta (hueco <=
+    tramo llegan al borde del tramo. Con ``energy`` (``frame_energy`` del audio), la frontera
+    entre dos ventanas de **distinta** etiqueta se mueve al instante mas silencioso entre sus
+    centros: la gente cambia de turno en una pausa, y el punto medio puede caer hasta ~0,4 s
+    dentro de la frase de uno de los dos. Los segmentos contiguos con la misma etiqueta (hueco <=
     ``merge_gap_s``) se funden. ``region_of[i]`` = tramo de la ventana ``i``.
     """
     segs: list[tuple[float, float, int]] = []
@@ -305,9 +337,16 @@ def turns_from_windows(
             j += 1
         r0, r1 = regions[region_of[i]]
         centers = [(spans[k][0] + spans[k][1]) / 2 for k in range(i, j + 1)]
+        bounds = [r0]
+        for idx in range(len(centers) - 1):
+            c0, c1 = centers[idx], centers[idx + 1]
+            if energy is not None and labels[i + idx] != labels[i + idx + 1]:
+                bounds.append(quietest_point(energy, c0, c1))
+            else:
+                bounds.append((c0 + c1) / 2)
+        bounds.append(r1)
         for idx, k in enumerate(range(i, j + 1)):
-            a = r0 if idx == 0 else (centers[idx - 1] + centers[idx]) / 2
-            b = r1 if idx == len(centers) - 1 else (centers[idx] + centers[idx + 1]) / 2
+            a, b = bounds[idx], bounds[idx + 1]
             if b > a:
                 segs.append((a, b, int(labels[k])))
         i = j + 1
@@ -454,7 +493,9 @@ class OnnxDiarizer:
             emb, n_speakers, threshold=self._threshold, max_speakers=self._max_speakers
         )
         labels = smooth_isolated(labels, region_of)
-        segs = turns_from_windows(spans, labels.tolist(), regions, region_of)
+        segs = turns_from_windows(
+            spans, labels.tolist(), regions, region_of, energy=frame_energy(x)
+        )
         gc.collect()
         return to_turns(segs)
 
