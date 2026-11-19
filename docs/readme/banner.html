@@ -1,0 +1,73 @@
+<!doctype html>
+<!-- Banner del README: el limbo violeta tramado (Bayer 8x8, celda 4 px) de la identidad Bitnaga.
+     Se renderiza con Edge sin interfaz: scripts/readme_images.ps1 -->
+<html><head><meta charset="utf-8">
+<style>
+  @font-face { font-family: BarlowSC; font-weight: 700; src: url(../../micnaga/ui/web/assets/fonts/barlow-semi-condensed-700.woff2); }
+  @font-face { font-family: Barlow; font-weight: 400; src: url(../../micnaga/ui/web/assets/fonts/barlow-400.woff2); }
+  @font-face { font-family: Barlow; font-weight: 600; src: url(../../micnaga/ui/web/assets/fonts/barlow-600.woff2); }
+  @font-face { font-family: Mono; font-weight: 500; src: url(../../micnaga/ui/web/assets/fonts/jetbrains-mono-500.woff2); }
+  html, body { margin: 0; background: #000; }
+  [hidden] { display: none !important; }
+  body { width: 1600px; height: 640px; position: relative; overflow: hidden; color: #f4f4f7; font-family: Barlow; }
+  canvas { position: absolute; inset: 0; image-rendering: pixelated; }
+  .wrap { position: absolute; left: 96px; top: 132px; }
+  .lab { font: 500 20px/1 Mono; letter-spacing: .14em; text-transform: uppercase; color: rgba(244,244,247,.55); display: flex; align-items: center; gap: 14px; }
+  .lab i { width: 12px; height: 12px; background: #a78bfa; display: inline-block; }
+  h1 { margin: 22px 0 0; font: 700 196px/.84 BarlowSC; letter-spacing: -.01em; text-transform: uppercase; }
+  p { margin: 26px 0 0; font: 600 44px/1.15 Barlow; letter-spacing: -.015em; }
+  p .v { color: #a78bfa; }
+  .flow { position: absolute; left: 96px; right: 96px; top: 120px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 18px; }
+  .st { position: relative; background: #0a090f; border: 1px solid rgba(244,244,247,.16); border-radius: 6px; padding: 26px 24px 28px; min-height: 210px; }
+  .st::before, .st::after { content: ''; position: absolute; width: 16px; height: 16px; border: 2px solid #f4f4f7; }
+  .st::before { left: -2px; top: -2px; border-right: 0; border-bottom: 0; }
+  .st::after { right: -2px; bottom: -2px; border-left: 0; border-top: 0; }
+  .n { font: 500 18px/1 Mono; letter-spacing: .12em; color: #a78bfa; }
+  .t { margin-top: 18px; font: 700 40px/.95 BarlowSC; text-transform: uppercase; }
+  .d { margin-top: 14px; font: 400 23px/1.3 Barlow; color: rgba(244,244,247,.72); }
+  .st.w .n { color: #ff8a4c; }
+</style></head>
+<body>
+<canvas id="c"></canvas>
+<div class="wrap" id="hero">
+  <div class="lab"><i></i>Bitnaga · local · Windows</div>
+  <h1>Micnaga</h1>
+  <p>Tus reuniones, grabadas y transcritas <span class="v">en tu propio PC.</span></p>
+</div>
+<div class="flow" id="flow" hidden>
+  <div class="st w"><div class="n">01</div><div class="t">Detecta</div><div class="d">Cualquier app abre el micro. A los 20 s graba en provisional.</div></div>
+  <div class="st"><div class="n">02</div><div class="t">Pregunta</div><div class="d">«¿Estás en una reu?» Sí, no o nada: se decide al final.</div></div>
+  <div class="st"><div class="n">03</div><div class="t">Transcribe</div><div class="d">Mientras hablas, en local. Quién dijo qué, sin fantasmas.</div></div>
+  <div class="st"><div class="n">04</div><div class="t">Resume</div><div class="d">La Secretaria investiga tu Odoo, Gmail y actas, y escribe el acta.</div></div>
+  <div class="st"><div class="n">05</div><div class="t">Tú decides</div><div class="d">Propuestas editables. Nada se escribe sin «Aplicar».</div></div>
+</div>
+<script>
+const P = new URLSearchParams(location.search);
+const W = 1600, H = +(P.get("h") || 640), CELL = 4;
+document.body.style.height = H + "px";
+if (P.get("v") === "flow") { document.getElementById("hero").hidden = true; document.getElementById("flow").hidden = false; }
+const cv = document.getElementById("c"); cv.width = W / CELL; cv.height = H / CELL; cv.style.width = W + "px"; cv.style.height = H + "px";
+const g = cv.getContext("2d"), img = g.createImageData(cv.width, cv.height);
+let m = [[0, 2], [3, 1]];
+while (m.length < 8) { const n = m.length; m = Array.from({ length: 2 * n }, (_, y) => Array.from({ length: 2 * n }, (_, x) => 4 * m[y % n][x % n] + [0, 2, 3, 1][(y >= n) * 2 + (x >= n)])); }
+const BAY = m.map((r) => r.map((v) => (v + 0.5) / 64));
+const TONES = [null, [22, 14, 54], [77, 56, 168], [167, 139, 250]];
+const hs = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+const vn = (x, y) => { const ix = Math.floor(x), iy = Math.floor(y), fx = x - ix, fy = y - iy, sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+  const a = hs(ix, iy), b = hs(ix + 1, iy), c = hs(ix, iy + 1), d = hs(ix + 1, iy + 1); return a + (b - a) * sx + (c - a) * sy + (a - b - c + d) * sx * sy; };
+const fbm = (x, y) => { let s = 0, a = 0.5; for (let i = 0; i < 4; i++) { s += a * vn(x, y); x *= 2.03; y *= 2.03; a *= 0.5; } return s; };
+const flow = P.get("v") === "flow";
+const cx = W * (flow ? 0.5 : 0.78), cy = H + (flow ? 2470 : 2480), R = 2600, rise = flow ? 0.7 : 1.0;
+for (let y = 0; y < cv.height; y++) for (let x = 0; x < cv.width; x++) {
+  const px = (x + 0.5) * CELL, py = (y + 0.5) * CELL;
+  const d = Math.hypot(px - cx, py - cy) - R;
+  let l = (d > 0 ? Math.exp(-d / 150) : 0.16 * Math.exp(d / 60)) * rise;
+  l += Math.pow(fbm(px / 420, py / 420), 2.2) * Math.max(0, Math.min(1, (py - H * 0.45) / (H * 0.55))) * 0.16;
+  const i = Math.min(3, Math.floor(Math.max(0, Math.min(1, l)) * 3 + BAY[y % 8][x % 8]));
+  const o = (y * cv.width + x) * 4;
+  if (i) { const t = TONES[i]; img.data[o] = t[0]; img.data[o + 1] = t[1]; img.data[o + 2] = t[2]; img.data[o + 3] = 255; }
+  else { img.data[o + 3] = 255; }
+}
+g.putImageData(img, 0, 0);
+</script>
+</body></html>

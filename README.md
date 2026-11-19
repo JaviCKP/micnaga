@@ -1,13 +1,138 @@
-# Micnaga
+<p align="center">
+  <img src="docs/readme/banner.png" alt="Micnaga: tus reuniones, grabadas y transcritas en tu propio PC" width="100%">
+</p>
 
-App de Windows, de código abierto y de uso personal, que detecta cuándo estás en una reunión (Google Meet
-o cualquier app que use el micro), graba tu micrófono y el audio del sistema en **pistas separadas** y, al
-terminar, genera una **transcripción con hablantes identificados**. Todo en local y en CPU.
+<p align="center">
+  <a href="https://github.com/JaviCKP/micnaga/releases/latest/download/Micnaga-Setup-0.1.0.exe"><b>Descargar para Windows</b></a>
+  &nbsp;·&nbsp; <a href="docs/ONBOARDING.md">Guía de puesta en marcha</a>
+  &nbsp;·&nbsp; <a href="#cómo-funciona">Cómo funciona</a>
+  &nbsp;·&nbsp; <a href="#privacidad">Privacidad</a>
+</p>
 
-Especificación completa: [`docs/SPEC.md`](docs/SPEC.md). Decisiones, desviaciones y puertas de fase
-sin verificar: [`DECISIONS.md`](DECISIONS.md). Licencias de terceros: [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+<br>
 
-## Principios de privacidad
+Micnaga se da cuenta de que estás en una reunión (Meet, Teams, Zoom o cualquier app que use el micro), la
+graba, la transcribe **en tu propio ordenador** y te deja el acta lista al colgar. Si quieres, una Secretaria
+con IA lee tu Odoo, tu Gmail y tus actas anteriores y te propone las tareas, la siguiente reunión y el correo
+de seguimiento. **Nada se escribe en ningún sitio hasta que pulsas «Aplicar».**
+
+<p align="center"><img src="docs/readme/flow.png" alt="Detecta · Pregunta · Transcribe · Resume · Tú decides" width="100%"></p>
+
+## Instalar
+
+1. Descarga **[Micnaga-Setup-0.1.0.exe](https://github.com/JaviCKP/micnaga/releases/latest)** (70 MB) y ábrelo. Se instala con un clic y arranca con Windows.
+2. La primera vez descarga los modelos de voz (~700 MB) y comprueba tu micro y tu audio.
+3. Ya está. Vive en la bandeja del sistema y no tienes que abrirlo para que funcione.
+
+Requisitos: Windows 10 22H2 u 11, de 64 bits. Para la Secretaria, tener [Claude Code](https://claude.com/claude-code) con tu sesión iniciada. Todos los pasos (Odoo, Google y cómo dejarlo siempre encendido) están en **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
+
+## Cómo funciona
+
+### 1 · Te pregunta, no te espía
+
+<img src="docs/readme/aviso.png" alt="Aviso «¿Estás en una reu?»" width="100%">
+
+Cuando una app lleva 20 s usando el micro, Micnaga empieza a grabar **en provisional** y lo dice con una
+píldora siempre visible. A los 20 s te pregunta *«¿Estás en una reu?»*:
+
+- **Sí:** se guarda y se transcribe.
+- **No:** se para y se aparta en *Descartadas*. Durante 7 días puedes recuperarla.
+- **No contestas:** sigue grabando y te pregunta al final.
+
+Cuando sueltas el micro sale *«Reunión terminada»*, y la grabación se recorta justo en ese momento.
+
+<p align="center"><img src="docs/readme/pildora.png" alt="Píldora de grabación" width="60%"></p>
+
+### 2 · Transcribe mientras hablas
+
+Graba **tu micro y el audio del sistema en pistas separadas**, así que sabe qué dijiste tú y qué dijeron los demás.
+Va transcribiendo por trozos durante la reunión, en local y con prioridad baja. Al colgar solo le queda el final.
+Separa a los hablantes sin «fantasmas» y quita el eco solo cuando hay eco (con cascos se lo salta). Para una
+reunión importante, **«Mejorar transcripción»** la vuelve a escuchar entera con Whisper large-v3, y la versión
+anterior se conserva.
+
+### 3 · Primero lo esencial
+
+<img src="docs/readme/resumen.png" alt="Vista Resumen de una reunión" width="100%">
+
+Cada reunión se abre en **Resumen**: dos o tres frases y lo que te toca (**tu tarea**, **lo siguiente**, **lo
+decidido**, lo que quedó **pendiente** de la vez anterior), más un solo botón para revisar las propuestas. El
+**Acta** completa, las **Propuestas** y la **Transcripción** están a una pestaña. *Acta completa* genera un
+documento formal, de 3 a 5 páginas, con cada frase enlazada a su momento del audio.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/readme/acta.png" alt="Acta"></td>
+    <td width="50%"><img src="docs/readme/propuestas.png" alt="Propuestas"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Acta: desde la última vez, decisiones, tareas, próximos pasos, contrastes</sub></td>
+    <td align="center"><sub>Propuestas: Google Calendar con Meet, borrador de Gmail, Odoo</sub></td>
+  </tr>
+</table>
+
+### 4 · Una Secretaria que investiga antes de escribir
+
+Antes de redactar, la Secretaria (Claude, vía tu propio `claude -p`):
+
+- **lee tus actas anteriores** con esas personas;
+- busca en **Gmail** y **Drive**;
+- mira el **calendario**;
+- consulta tu **Odoo**: contactos, proyectos, tareas abiertas y oportunidades.
+
+Con eso:
+
+- Marca lo que quedó pendiente de la última vez como *hecho*, *abierto* o *sin confirmar*, con la prueba.
+- Avisa de los **contrastes**: *«se dijo 4.500 €, el correo dice 4.800 €»*.
+- No duplica tareas que ya existen.
+- Nunca inventa: todo lo que no sale de la reunión lleva su fuente.
+
+Antes del acta, **Haiku repasa la transcripción** y corrige la puntuación, las tildes, las palabras mal oídas
+y las frases partidas. Ves el original con un clic.
+
+### 5 · Tú decides, y puedes corregirle
+
+<img src="docs/readme/corregir.png" alt="Corregir una propuesta con un mensaje" width="100%">
+
+Cada propuesta se puede editar campo a campo o **corregir con un mensaje** (*«mejor el jueves y en el proyecto
+RegulAI»*), y se rehace en unos segundos. Puede:
+
+- crear tareas, notas internas, actividades, gastos y **partes de horas** en Odoo;
+- crear eventos con **Meet** en Google Calendar, sincronizados con Odoo;
+- preparar borradores en Gmail y guardar el acta en Drive.
+
+Invitar a gente o enviar un correo nunca viene marcado. Al aplicar, un filtro de Micnaga solo deja pasar
+**exactamente** lo que aprobaste.
+
+<p align="center"><img src="docs/readme/horas.png" alt="Rellenar partes de horas" width="100%"></p>
+
+### 6 · Aprende de tu empresa
+
+- Con cada conexión a Odoo descubre **qué puede hacer tu usuario** y solo ofrece eso. Una cuenta con CRM ve
+  oportunidades y contactos; una sin CRM, no.
+- Guarda lo que va aprendiendo (proyectos, convenciones, quién suele estar en las reuniones de cada cliente)
+  en una memoria que puedes revisar, deshacer u olvidar en **Ajustes → Lo que ha aprendido**.
+- Aprende tu forma de fichar para rellenarte los partes que faltan.
+
+<p align="center"><img src="docs/readme/dither.gif" alt="El fondo tramado de Micnaga" width="100%"></p>
+
+## Privacidad
+
+- **El audio nunca sale de tu PC.** Grabación, transcripción y separación de hablantes ocurren en local, en CPU.
+- **Sin la Secretaria, la única conexión es descargar los modelos**, desde URLs fijadas y verificadas con SHA-256.
+  Sin telemetría, analítica ni cuentas.
+- **Con la Secretaria activada,** el *texto* de la reunión va a Claude (Anthropic) mediante tu propio `claude -p`,
+  y Micnaga habla con tu Odoo y tus conectores de Google. Nada se escribe sin tu «Aplicar».
+- **Nunca graba en silencio:** mientras graba, la píldora está siempre en pantalla.
+
+---
+
+## Para desarrolladores
+
+Especificación: [`docs/SPEC.md`](docs/SPEC.md) · Decisiones y desviaciones: [`DECISIONS.md`](DECISIONS.md) ·
+Licencias de terceros: [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
+
+### Privacidad en detalle
 
 * **Local y privado.** El audio nunca sale del equipo. El texto solo sale si activas la **Secretaria**
   (desactivada por defecto), y solo hacia Claude (Anthropic, vía tu `claude -p`) y tu propio Odoo. Sin ella,
@@ -25,7 +150,7 @@ sin verificar: [`DECISIONS.md`](DECISIONS.md). Licencias de terceros: [`THIRD_PA
   existe en disco durante esos días (mínimo 1; «Borrar ya» lo elimina antes).
 * La extensión de navegador opcional no usa la red (solo *native messaging* hacia la app local).
 
-## Instalación desde el código fuente
+### Instalación desde el código fuente
 
 Requisitos: Windows 10 22H2 / 11 de 64 bits, Python 3.11 y [uv](https://docs.astral.sh/uv/).
 
@@ -46,7 +171,7 @@ Extras (`pyproject.toml`):
 | `bench` / `dev` | métricas WER/DER; herramientas de desarrollo (ruff, mypy, pytest, PyInstaller) |
 | `pyannote` | alternativa de diarización (no instalada por defecto; también torch) |
 
-## Primer arranque
+### Primer arranque
 
 Los modelos **no van en el instalador**; un asistente de 3 pasos los descarga (con barra de progreso y
 verificación SHA-256) y comprueba el micro y el audio del sistema:
@@ -60,7 +185,7 @@ verificación SHA-256) y comprueba el micro y el audio del sistema:
 
 Total por defecto ≈ 700 MB. Se guardan en `%APPDATA%\Micnaga\models` (o `MICNAGA_MODELS`).
 
-## Uso
+### Uso
 
 ```powershell
 .venv\Scripts\python.exe -m micnaga app           # bandeja + vigilante + ventanas (equivale a `micnaga app`)
@@ -75,7 +200,7 @@ Cada subcomando acepta `--help`. En la versión instalada se usan `micnaga.exe a
 `micnaga-cli.exe <comando>` (con consola). Atajos globales por defecto: **Ctrl+Alt+M** (marcador) y
 **Ctrl+Alt+P** (pausa privada).
 
-## Configuración (`config.toml`)
+### Configuración (`config.toml`)
 
 Se lee de `%APPDATA%\Micnaga\config.toml` (o `MICNAGA_HOME`) y se edita desde **Ajustes**. Valores por
 defecto y significado en [`docs/SPEC.md` §10](docs/SPEC.md); las claves añadidas después de la spec
@@ -83,7 +208,7 @@ defecto y significado en [`docs/SPEC.md` §10](docs/SPEC.md); las claves añadid
 `processing.aec`, `[ui]`, `[privacy]`, `[startup]`...) están en [`DECISIONS.md` §2](DECISIONS.md) y §5.
 Las claves desconocidas se ignoran; un tipo incorrecto da un error claro.
 
-## Cómo funciona la detección
+### Cómo funciona la detección
 
 El vigilante sondea cada segundo (coste medido: ~0,2 % de un núcleo) y empieza a grabar enseguida; el
 procesado solo ocurre si la sesión pasa las **compuertas** al cerrar (≥ 3 min, ≥ 30 s de voz remota, ≥ 6
@@ -101,7 +226,7 @@ cambios de turno; una sesión confirmada con «Grabar» solo exige la duración)
 
 «Ahora no» ignora esa reunión (por su código) hasta que cuelgues.
 
-## Secretaria (capa de IA, opcional)
+### Secretaria (capa de IA, opcional)
 
 Al terminar una reunión, `claude -p` (tu sesión de Claude Code; o un token / una clave de API guardados en el
 Administrador de credenciales) lee la transcripción —**solo texto**— y deja `acta.json` + `acta.md` (resumen,
@@ -117,7 +242,7 @@ ha aprendido. Diseño: `docs/design/ai_brain.md`; decisiones en `DECISIONS.md` �
 .venv\Scripts\python.exe -m micnaga brain analyze <carpeta>  # pasada a mano sobre una reunión
 ```
 
-## Dónde se guardan los datos
+### Dónde se guardan los datos
 
 | Qué | Dónde | Variable |
 | --- | --- | --- |
@@ -128,7 +253,7 @@ ha aprendido. Diseño: `docs/design/ai_brain.md`; decisiones en `DECISIONS.md` �
 Cada reunión es una carpeta con dos pistas (`audio_yo.flac`, `audio_remoto.flac`), `capture.json` y la
 transcripción. Si algo falla mientras graba, el audio ya escrito se recupera en el siguiente arranque.
 
-## Tests y calidad
+### Tests y calidad
 
 ```powershell
 .venv\Scripts\python.exe -m ruff check .
@@ -149,7 +274,7 @@ variables de entorno:
 | `MICNAGA_HOME` / `MICNAGA_STORAGE` / `MICNAGA_MODELS` | carpetas de datos, reuniones y modelos |
 | `MICNAGA_TESTSET` | carpeta del set de prueba real para `micnaga bench` (formato en [`docs/testset_format.md`](docs/testset_format.md)) |
 
-## Empaquetado
+### Empaquetado
 
 ```powershell
 .\scripts\build.ps1                  # PyInstaller onedir + instalador Inno Setup (dist\installer)
@@ -163,7 +288,7 @@ variables de entorno:
   Detalles en `packaging/` y `DECISIONS.md` §13 y §16.
 * `python scripts\gen_licenses.py --check` bloquea cualquier dependencia GPL/AGPL/desconocida.
 
-## Aviso legal y de uso
+### Aviso legal y de uso
 
 Grabar a otras personas y guardar huellas de su voz exige avisarlas y respetar las normas de tu organización
 (RGPD). En España grabar una conversación en la que participas es en general lícito, pero difundirla puede
@@ -171,7 +296,7 @@ no serlo; las huellas de voz son datos biométricos (categoría especial del RGP
 desactivadas por defecto. El popup incluye el recordatorio «Recuerda avisar de que grabas» (desactivable).
 Esto es orientativo, no asesoramiento jurídico (spec §13).
 
-## Licencias y atribuciones
+### Licencias y atribuciones
 
 Código de Micnaga: [MIT](LICENSE). Dependencias: [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md)
 (incluye el resumen de obligaciones LGPL de `soxr`, `pystray` y `libsndfile`).
