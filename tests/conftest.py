@@ -9,7 +9,8 @@ r"""Fixtures y marcadores comunes.
   definida y, si no, ``<repo>/.models`` (compartida por toda la sesion: no se redescarga ~1 GB
   por test). Sin ``MICNAGA_RUN_MODELS`` los modelos van a una carpeta temporal.
 * Marcadores: ``slow``/``models`` se saltan salvo ``MICNAGA_RUN_MODELS=1`` (``slow`` tambien con
-  ``MICNAGA_RUN_SLOW=1``); ``realdevice`` salvo ``MICNAGA_RUN_REALDEVICE=1``. Los tests con
+  ``MICNAGA_RUN_SLOW=1``); ``realdevice`` salvo ``MICNAGA_RUN_REALDEVICE=1``; ``claude`` (llama
+  al ``claude -p`` real con tu sesion) salvo ``MICNAGA_RUN_CLAUDE=1``. Los tests con
   modelos deben subir el limite: ``@pytest.mark.timeout(600)``.
 * Audio sintetico: ``tests/synth.py``.
 """
@@ -40,7 +41,10 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item
     run_models = _flag("MICNAGA_RUN_MODELS")
     run_slow = run_models or _flag("MICNAGA_RUN_SLOW")
     run_real = _flag("MICNAGA_RUN_REALDEVICE")
+    run_claude = _flag("MICNAGA_RUN_CLAUDE")
     for item in items:
+        if "claude" in item.keywords and not run_claude:
+            item.add_marker(pytest.mark.skip(reason="set MICNAGA_RUN_CLAUDE=1 to run"))
         if "models" in item.keywords and not run_models:
             item.add_marker(pytest.mark.skip(reason="set MICNAGA_RUN_MODELS=1 to run"))
         elif "slow" in item.keywords and not run_slow:

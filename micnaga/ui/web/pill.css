@@ -130,6 +130,20 @@
 .pill[data-provisional="true"][data-hover="true"] .pill-actions,
 .pill[data-provisional="true"]:focus-within .pill-actions { margin-left: auto; }
 
+/* ---- Secretaria: provisional title, fades in next to the timer while hovering ---------- */
+.pill-title {
+  flex: 1; min-width: 0; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  font-size: 12.5px; font-weight: 600; color: var(--pill-dim);
+  transition: max-width var(--dur) var(--ease), opacity var(--dur) var(--ease);
+}
+.pill[data-has-title="true"][data-hover="true"], .pill[data-has-title="true"]:focus-within { --w: 420px; }
+.pill[data-has-title="true"][data-hover="true"] .pill-title,
+.pill[data-has-title="true"]:focus-within .pill-title { max-width: 240px; opacity: 1; }
+.pill[data-has-title="true"][data-hover="true"] .pill-meters,
+.pill[data-has-title="true"]:focus-within .pill-meters { display: none; }
+.pill[data-has-title="true"][data-hover="true"] .pill-actions,
+.pill[data-has-title="true"]:focus-within .pill-actions { margin-left: auto; }
+
 /* ---- real Acrylic behind the window (Python: DWM transient backdrop + 8 px window corners).
    The glass is the desktop itself, so the capsule is only a tint; the «60 % at rest» quieting
    moves to the content (DWM keeps painting the glass at full strength). */

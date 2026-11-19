@@ -16,6 +16,8 @@ process    ``micnaga.pipeline.cli:run_process``          pipeline/
 worker     ``micnaga.pipeline.cli:run_worker``           pipeline/
 bench      ``micnaga.bench.cli:run``                     bench/  (``python -m micnaga.bench``)
 app        ``micnaga.app:run``                           app.py (bandeja, vigilante, UI)
+tools      ``micnaga.brain.mcp:run``                     brain/ (servidor MCP stdio)
+brain      ``micnaga.brain.cli:run``                     brain/ (Secretaria)
 =========  ============================================  =================================
 
 Si el modulo aun no existe (``ModuleNotFoundError`` de ese modulo o de un paquete
@@ -39,6 +41,8 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "worker": ("micnaga.pipeline.cli", "run_worker"),
     "bench": ("micnaga.bench.cli", "run"),
     "app": ("micnaga.app", "run"),
+    "tools": ("micnaga.brain.mcp", "run"),
+    "brain": ("micnaga.brain.cli", "run"),
 }
 
 HELP: dict[str, str] = {
@@ -47,6 +51,8 @@ HELP: dict[str, str] = {
     "worker": "proceso de trabajo: consume la cola de procesado",
     "bench": "banco de pruebas",
     "app": "bandeja, vigilante y ventanas",
+    "tools": "servidor MCP de solo lectura de la Secretaria (lo lanza claude -p)",
+    "brain": "Secretaria: analizar una reunion, probar Claude/Odoo, titulo en directo",
 }
 
 EXIT_NOT_IMPLEMENTED = 2

@@ -83,7 +83,7 @@ version = { attr = "micnaga.__version__" }
 include = ["micnaga*"]
 
 [tool.setuptools.package-data]
-micnaga = ["py.typed", "ui/web/**/*"]
+micnaga = ["py.typed", "ui/web/**/*", "brain/prompts/*.md", "brain/context/*.md", "brain/*.json"]
 
 # ---------------------------------------------------------------- ruff
 [tool.ruff]
@@ -133,6 +133,8 @@ module = [
     "torchaudio.*",
     "win32api",
     "win32con",
+    "win32cred",
+    "win32job",
     "win32gui",
     "win32process",
     "win32event",
@@ -155,4 +157,5 @@ markers = [
     "slow: tests lentos (se saltan salvo MICNAGA_RUN_SLOW=1 o MICNAGA_RUN_MODELS=1)",
     "models: necesitan modelos descargados (se saltan salvo MICNAGA_RUN_MODELS=1)",
     "realdevice: necesitan micro/altavoces reales (se saltan salvo MICNAGA_RUN_REALDEVICE=1)",
+    "claude: llaman al claude -p real (se saltan salvo MICNAGA_RUN_CLAUDE=1)",
 ]

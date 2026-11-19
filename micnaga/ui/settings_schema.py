@@ -202,6 +202,25 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         ),
     ),
     (
+        "secretaria",
+        (
+            _f("secretaria.enabled", "bool"),
+            _f("secretaria.auth", "choice", choices=("session", "token", "api_key")),
+            _f("secretaria.odoo_url", "text"),
+            _f("secretaria.odoo_db", "text"),
+            _f("secretaria.odoo_login", "text"),
+            _f("secretaria.live_title", "bool", advanced=True),
+            _f(
+                "secretaria.model_acta",
+                "choice",
+                choices=("sonnet", "opus", "haiku"),
+                advanced=True,
+            ),
+            _f("secretaria.model_title", "choice", choices=("haiku", "sonnet"), advanced=True),
+            _f("secretaria.mcp_servers", "list", advanced=True),
+        ),
+    ),
+    (
         "privacy",
         (
             _f("privacy.remind_notice", "bool"),

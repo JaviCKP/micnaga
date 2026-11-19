@@ -277,6 +277,7 @@
     $("total").textContent = mic.fmtClock(player.duration || tr.meeting.duration_s);
     updateTime(keepPlayback ? t : 0);
     renderTicks(tr);
+    document.dispatchEvent(new CustomEvent("mic:meeting", { detail: { folder: S.folder } }));
   }
 
   function renderTracks() {
@@ -516,7 +517,7 @@
   function renderTranscript() {
     const tr = S.data.transcript;
     const box = $("tr");
-    box.replaceChildren();
+    box.replaceChildren(...[$("sec")].filter(Boolean));   // the Secretaria panel stays on top
     S.playingIdx = -1;
     const marks = markerSegIndexes(tr);
     let prev = null;
@@ -703,6 +704,13 @@
   api.library = {
     open(folder, t) { return openMeeting(folder, typeof t === "number" ? t : undefined); },
     get player() { return player; },
+    jumpTo,
+    /** after the Secretaria rewrote the transcript (names, words): reload it in place */
+    async reload() {
+      const r = await mic.call("get_meeting", S.folder);
+      if (r && r.ok) { applyUpdate(r); renderMarkers(); refreshListEntry(); }
+    },
+    refreshList: refreshListEntry,
   };
 
   (async () => {

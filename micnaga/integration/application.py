@@ -203,6 +203,8 @@ class Application:
         foreground: Callable[[], int | None] | None = None,
         process_start: float | None = None,
         exit_after_s: float = 0.0,
+        brain: Any = None,
+        live_title: Any = None,
     ) -> None:
         self.config = config
         try:  # solo congelada: el AUMID debe coincidir con el acceso directo del instalador
@@ -268,6 +270,35 @@ class Application:
             set_held(self.held_ops)
         self.hotkeys = hotkeys_factory(config, self._marker, self.watcher.toggle_private_pause)
         self.events_server = EventsServer(self.handle_event, events_name)
+        # Secretaria (capa de IA, opcional: inerte con secretaria.enabled = false).
+        self.brain = brain if brain is not None else self._make_brain()
+        setter = getattr(self.ui, "set_brain", None)
+        if self.brain is not None and setter is not None:
+            setter(self.brain)
+        self.live_title = live_title if live_title is not None else self._make_live_title()
+
+    def _make_brain(self) -> Any:
+        try:
+            from micnaga.brain.service import BrainService
+
+            return BrainService(lambda: self.config, db_factory=self._db_factory)
+        except Exception:
+            log.exception("secretaria unavailable")
+            return None
+
+    def _make_live_title(self) -> Any:
+        try:
+            from micnaga.brain.live_title import LiveTitler
+
+            def on_title(title: str) -> None:
+                setter = getattr(self.ui, "set_pill_title", None)
+                if setter is not None:
+                    setter(title)
+
+            return LiveTitler(lambda: self.config, lambda: self.controller.session_dir, on_title)
+        except Exception:
+            log.exception("live title unavailable")
+            return None
 
     def _db_key(self) -> object:
         """Ruta del indice segun la config actual: si cambia, Finisher y supervisor reabren."""
@@ -313,6 +344,12 @@ class Application:
                 log.warning("hotkey %s unavailable: %s", name, getattr(result, "error", ""))
         if self._start_watcher:
             self.watcher.start()
+        for extra in (self.brain, self.live_title):
+            if extra is not None:
+                try:
+                    extra.start()
+                except Exception:
+                    log.exception("could not start %s", type(extra).__name__)
         if self._exit_after_s > 0:
             timer = threading.Timer(self._exit_after_s, self.request_quit)
             timer.daemon = True
@@ -339,6 +376,7 @@ class Application:
             lambda: self.finisher.stop(5.0),
             self.supervisor.stop,
             self.events_server.stop,
+            *(x.stop for x in (self.live_title, self.brain) if x is not None),
         ):
             try:
                 step()
@@ -455,9 +493,14 @@ class Application:
         elif isinstance(event, JobDone):
             self._active_jobs.discard(event.job_id)
             self._refresh_processing()
-            self.ui.notify_ready(
-                Path(event.session_dir).name, event.title, event.duration_s, event.n_speakers
-            )
+            folder = Path(event.session_dir).name
+            if self.brain is not None:
+                # La Secretaria decide cuando sale el aviso (con «· N propuestas»).
+                self.brain.on_job_done(
+                    folder, event.title, event.duration_s, event.n_speakers, self._notify_ready
+                )
+            else:
+                self.ui.notify_ready(folder, event.title, event.duration_s, event.n_speakers)
             self.supervisor.kick()
         elif isinstance(event, JobFailed):
             self._active_jobs.discard(event.job_id)
@@ -470,6 +513,14 @@ class Application:
             self._refresh_processing()
             log.info("job %d discarded: %s", event.job_id, event.reason)
             self.supervisor.kick()
+
+    def _notify_ready(
+        self, folder: str, title: str, duration_s: float, speakers: int, proposals: int
+    ) -> None:
+        if proposals:
+            self.ui.notify_ready(folder, title, duration_s, speakers, proposals)
+        else:
+            self.ui.notify_ready(folder, title, duration_s, speakers)
 
     # ------------------------------------------------------------------ hilos de arranque
 
@@ -548,4 +599,10 @@ class Application:
             )
         )
         items.append(Diagnostic("Carpeta", "ok", str(paths.meetings_root(self.config))))
+        sec = self.config.secretaria
+        items.append(
+            Diagnostic(
+                "Secretaria", "ok" if sec.enabled else "off", sec.model_acta if sec.enabled else ""
+            )
+        )
         return items

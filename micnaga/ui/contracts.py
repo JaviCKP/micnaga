@@ -140,6 +140,15 @@ class HeldOps(Protocol):
     def delete_held(self, name: str) -> None: ...
 
 
+@runtime_checkable
+class BrainPort(Protocol):
+    """La Secretaria (``micnaga.brain.service.BrainService``) vista desde la UI."""
+
+    def api(self, action: str, args: dict[str, Any]) -> dict[str, Any]: ...
+
+    def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]: ...
+
+
 ModelState: TypeAlias = Literal[
     "pending", "downloading", "verifying", "verified", "failed", "skipped"
 ]

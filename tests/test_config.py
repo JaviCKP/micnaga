@@ -229,3 +229,26 @@ def test_v2_file_is_not_migrated(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text("[meta]\nversion = 2\n[gates]\nmin_duration_s = 180.0\n", encoding="utf-8")
     assert load_config(path).gates.min_duration_s == 180.0
+
+
+def test_secretaria_defaults_and_mcp_server_lines(tmp_home: Path) -> None:
+    c = Config()
+    assert c.secretaria.enabled is False
+    assert (c.secretaria.model_acta, c.secretaria.model_title) == ("sonnet", "haiku")
+    assert c.secretaria.mcp_servers == [] and c.secretaria.auth == "session"
+    good = '{"name": "drive", "command": "npx", "args": ["x"], "env": {}, "tools": ["search"]}'
+    c.secretaria.mcp_servers = [good]
+    save_config(c)
+    assert load_config().secretaria.mcp_servers == [good]
+    for bad in (
+        "not json",
+        '{"name": "micnaga", "command": "x", "tools": ["a"]}',
+        '{"name": "drive", "command": "x"}',
+        '{"name": "drive", "command": "x", "tools": []}',
+        '{"name": "Drive!", "command": "x", "tools": ["a"]}',
+        '{"name": "drive", "command": "x", "args": "y", "tools": ["a"]}',
+    ):
+        with pytest.raises(ConfigError):
+            config_from_dict({"secretaria": {"mcp_servers": [bad]}})
+    with pytest.raises(ConfigError):
+        config_from_dict({"secretaria": {"auth": "magic"}})

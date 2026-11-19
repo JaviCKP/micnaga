@@ -39,6 +39,7 @@ from micnaga.store.db import Database, open_database
 from micnaga.ui import i18n, sound, startup, winapi
 from micnaga.ui.bridge import LibraryApi, PillApi, PopupApi, SettingsApi, WizardApi
 from micnaga.ui.contracts import (
+    BrainPort,
     ConfigStore,
     DiagnosticsProvider,
     DownloadModels,
@@ -95,6 +96,8 @@ class _Pill:
     expanded: bool = False
     ignore_moves_until: float = 0.0
     monitor: winapi.MonitorInfo | None = None
+    title: str | None = None
+    """Titulo provisional de la Secretaria (la pastilla se ensancha mas al pasar el raton)."""
 
 
 class UiHost:
@@ -123,7 +126,9 @@ class UiHost:
         folder_opener: Callable[[Path], None] | None = None,
         acrylic: bool | None = None,
         held_ops: HeldOps | None = None,
+        brain: BrainPort | None = None,
     ) -> None:
+        self._brain = brain
         self._store: ConfigStore = config_store or FileConfigStore()
         self._config: Config = config if config is not None else self._store.load()
         self._cb = callbacks or UiCallbacks()
@@ -867,6 +872,7 @@ class UiHost:
         with self._lock:
             self._pill.visible = False
             self._pill.paused = False
+            self._pill.title = None
             self._pill_after_morph = None
         if win is not None:
             win.run_js("micnaga.pill.stop()")
@@ -907,7 +913,7 @@ class UiHost:
             x, y, w, h = pill.base
             scale = pill.monitor.scale if pill.monitor else 1.0
             if hovering:
-                wide = round(winapi.PILL_HOVER_WIDTH * scale)
+                wide = round(_hover_width(pill) * scale)
                 rect: Rect = (x - (wide - w) // 2, y, wide, h)
             else:
                 rect = pill.base
@@ -938,7 +944,7 @@ class UiHost:
                 return
             scale = pill.monitor.scale if pill.monitor else 1.0
             if pill.expanded:
-                x += (round(winapi.PILL_HOVER_WIDTH * scale) - pill.base[2]) // 2
+                x += (round(_hover_width(pill) * scale) - pill.base[2]) // 2
             pill.user_pos = (x, y)
             pill.base = (x, y, pill.base[2], pill.base[3])
         self._cb.on_pill_moved(x, y)
@@ -987,11 +993,27 @@ class UiHost:
         if self._tray is not None:
             self._tray.set_watching_paused(paused)
 
-    def notify_ready(self, folder: str, title: str, duration_s: float, speakers: int) -> None:
-        """Toast «Lista»: «Revision semanal · 47 min · 3 hablantes» con boton «Abrir»."""
-        self._toast.show_ready(folder, title, duration_s, speakers)
+    def notify_ready(
+        self, folder: str, title: str, duration_s: float, speakers: int, proposals: int = 0
+    ) -> None:
+        """Toast «Lista»: «Revision semanal · 47 min · 3 hablantes» (``· N propuestas``)."""
+        self._toast.show_ready(folder, title, duration_s, speakers, proposals)
+
+    def set_brain(self, brain: BrainPort | None) -> None:
+        """La Secretaria (la crea el integrador); las ventanas abiertas despues la usan."""
+        self._brain = brain
+
+    def set_pill_title(self, title: str | None) -> None:
+        """Titulo provisional en directo: se ve en la pastilla al pasar el raton."""
+        with self._lock:
+            self._pill.title = title or None
+        if self._pillwin is not None:
+            self._pillwin.run_js(f"micnaga.pill.setTitle({json.dumps(title or '')})")
 
     def _open_from_toast(self, folder: str) -> None:
+        resolve = getattr(self._brain, "resolve_folder", None)
+        if resolve is not None:  # la Secretaria pudo retitular la reunion despues del aviso
+            folder = str(resolve(folder))
         self.open_library(folder=folder)
         self._cb.on_open_meeting(folder)
 
@@ -1062,6 +1084,7 @@ class UiHost:
             ops=self._ops,
             opener=self._folder_opener,
             held=self._held_ops,
+            brain=self._brain,
         )
 
     def open_library(self, folder: str | None = None, seek_s: float | None = None) -> None:
@@ -1092,6 +1115,7 @@ class UiHost:
             ops=self._ops,
             on_applied=self.apply_config,
             folder_picker=self._pick_folder,
+            brain=self._brain,
         )
 
     def open_settings(self) -> None:
@@ -1163,6 +1187,13 @@ def _reset_pywebview_after_loop() -> None:
     windows = getattr(webview, "windows", None)
     if isinstance(windows, list):
         windows.clear()
+
+
+PILL_TITLE_HOVER_WIDTH = 420
+
+
+def _hover_width(pill: _Pill) -> int:
+    return PILL_TITLE_HOVER_WIDTH if pill.title else winapi.PILL_HOVER_WIDTH
 
 
 def _spawn_thread(fn: Callable[[], None]) -> None:

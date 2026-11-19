@@ -136,6 +136,16 @@
 .save-msg.err { color: var(--rec); }
 .savebar[data-dirty="false"] #discard, .savebar[data-dirty="false"] #save { display: none; }
 
+/* secretaria: live status lines inside the Claude / Odoo cards, the consent line, learned facts */
+.sec-status .finfo { gap: 12px; }
+.sec-status .sig { flex: none; }
+.sec-st-text { font-size: 12.5px; color: var(--text-2); line-height: 1.45; }
+.sec-st-text:empty::before { content: "—"; color: var(--text-3); }
+.sec-consent { margin-top: -10px; }
+.sec-learn .n { font-weight: 500; font-size: 13px; line-height: 1.45; }
+.sec-learn.review .n { color: var(--text-2); }
+.sec-learn.review .s { color: var(--amber); }
+
 @media (max-width: 700px) {
   .app { grid-template-columns: 64px 1fr; }
   .nav h1, .tab span, .nav-brand { display: none; }

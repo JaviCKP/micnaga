@@ -115,7 +115,16 @@
     sync(elapsed) { S.elapsed = elapsed; S.since = performance.now(); paint(); },
     setPaused(p) { if (p !== S.paused) applyPause(p); },
     setProvisional(p) { el.dataset.provisional = String(!!p); },
-    stop() { S.running = false; stopLoop(); poll.stop(); meters.mic.reset(); meters.sys.reset(); },
+    /** Secretaria: provisional title (shown on hover, next to the timer). */
+    setTitle(t) {
+      const node = document.getElementById("ptitle");
+      t = String(t || "").trim();
+      node.textContent = t;
+      node.hidden = !t;
+      el.dataset.hasTitle = String(!!t);
+      if (t) el.setAttribute("title", t); else el.removeAttribute("title");
+    },
+    stop() { S.running = false; stopLoop(); poll.stop(); meters.mic.reset(); meters.sys.reset(); api.pill.setTitle(""); },
     /** for screenshots / standalone */
     setLevels(m, s) { meters.mic.fill(mic.levelToUi(m)); meters.sys.fill(mic.levelToUi(s)); },
     setHover,
@@ -135,6 +144,7 @@
       const q = mic.params;
       api.pill.show({ elapsed: Number(q.get("elapsed") || 754), paused: q.get("paused") === "1", provisional: q.get("provisional") === "1" });
       if (q.get("undo") === "1") api.pill.undo({ seconds: 8 });
+      if (q.get("title")) api.pill.setTitle(q.get("title"));
       if (q.get("hover") === "1") setHover(true);
       if (q.get("levels")) {
         const [a, b] = q.get("levels").split(",").map(Number);
