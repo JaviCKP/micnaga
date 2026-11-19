@@ -31,6 +31,7 @@ class WhisperEngine:
     """Un modelo faster-whisper cargado (``close()`` lo libera)."""
 
     name: str
+    guards: bool = False
 
     def __init__(
         self,
