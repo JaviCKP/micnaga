@@ -198,7 +198,7 @@
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
         if (p.estado === "fallida") sub.push((IT() && IT().errorText(p.error)) || mic.t("secretaria.failed"));
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));
-        const note = p.estado === "pendiente" && IT() ? IT().notice(p) : null;
+        const note = p.estado === "pendiente" && S.editing !== p.id && IT() ? IT().notice(p) : null;
         if (note) {
           const n = el("span", "sec-pnote", note);
           n.dataset.out = String((p.invita && p.invita.length > 0) || !!p.envia);

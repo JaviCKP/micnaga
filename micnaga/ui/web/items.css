@@ -16,7 +16,7 @@
 .it-row.col { grid-template-columns: 1fr; gap: 6px; align-items: start; }
 .it-label { font-size: var(--fs-meta); color: var(--text-3); }
 .it-form .field-input { width: 100%; min-width: 0; }
-.it-area { resize: vertical; min-height: 96px; font: inherit; line-height: 1.5; }
+textarea.field-input.it-area { resize: vertical; min-height: 96px; font-family: var(--font); font-size: var(--fs-body); line-height: 1.5; }
 .it-seg { justify-self: start; }
 
 .it-people { display: grid; gap: 2px; }
