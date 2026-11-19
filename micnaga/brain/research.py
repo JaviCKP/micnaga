@@ -9,6 +9,10 @@ La Secretaria investiga primero (solo lectura, con topes) y luego escribe. Aqui:
   que esta reunion), para que el modelo lea las actas en paralelo en su primer turno.
 * ``extend``: anade al pedido la seccion «Investigacion» y los campos ``contexto``,
   ``desde_la_ultima`` y ``fuentes`` del esquema.
+* ``extract`` + ``prior_by_terms``: lo que dice la propia conversacion (empresas, nombres dichos
+  en voz alta, productos, siglas y temas), para investigar **siempre**, aunque nadie tenga
+  nombre y no haya evento de Calendar. El brief lleva las llamadas exactas del primer turno y
+  ``missing`` dice que falto (la Secretaria repite una vez si el modelo no investigo).
 * ``validate``: nada de fuera de la transcripcion entra en el acta sin una fuente que el modelo
   haya **visto** en una herramienta (o que esté en las candidatas): carpetas que existen, URLs de
   Google que aparecen tal cual en un resultado, registros de Odoo cuyo id se leyo.
@@ -235,27 +239,217 @@ def people_for(transcript: Any, folder: Path) -> list[str]:
     return list(dict.fromkeys(names))
 
 
-def brief(
-    candidates: list[dict[str, Any]], *, odoo: bool, google: list[str], mail: bool = False
-) -> str:
-    first = ["`leer_acta` de la reunión anterior candidata (o `reuniones_con` persona|empresa)"]
+# ============================================================================== terminos
+
+
+def _wordset(text: str) -> frozenset[str]:
+    return frozenset(text.split())
+
+
+_VOCATIVE = re.compile(
+    r"(?:\b(?i:gracias|hola|oye|mira|perdona|buenas|buenos d[ií]as|adi[oó]s|venga|vale|claro|"
+    r"hasta luego|un abrazo|encantad[oa]),?\s+|,\s*)"
+    r"([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})?)\s*(?=[.,?!]|$)"
+)
+_INTRO = re.compile(
+    r"\b(?i:soy|me llamo|te habla|le habla)\s+([A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}"
+    r"(?:\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,})?)"
+)
+_NOT_NAMES = _wordset(
+    "vale bueno perfecto gracias hola venga claro genial exacto nada si no pues entonces ok "
+    "okay vamos mira oye adios hasta luego buenas buenos dias tardes noches senor eso esto yo "
+    "tu usted ustedes hombre tio chicos chicas todos correcto efectivamente"
+)
+_TOPIC_STOP = _wordset(
+    "porque entonces tambien ahora bueno cuando donde tenemos tienes hacer puede pueden quiero "
+    "queremos vamos estamos sobre hemos habia tiene tengo estan seria mucho mucha muchos otros "
+    "otras cosas claro nosotros vosotros ellos decir digamos verdad luego antes despues mismo "
+    "misma todos todas estas estos bien parte sabes entiendo igual siempre momento necesitamos "
+    "podemos tendriamos habria estaba fueron hacemos ningun alguno alguna tambien realmente "
+    "solamente simplemente bastante primero segundo tercero cualquier pregunta respuesta "
+    "trabajo manera hablando diciendo haciendo tenido estado"
+)
+
+
+def extract(transcript: Any, *, limit: int = 6) -> dict[str, Any]:
+    """Candidatos para investigar sacados de la conversacion (heuristica barata, sin modelo).
+
+    ``personas``: nombres dichos en voz alta («gracias, Pedro», «soy Marta»); ``entidades``:
+    empresas, productos y siglas con mayuscula fuera del inicio de frase (y el titulo);
+    ``temas``: palabras largas frecuentes; ``pistas``: quien dijo que nombre (para nombrar a
+    los hablantes)."""
+    from micnaga.brain.cleanup import fold, proper_terms, recurring_terms
+
+    people: dict[str, int] = {}
+    hints: list[str] = []
+    speakers = [s.id for s in transcript.speakers]
+    for i, seg in enumerate(transcript.segments):
+        for m in _INTRO.finditer(seg.text):
+            name = m.group(1)
+            if fold(name) in _NOT_NAMES:
+                continue
+            people[name] = people.get(name, 0) + 2
+            hints.append(f"#{i}: `{seg.speaker}` se presenta como «{name}»")
+        for m in _VOCATIVE.finditer(seg.text):
+            name = m.group(1)
+            if fold(name.split()[0]) in _NOT_NAMES:
+                continue
+            people[name] = people.get(name, 0) + 1
+            others = [sid for sid in speakers if sid != seg.speaker]
+            to = f" (solo puede ser `{others[0]}`)" if len(others) == 1 else ""
+            hints.append(f"#{i}: `{seg.speaker}` llama «{name}» a alguien{to}")
+    named = {fold(n) for n in people}
+    entities: dict[str, int] = {}
+    for term in recurring_terms(transcript, min_count=1):
+        k = fold(term)
+        if k not in named and k not in _NOT_NAMES and len(term) >= 2:
+            entities[term] = entities.get(term, 0) + 1
+    title = str(getattr(transcript.meeting, "title", "") or "")
+    for term in proper_terms(title):
+        entities[term] = entities.get(term, 0) + 3
+    text = " ".join(seg.text for seg in transcript.segments)
+    words: dict[str, int] = {}
+    for tok in re.findall(r"[a-záéíóúñü]{6,}", text.lower()):
+        k = fold(tok)
+        if k not in _TOPIC_STOP:
+            words[k] = words.get(k, 0) + 1
+    rank = sorted(entities, key=lambda k: (-entities[k], -len(k)))
+    return {
+        "personas": sorted(people, key=lambda k: -people[k])[:limit],
+        "entidades": _dedupe(rank)[:limit],
+        "temas": [w for w in sorted(words, key=lambda k: -words[k]) if words[w] >= 3][:limit],
+        "pistas": list(dict.fromkeys(hints))[:12],
+    }
+
+
+def _dedupe(items: list[str]) -> list[str]:
+    from micnaga.brain.cleanup import fold
+
+    out: list[str] = []
+    for it in items:
+        k = fold(it)
+        if any(k in fold(o) or fold(o) in k for o in out):
+            continue
+        out.append(it)
+    return out
+
+
+def prior_by_terms(
+    db: Any, root: Path, terms: list[str], *, exclude: str | None, limit: int = MAX_RELATED
+) -> list[dict[str, Any]]:
+    """Reuniones anteriores con acta que hablan de lo mismo (empresa, persona o tema en su
+    titulo, participantes o acta)."""
+    score: dict[str, int] = {}
+    rows: dict[str, dict[str, Any]] = {}
+    for term in dict.fromkeys(t for t in terms if len(norm(t)) >= 3):
+        for m in meetings_with(db, root, term, exclude=exclude, limit=10):
+            if not m["con_acta"]:
+                continue
+            score[m["carpeta"]] = score.get(m["carpeta"], 0) + 1
+            rows[m["carpeta"]] = m
+    ranked = sorted(rows.values(), key=lambda m: (score[m["carpeta"]], m["fecha"]), reverse=True)
+    return ranked[:limit]
+
+
+def search_terms(terms: dict[str, Any]) -> list[str]:
+    return [*(terms.get("entidades") or []), *(terms.get("personas") or [])]
+
+
+def first_calls(terms: dict[str, Any], *, odoo: bool, gmail: bool, mail: bool = False) -> list[str]:
+    """Las llamadas concretas del primer turno, con sus argumentos."""
+    people = list(terms.get("personas") or [])
+    ents = list(terms.get("entidades") or [])
+    topics = list(terms.get("temas") or [])
+    who = (ents + people)[:3]
+    topic = " ".join(ents[:1] + topics[:2]) or (people[:1] or ["la reunión"])[0]
+    calls = [f'`buscar_en_reuniones("{topic}")`']
+    calls += [f'`reuniones_con("{w}")`' for w in who[:2]]
     if odoo:
-        first.append("el contacto o la empresa en Odoo")
-    if "gmail" in google or mail:
-        first.append(
-            "**siempre** una búsqueda de correo (Gmail o la herramienta de correo que tengas) "
-            "con el nombre de la persona o la empresa: hilos de los últimos 60-90 días, que "
-            "pueden confirmar lo que quedó pendiente"
-        )
+        calls += [f'`buscar_empresas("{e}")`' for e in ents[:2]]
+        calls += [f'`buscar_contactos("{p}")`' for p in people[:1]]
+        calls.append("`proyectos` (el del cliente o el del tema)")
+    if gmail or mail:
+        q = " OR ".join(f'"{x}"' for x in who[:3]) or " ".join(topics[:2]) or topic
+        calls.append(f"una búsqueda de correo: `{q} newer_than:90d`")
+    return calls
+
+
+def missing(result: Any, *, odoo: bool, gmail: bool) -> list[str]:
+    """Que parte de la investigacion obligatoria no se hizo en esta ejecucion."""
+    from micnaga.brain.google import service_of
+    from micnaga.brain.mcp import EVERY_ODOO_TOOL, LOCAL_TOOLS
+
+    calls = list(getattr(result, "tool_calls", []) or [])
+    out = []
+    if not any(c.server == "micnaga" and c.tool in LOCAL_TOOLS for c in calls):
+        out.append("actas")
+    if odoo and not any(c.server == "micnaga" and c.tool in EVERY_ODOO_TOOL for c in calls):
+        out.append("odoo")
+    if gmail and not any(service_of(c.name) == "gmail" for c in calls):
+        out.append("gmail")
+    return out
+
+
+def nudge(gaps: list[str], calls: list[str]) -> str:
+    names = {"actas": "reuniones anteriores", "odoo": "Odoo", "gmail": "Gmail"}
+    return (
+        "\n## Falta investigar\nNo has consultado: "
+        + ", ".join(names[g] for g in gaps)
+        + ". Antes de responder, haz ahora estas llamadas a la vez, en un solo turno: "
+        + "; ".join(calls)
+        + ". Después escribe el acta.\n"
+    )
+
+
+def reminder() -> str:
+    """Recordatorio al final del pedido (despues de una transcripcion larga)."""
+    return (
+        "\n## Recuerda\nAntes de responder, haz el primer turno de «Investigación» (las "
+        "consultas a la vez). Después escribe el acta con lo que encuentres.\n"
+    )
+
+
+def name_seen(name: str, transcript: Any, seen_text: str = "", extra: str = "") -> bool:
+    """El nombre propuesto para un hablante se dijo en la reunion, salio en una herramienta o
+    en el evento de Calendar: nada inventado."""
+    from micnaga.brain.cleanup import fold
+
+    words = [w for w in fold(name).split() if len(w) > 2]
+    if not words:
+        return False
+    hay = fold(" ".join(s.text for s in transcript.segments) + "\n" + seen_text + "\n" + extra)
+    return re.search(rf"\b{re.escape(words[0])}\b", hay) is not None
+
+
+def brief(
+    candidates: list[dict[str, Any]],
+    *,
+    odoo: bool,
+    google: list[str],
+    mail: bool = False,
+    terms: dict[str, Any] | None = None,
+) -> str:
+    terms = terms or {}
+    first = ["`leer_acta` de las reuniones anteriores candidatas"] if candidates else []
+    first += first_calls(terms, odoo=odoo, gmail="gmail" in google, mail=mail)
     if "drive" in google:
         first.append("en Drive, solo los documentos que se mencionen")
     lines = [
-        "## Investigación (antes de escribir)",
+        "## Investigación (antes de escribir, obligatoria)",
         "Primero investiga, luego escribe. Solo lectura. Las llamadas independientes van **a la "
-        "vez, en el mismo turno**. Presupuesto: 2-3 turnos de investigación, pocos resultados.",
+        "vez, en el mismo turno**. Presupuesto: 2-3 turnos de investigación, pocos resultados. "
+        "Investiga **siempre**, aunque los hablantes no tengan nombre.",
         "1. Quién y de qué: hablantes, nombres que se dicen, empresa y tema.",
         "2. Primer turno, todo a la vez: " + "; ".join(first) + ".",
     ]
+    found = [x for k in ("entidades", "personas", "temas") for x in terms.get(k) or []]
+    if found:
+        lines.append("Dicho en la reunión (para buscar): " + ", ".join(found) + ".")
+    if terms.get("pistas"):
+        lines.append(
+            "Pistas para nombrar a los hablantes sin nombre (propón `hablante` solo con prueba "
+            "clara: la frase, una firma de correo o el evento): " + "; ".join(terms["pistas"]) + "."
+        )
     if odoo:
         lines.append(
             "3. Segundo turno: lo que cuelga de lo encontrado: las **tareas abiertas** del "

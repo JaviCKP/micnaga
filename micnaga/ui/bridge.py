@@ -183,6 +183,9 @@ LIBRARY_BRAIN_ACTIONS = frozenset(
         "refine_undo",
         "refine_status",
         "open_link",
+        "full_acta",
+        "full_acta_make",
+        "full_acta_open",
         "caps",
         "horas_plan",
         "horas_apply",
@@ -339,8 +342,11 @@ class LibraryApi:
         limit = max(1, min(int(limit), 200))
         with self._db_factory() as db:
             hits = db.search(query, limit)
+            originals = self._original_hits(
+                db, query, {(h.folder, round(h.start, 2)) for h in hits}
+            )
             names: dict[str, dict[str, str]] = {}
-            for h in hits:
+            for h in [*hits, *originals]:
                 if h.folder not in names:
                     rec = db.get_meeting(h.folder)
                     names[h.folder] = {s.id: s.name for s in rec.speakers} if rec else {}
@@ -353,7 +359,7 @@ class LibraryApi:
                 "speaker": names.get(h.folder, {}).get(h.speaker, h.speaker),
                 "parts": split_snippet(h.snippet),
             }
-            for h in hits
+            for h in [*hits, *originals]
         ]
         if self._brain is not None:  # el texto de las actas tambien se encuentra
             try:
@@ -378,6 +384,26 @@ class LibraryApi:
             "ms": round((time.perf_counter() - started) * 1000, 1),
         }
 
+    @staticmethod
+    def _original_hits(db: Any, query: str, have: set[tuple[str, float]]) -> list[Any]:
+        """Lo que se oyo antes de la limpieza con IA (``original_fts``): la busqueda encuentra
+        tambien la palabra original. Sin repetir un parrafo que ya salio por su texto nuevo."""
+        try:
+            from micnaga.brain import store as bstore
+            from micnaga.store.db import SearchHit
+
+            bstore.ensure_schema(db)
+            out = []
+            for o in bstore.search_originals(db, query, 10):
+                rec = db.get_meeting(o.folder)
+                if rec is None or (o.folder, round(o.start, 2)) in have:
+                    continue
+                out.append(SearchHit(0, o.folder, rec.title, 0, o.start, o.speaker, "", o.snippet))
+            return out
+        except Exception:
+            log.debug("original wording search failed", exc_info=True)
+            return []
+
     def get_meeting(self, folder: str) -> Result:
         """Transcripcion (fuente de verdad: ``transcripcion.json``) + URLs del audio."""
         path = self._meeting_json(folder)
@@ -389,8 +415,13 @@ class LibraryApi:
             log.exception("cannot read %s", path)
             return fail("library.err.unreadable")
         d = tr.to_dict()
-        for seg in d["segments"]:
+        from micnaga.brain.cleanup import marks
+
+        for seg, s in zip(d["segments"], tr.segments, strict=True):
             seg.pop("words", None)  # el visor trabaja por frases; ahorra carga
+            seg.pop("merged_from", None)
+            if s.text_original is not None:  # limpieza con IA: palabras cambiadas y original
+                seg["fix"] = marks(s)
         audio: dict[str, str | None] = {}
         for track, filename in (("yo", paths.AUDIO_ME_FLAC), ("remoto", paths.AUDIO_REMOTE_FLAC)):
             audio[track] = (

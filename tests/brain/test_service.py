@@ -19,6 +19,9 @@ from micnaga.store.db import open_database
 from tests.brain import canned
 from tests.brain.conftest import FakeClaude, business_transcript, write_meeting
 
+RESEARCH = [{"tool": "reuniones_con", "args": {"texto": "Dental Triana"}}]
+"""El modelo falso investiga (sin investigar, la Secretaria repite la pasada una vez)."""
+
 
 class Notes:
     def __init__(self) -> None:
@@ -121,7 +124,7 @@ def test_boot_retries_what_failed_for_lack_of_a_claude_session(
         assert bstore.claim(db, folder.name)
         bstore.fail(db, folder.name, "not logged in", "auth")
         assert bstore.due(db) == []  # sin reintento automatico mientras la app sigue
-    log = fake_claude({"structured": canned.structured(with_crm=False)})
+    log = fake_claude({"structured": canned.structured(with_crm=False), "calls": RESEARCH})
     svc = BrainService(lambda: cfg())  # la app arranca de nuevo (ya con sesion)
     svc.start()
     try:
@@ -145,7 +148,7 @@ def test_boot_picks_up_recent_meetings_without_acta(
     old = write_meeting(
         business_transcript(start="2020-01-01T10:00:00+01:00"), "2020-01-01_1000_reunion"
     )
-    log = fake_claude({"structured": canned.structured(with_crm=False)})
+    log = fake_claude({"structured": canned.structured(with_crm=False), "calls": RESEARCH})
     svc = BrainService(lambda: cfg())
     svc.start()
     try:

@@ -71,6 +71,47 @@ class Mcp:
         return self.proc.wait(10)
 
 
+def cleanup(sc: dict[str, Any], argv: list[str], stdin: str) -> int:
+    """Una ventana de la limpieza con Haiku (no cuenta para ``fail_first`` ni pisa el log).
+
+    ``cleanup``: lista de cambios ``{"ids": [...], "texto": ...}``; cada ventana devuelve los
+    que tocan sus parrafos. ``cleanup_error``: ``auth`` para simular «sin sesion»."""
+    import re
+
+    log_path = sc.get("log")
+    if log_path:
+        Path(f"{log_path}.cleanup.{os.getpid()}").write_text(
+            json.dumps({"argv": argv, "stdin": stdin}, ensure_ascii=False), encoding="utf-8"
+        )
+    emit({"type": "system", "subtype": "init", "model": "claude-fake-haiku", "mcp_servers": []})
+    if sc.get("cleanup_error") == "auth":
+        emit(
+            {
+                "type": "result",
+                "subtype": "success",
+                "is_error": True,
+                "result": "Invalid API key · Please run /login",
+            }
+        )
+        return 1
+    body = stdin.split("## Párrafos", 1)[-1]
+    mine = {int(x) for x in re.findall(r"^#(\d+) ", body, re.M)}
+    changes = [c for c in sc.get("cleanup", []) if c["ids"] and c["ids"][-1] in mine]
+    emit(
+        {
+            "type": "result",
+            "subtype": "success",
+            "is_error": False,
+            "result": "",
+            "structured_output": {"cambios": changes},
+            "total_cost_usd": 0.001,
+            "duration_ms": 10,
+            "num_turns": 2,
+        }
+    )
+    return 0
+
+
 def main(argv: list[str]) -> int:
     sc: dict[str, Any] = json.loads(Path(SCENARIO).read_text(encoding="utf-8")) if SCENARIO else {}
     log_path = sc.get("log")
@@ -87,6 +128,9 @@ def main(argv: list[str]) -> int:
         )
         return 0
     stdin = sys.stdin.buffer.read().decode("utf-8")
+    sp = arg(argv, "--system-prompt-file")
+    if sp and "micnaga limpieza" in Path(sp).read_text(encoding="utf-8")[:80]:
+        return cleanup(sc, argv, stdin)
     log["stdin"] = stdin
     counter = Path(str(log_path) + ".count") if log_path else None
     n = 0

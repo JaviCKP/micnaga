@@ -87,6 +87,9 @@ class BrainService(GoogleApiMixin):
         self._acta_lock = threading.RLock()
         """Escrituras de ``acta.json`` desde la UI (aplicar, editar, revisar): una a la vez."""
         self._refining: dict[str, dict[str, Any]] = {}
+        self._full: dict[str, dict[str, Any]] = {}
+        """«Acta completa» en curso por carpeta (texto en streaming) o su ultimo resultado."""
+        self._open_file: Callable[[Path], None] = _startfile
 
     def set_nudge(self, nudge: Nudge | None) -> None:
         """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
@@ -322,7 +325,10 @@ class BrainService(GoogleApiMixin):
         final = folder
         proposals = 0
         try:
-            result = self._secretary().analyze(path, on_status=on_status)
+            secretary = self._secretary()
+            if hasattr(secretary, "clean"):  # transcripcion limpia antes del acta (§23)
+                secretary.clean(path, on_status=on_status)
+            result = secretary.analyze(path, on_status=on_status)
             final = result.folder.name
             proposals = result.proposals
             db = self._db()
@@ -772,6 +778,73 @@ class BrainService(GoogleApiMixin):
             if isinstance(model, str) and isinstance(rid, int) and not isinstance(rid, bool):
                 p["enlace"] = f"{base}/web#id={rid}&model={model}&view_type=form"
 
+    # ---- «Acta completa» (bajo demanda, en streaming)
+
+    def _with_db(self, fn: Callable[[Any], Any]) -> Any:
+        db = self._db()
+        try:
+            return fn(db)
+        finally:
+            db.close()
+
+    def _api_full_acta(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Lo guardado (al instante) y, si se esta escribiendo, lo que lleva."""
+        from micnaga.brain import full_acta
+
+        path = self._folder_path(args)
+        if path is None:
+            return {"ok": False, "error": "library.err.not_found"}
+        with self._lock:
+            live = dict(self._full.get(path.name) or {}) or None
+        return {"ok": True, "doc": full_acta.read(path), "live": live}
+
+    def _api_full_acta_make(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Empieza a escribirla en un hilo; la vista consulta ``full_acta`` mientras tanto."""
+        path = self._folder_path(args)
+        if path is None:
+            return {"ok": False, "error": "library.err.not_found"}
+        if not self.enabled:
+            return {"ok": False, "error": "secretaria.err.disabled"}
+        key = path.name
+        with self._lock:
+            if (self._full.get(key) or {}).get("fase") == "escribiendo":
+                return {"ok": True}
+            self._full[key] = {"fase": "escribiendo", "texto": "", "inicio": time.time()}
+        threading.Thread(
+            target=self._write_full, args=(path,), name="micnaga-acta-completa", daemon=True
+        ).start()
+        return {"ok": True}
+
+    def _write_full(self, path: Path) -> None:
+        from micnaga.brain.full_acta import FullActa
+
+        key = path.name
+
+        def on_text(chunk: str) -> None:
+            with self._lock:
+                st = self._full.get(key)
+                if st is not None:
+                    st["texto"] = (st.get("texto") or "") + chunk
+
+        try:
+            FullActa(self.config, self._runner(), with_db=self._with_db).make(path, on_text=on_text)
+            state: dict[str, Any] = {"fase": "lista"}
+        except Exception as exc:
+            log.warning("full acta failed: %s", getattr(exc, "kind", type(exc).__name__))
+            state = {"fase": "error", "error": str(getattr(exc, "kind", "failed"))}
+        with self._lock:
+            self._full[key] = state
+
+    def _api_full_acta_open(self, args: dict[str, Any]) -> dict[str, Any]:
+        from micnaga.brain import full_acta
+
+        path = self._folder_path(args)
+        target = path / full_acta.FILE if path is not None else None
+        if target is None or not target.is_file():
+            return {"ok": False, "error": "library.err.not_found"}
+        self._open_file(target)
+        return {"ok": True}
+
     def _api_analyze(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._folder_path(args)
         if path is None:
@@ -915,3 +988,9 @@ class BrainService(GoogleApiMixin):
         if not isinstance(version, str):
             return {"ok": False, "error": "secretaria.err.invalid"}
         return {"ok": learn.restore(version), **self._api_learned({})}
+
+
+def _startfile(path: Path) -> None:  # pragma: no cover - abre el editor de Markdown real
+    import os
+
+    os.startfile(path)  # type: ignore[attr-defined,unused-ignore]
