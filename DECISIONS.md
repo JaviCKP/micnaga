@@ -770,8 +770,18 @@ Basada en `integ/all` (popup nuevo + Secretaria). Verificado contra el Odoo 19.0
 10. **Medido (real, 19-11-2026)**: capacidades y días que faltan correctos (11 laborables del
     5-11 al 19-11; 2-11 «posible libre»); `claude -p` real con las herramientas reales: 11–13 s,
     5 turnos, `mis_partes_de_horas` → `proyectos` → `tareas`; propuso 44 líneas (4 por día, 8 h/día,
-    siguiendo el patrón), el evento del martes 24 a las 10:00 y, en una de dos pasadas, las dos
+    siguiendo el patrón), el evento del martes 24 a las 10:00 y, en dos de tres pasadas, las dos
     tareas con fecha (el modelo no es determinista en eso).
 11. **Sin verificar**: ninguna escritura contra el Odoo real (por diseño); `hr.expense` (se envía
     `total_amount_currency` + `payment_mode`, sin producto); si `project.project` admite notas de
     un usuario sin escritura (no se ofrece); calendario real vacío (sin eventos que probar).
+12. **Revisión libre, items uniformes** (petición del usuario): cada propuesta es un item
+    `{id, grupo, tipo, titulo, motivo, seg, datos, checked, aviso, estado}`; al servirla se le
+    añade `campos` (esquema editable por tipo, `plan.EDIT_FIELDS`: clave, tipo de control,
+    lista de opciones y valor actual). Un único editor en la UI (lápiz por item) pinta los campos;
+    las listas (`proyectos`, `destinos`, `tipos_actividad`, `etapas`) se leen una vez al final de
+    la pasada (`acta.opciones`). Cada cambio vuelve a la forma de salida del modelo
+    (`plan.to_input` + `apply_changes`) y pasa por **la misma validación** que la propuesta
+    original (`plan.rebuild`); `Executor.replace(id, version)` sustituye el item conservando su
+    `id` (es el punto de entrada previsto para «corrígelo con un mensaje»). El cuerpo de la nota
+    es editable (por defecto, el acta en texto) y se publica escapado.
