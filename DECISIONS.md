@@ -565,3 +565,45 @@ Resultado: 75 dependencias; 70 permisivas, 1 MPL-2.0 (tqdm), 2 LGPL revisadas, 2
 6. **Pendiente:** el instalador NO se ha ejecutado en este PC (escribiría Run y menú Inicio); probar instalación,
    actualización y desinstalación a mano. `Disable*Page=yes` sin ninguna página visible debería arrancar la
    instalación sola: confirmarlo en la prueba real.
+
+## 17. Calidad de transcripción y de hablantes (rama `fix/transcript-quality`)
+
+Origen: grabación real de 200 s (diálogo de 2 personas en un vídeo de YouTube, micro callado) procesada con
+Parakeet + `onnx`. Prioridad del usuario: **ni hablantes fantasma, ni hablantes que no existen, ni muchos
+hablantes cuando hay pocos**.
+
+1. **Números del ASR** (`asr/parakeet.py`): el vocabulario de Parakeet v3 no tiene dígitos con marca de palabra;
+   un número llega como token `▁` suelto (`" "`) + dígitos. Un token solo de espacio abre ahora la palabra
+   siguiente («a las 8 y 50», no «a las8 y50»). Whisper no tenía el fallo (palabras ya separadas).
+2. **Título** (`capture/cli.py`): `micnaga record --title T` escribe `meet_title` en `capture.json`; de ahí salen el
+   título de la transcripción y el nombre final de la carpeta. Sin `--title`, `meet_title` queda vacío.
+3. **Participantes**: solo hablantes con al menos un segmento (también «Yo»: un micro callado no es participante).
+4. **Motor de diarización: se mantiene `onnx` por defecto.** Se evaluó `sherpa-onnx` `OfflineSpeakerDiarization`
+   (pyannote segmentation-3.0 + embeddings CAM++/ERes2Net de 3D-Speaker, WeSpeaker ResNet34-LM o NeMo TitaNet
+   small, clustering rápido; sin torch) contra `onnx` y `diarize` (tabla en `docs/diarization_onnx.md`). Con el
+   umbral recomendado por sherpa-onnx (0,5) da **15 hablantes en bruto para 2 voces** en la grabación real y
+   sobre-segmenta los diálogos TTS; ningún umbral (0,5–1,1) acierta el número de hablantes en todos los casos
+   con ninguno de los 4 modelos, y en TTS su DER (6–51 %) es muy superior al de `onnx` (1,2–2,3 %) incluso con
+   `num_clusters` fijado (el error es de la segmentación, no del clustering; las voces sintéticas pueden
+   perjudicarla). En la grabación real, con umbral ajustado a mano, solo empata con `onnx`. Es 4–8 veces más
+   lento. **No se adopta con la evidencia actual**; re-evaluar con reuniones reales (banco F2) con
+   `tests/engines/diar_compare.py`. Sus modelos quedan fijados en `models.CANDIDATE_MANIFEST` (la app nunca los
+   descarga) y el adaptador es solo de evaluación (`tests/engines/sherpa_diar.py`). `pyannote` no se pudo
+   evaluar (no instalado).
+5. **Post-filtro de hablantes fantasma** (`engines/diar/postfilter.py`, etapa 7, todos los motores): un hablante
+   con < 3 s de voz o un único turno de < 4 s nunca se reporta por separado; se absorbe en el más parecido
+   (coseno de embeddings, solo en memoria) o en el del turno más cercano, nunca se absorbe al dominante, y se
+   renumera `S1..Sn`. Va antes de calcular las huellas (nunca se guarda la de un fantasma). **Invierte a propósito**
+   la política de `onnx._merge_small` / `diarize.merge_similar_speakers` de conservar un hablante pequeño «si no
+   se parece a nadie»: un participante real que solo dice una frase corta queda atribuido a otro (se corrige
+   fusionando/renombrando a mano); un hablante inventado es peor. Umbrales elegidos por la especificación del
+   usuario (~2–3 s), no calibrados.
+6. **Frases y fronteras de turno:** (a) la etapa 8 recorre cada pista en orden temporal: un cambio de hablante
+   remoto siempre corta la frase (antes una frase de S1 podía «saltar» por encima de la respuesta de S2);
+   (b) un cambio de hablante a mitad de oración y sin pausa se mueve al fin de oración más cercano (≤ 0,6 s,
+   ≤ 4 palabras, el turno que cede conserva ≥ 2 palabras); (c) en `onnx` la frontera entre ventanas de distinta
+   etiqueta va al instante más silencioso entre sus centros en vez de al punto medio. En la grabación real (c)
+   sola corrige 3 fragmentos y estropea 1 («llegado a la vida.»), que (b) arregla; juntas, el acuerdo palabra a
+   palabra con una referencia aproximada por tono sube de 85,1 % a 88,6 %.
+7. **Huellas:** la etapa 7 anota `info.embedder` (`embedding_name` del motor o su `name`) y la etapa 10 compara
+   las huellas en ese espacio; para los motores actuales es el mismo nombre que antes (compatibles).
