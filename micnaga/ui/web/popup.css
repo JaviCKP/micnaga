@@ -124,8 +124,8 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 .btn-round.no:hover { color: var(--text); background: var(--hover); }
 .btn-round.no .ico { width: 13px; height: 13px; stroke-width: 2; }
 
-.rec-wrap { position: relative; width: 54px; height: 54px; display: grid; place-items: center; margin-right: 4px; }
-.btn-round.rec { width: 42px; height: 42px; color: #0b0b0f; background: var(--warm); }
+.rec-wrap { position: relative; width: 52px; height: 52px; display: grid; place-items: center; margin-right: 4px; }
+.btn-round.rec { width: 40px; height: 40px; color: #0b0b0f; background: var(--warm); }
 .btn-round.rec:hover { background: light-dark(#a9420f, #ffa06b); transform: scale(1.03); }
 .btn-round.rec:active { transform: scale(0.94); }
 .btn-round:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
@@ -146,8 +146,8 @@ body.popup-page { width: 100vw; height: 100vh; background: transparent; }
 /* the frame drains with Python's countdown; it holds (violet) while the pointer is on the card */
 .countdown { position: absolute; inset: 0; border-radius: 6px; pointer-events: none; }
 .countdown > i {
-  position: absolute; inset: 0; border-radius: inherit; padding: 2px;
-  background: conic-gradient(var(--cd, var(--text-3)) calc(var(--p, 1) * 1turn), var(--meter-track) 0);
+  position: absolute; inset: 0; border-radius: inherit; padding: 1.5px;
+  background: conic-gradient(var(--cd, var(--text-2)) calc(var(--p, 1) * 1turn), var(--line) 0);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);

@@ -134,8 +134,8 @@ def test_popup_is_an_alertdialog_with_accessible_name_and_visible_default_focus(
     assert p.eval(
         "[document.querySelector('.card').offsetWidth, document.querySelector('.card').offsetHeight]"  # noqa: E501
     ) == [372, 112]  # compact glass card (spec: 400 x 232; resized at the user's request)
-    # 16 px (spec: 12): the in-page glass card follows the references
-    assert p.eval("getComputedStyle(document.querySelector('.card')).borderRadius") == "16px"
+    # 6 px: the Bitnaga promo's flat card (spec: 12; the glass card was 16)
+    assert p.eval("getComputedStyle(document.querySelector('.card')).borderRadius") == "6px"
     # both answers keep their keyboard shortcut, also for assistive tech
     assert p.eval("document.getElementById('b-rec').getAttribute('aria-keyshortcuts')") == "Enter"
     assert p.eval("document.getElementById('b-no').getAttribute('aria-keyshortcuts')") == "Escape"

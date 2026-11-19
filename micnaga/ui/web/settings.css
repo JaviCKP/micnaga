@@ -113,7 +113,6 @@
 .diag li + li { box-shadow: inset 0 1px 0 var(--line); }
 .sig { position: relative; width: 7px; height: 7px; border-radius: 1px; background: var(--text-3); justify-self: center; }
 .sig[data-s="ok"] { background: var(--accent); }
-.sig[data-s="ok"]::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: 0 0 0 1px var(--accent); animation: dot-pulse 2.4s var(--ease-out) infinite; }
 .sig[data-s="warn"] { background: transparent; box-shadow: inset 0 0 0 1.5px var(--warm); }
 .sig[data-s="fail"] { background: var(--warm); }
 .sig[data-s="off"] { background: transparent; box-shadow: inset 0 0 0 1px var(--text-3); }
@@ -178,4 +177,3 @@
 .sec-caps[hidden] { display: none; }
 /* one state square beside each section title (Claude, Odoo, Google): the three read alike */
 .group > h3 .sig-h { display: inline-block; width: 6px; height: 6px; margin-left: 8px; vertical-align: 1px; }
-.group > h3 .sig-h[data-s="ok"]::after { animation: none; }
