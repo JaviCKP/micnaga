@@ -21,9 +21,11 @@ para que el integrador los ate a atajos globales si quiere teclado sin ratón.
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -62,6 +64,11 @@ PILL_FLUSH_S = 2.0
 POPUP_VERIFY_S = 1.2
 """Tras mostrar un popup se comprueba que la ventana sigue visible; si no, se reintenta."""
 UNDO_SIZE = (236, 40)
+MAX_GUI_RESTARTS = 5
+"""Si el bucle de la GUI termina sin «Salir» se recrean las ventanas (como mucho tantas veces
+seguidas en ``GUI_RESTART_WINDOW_S``; despues se sale, registrado)."""
+GUI_RESTART_WINDOW_S = 600.0
+SM_SHUTTINGDOWN = 0x2000
 THEME_POLL_S = 5.0
 _BG = {"light": "#eceef3", "dark": "#050507"}
 ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
@@ -170,6 +177,12 @@ class UiHost:
         self._popup_script = ""
         self._pill_flush_timer: threading.Timer | None = None
         self._undo_visible = False
+        # salida
+        self._quit_reason: str | None = None
+        self._loop_end_notes: list[str] = []
+        self._restarts: list[float] = []
+        self._pill_started = 0.0  # monotonic - segundos grabados (para recrear la pastilla)
+        self.exit_reason: str = ""
         # pastilla
         self._pill = _Pill()
         self._pill_after_morph: tuple[float, bool] | None = None
@@ -181,15 +194,72 @@ class UiHost:
         return self._config
 
     def run(self, on_ready: Callable[[UiHost], None] | None = None) -> None:
-        """Arranca la GUI en el hilo actual (debe ser el principal). Bloquea hasta ``quit()``."""
+        """Arranca la GUI en el hilo actual (debe ser el principal). Bloquea hasta ``quit()``.
+
+        La app solo debe salir por «Salir» (``quit``), el fin de sesion de Windows o el
+        instalador. Si el bucle de pywebview termina por otra cosa (se cerraron las ventanas
+        ocultas, Ctrl+C en la consola, el proceso de WebView2 cayo...), se registra el motivo y
+        se recrean las ventanas sin tocar la grabacion en curso (ver ``_loop_ended``).
+        """
         winapi.ensure_dpi_aware()
         self._server.start()
-        self._create_overlays()
-        self._factory.start(lambda: self._bootstrap(on_ready), icon=ICO_PATH)
+        first = True
+        while True:
+            self._create_overlays()
+            self._factory.start(
+                functools.partial(self._bootstrap, on_ready if first else None, first=first),
+                icon=ICO_PATH,
+            )
+            if not self._loop_ended():
+                break
+            first = False
         self._shutdown_services()
 
-    def quit(self) -> None:
+    def _loop_ended(self) -> bool:
+        """El bucle de la GUI termino. ``True`` = recrear las ventanas y seguir."""
+        if self._stopping.is_set():
+            self.exit_reason = self._quit_reason or "quit"
+            log.info("GUI loop ended: %s", self.exit_reason)
+            return False
+        notes = self._loop_end_notes or ["all windows closed or GUI thread exited"]
+        if _sigint_pending():
+            notes.append("console Ctrl+C (SIGINT) reached pywebview")
+        reason = "; ".join(notes)
+        self._loop_end_notes = []
+        if self._session_ending():
+            self.exit_reason = f"session_end ({reason})"
+            log.info("GUI loop ended by the end of the Windows session: %s", reason)
+            return False
+        now = time.monotonic()
+        self._restarts = [t for t in self._restarts if now - t < GUI_RESTART_WINDOW_S]
+        if len(self._restarts) >= MAX_GUI_RESTARTS:
+            self.exit_reason = f"gui_loop_failed ({reason})"
+            log.error("GUI loop keeps ending (%s); giving up and exiting", reason)
+            return False
+        self._restarts.append(now)
+        log.error("GUI loop ended without «Salir» (%s); recreating the windows", reason)
+        _reset_pywebview_after_loop()
+        with self._lock:
+            # el estado (popup abierto, pastilla visible) se conserva: ``_restore_surfaces``
+            # lo vuelve a pintar en las ventanas nuevas
+            self._popup = self._pillwin = None
+            self._windows.clear()
+            if self._popup_state == "morphing":
+                self._popup_state = "idle"
+        return True
+
+    def _session_ending(self) -> bool:
+        try:
+            import ctypes
+
+            return bool(ctypes.windll.user32.GetSystemMetrics(SM_SHUTTINGDOWN))
+        except Exception:
+            return False
+
+    def quit(self, reason: str = "quit") -> None:
         """Cierra todo: ventanas, bandeja, servidor. Hace que ``run()`` devuelva."""
+        if self._quit_reason is None:
+            self._quit_reason = reason
         self._stopping.set()
         if self._tray is not None:
             self._tray.stop()
@@ -207,7 +277,7 @@ class UiHost:
             self._tray.stop()
         self._server.stop()
 
-    def _bootstrap(self, on_ready: Callable[[UiHost], None] | None) -> None:
+    def _bootstrap(self, on_ready: Callable[[UiHost], None] | None, *, first: bool = True) -> None:
         for win in (self._popup, self._pillwin):
             if win is not None:
                 win.wait_loaded(15.0)
@@ -220,6 +290,9 @@ class UiHost:
                 if not self._overlay_in_use(win):
                     win.hide()
         self._setup_acrylic()
+        if not first:
+            self._restore_surfaces()
+            return
         if self._want_tray:
             self._tray = Tray(self._tray_callbacks(), language=self._config.ui.language)
             self._tray.start()
@@ -229,6 +302,24 @@ class UiHost:
                 on_ready(self)
             except Exception:
                 log.exception("on_ready failed")
+
+    def _restore_surfaces(self) -> None:
+        """Tras recrear las ventanas: la pastilla de una grabacion en curso vuelve a su sitio
+        (el cronometro lo corrige el controlador en <= 30 s); un popup abierto se repinta."""
+        if self._pill.visible and self._pill.monitor is not None:
+            elapsed = max(0.0, time.monotonic() - self._pill_started)
+            self._show_pill(elapsed, self._pill.provisional, self._pill.monitor)
+        win, rect = self._popup, self._popup_rect
+        if win is not None and rect is not None and self._popup_script:
+            with self._lock:
+                showing = self._popup_state == "showing"
+            if showing:
+                self._present_popup(win, rect)
+
+    def _note_overlay_closed(self, key: str) -> None:
+        if not self._stopping.is_set():
+            self._loop_end_notes.append(f"overlay window {key!r} was closed")
+            log.warning("overlay window %s closed while running", key)
 
     def _overlay_in_use(self, win: UiWindow) -> bool:
         with self._lock:
@@ -276,6 +367,8 @@ class UiHost:
             self._overlay_spec("pill", "pill.html", "Micnaga ", 200, 40, PillApi(self))
         )
         self._pillwin.on_moved(self._on_pill_moved)
+        self._popup.on_closed(lambda: self._note_overlay_closed("popup"))
+        self._pillwin.on_closed(lambda: self._note_overlay_closed("pill"))
 
     def _overlay_spec(
         self, key: str, page: str, title: str, w: int, h: int, api: object
@@ -759,6 +852,7 @@ class UiHost:
         with self._lock:
             pill = self._pill
             pill.visible, pill.provisional, pill.monitor = True, provisional, mon
+            self._pill_started = time.monotonic() - elapsed
             pill.base, pill.expanded = rect, False
             pill.ignore_moves_until = time.monotonic() + 0.4
         with self._lock:
@@ -795,6 +889,7 @@ class UiHost:
 
     def sync_pill(self, elapsed_s: float) -> None:
         """Corrige el cronometro (tiempo efectivo de grabacion, sin pausas) si deriva."""
+        self._pill_started = time.monotonic() - elapsed_s
         if self._pillwin is not None:
             self._pillwin.run_js(f"micnaga.pill.sync({elapsed_s:.2f})")
 
@@ -870,8 +965,9 @@ class UiHost:
         self._cb.on_open_settings()
 
     def _tray_quit(self) -> None:
+        self._quit_reason = "tray_quit"
         self._cb.on_quit()  # primero el integrador (parar captura/vigilante), luego la GUI
-        self.quit()
+        self.quit("tray_quit")
 
     def set_processing(self, processing: bool) -> None:
         """Azul en la bandeja mientras el worker procesa."""
@@ -1050,6 +1146,23 @@ class UiHost:
 
     def has_window(self, key: str) -> bool:
         return key in self._windows
+
+
+def _sigint_pending() -> bool:
+    mod = sys.modules.get("webview.platforms.winforms")
+    return bool(getattr(mod, "_sigint_received", False))
+
+
+def _reset_pywebview_after_loop() -> None:
+    """pywebview deja estado de modulo tras ``start``: la bandera de SIGINT (si no, el bucle
+    nuevo saldria al instante) y la lista de ventanas."""
+    mod = sys.modules.get("webview.platforms.winforms")
+    if mod is not None and getattr(mod, "_sigint_received", False):
+        mod._sigint_received = False  # type: ignore[attr-defined]
+    webview = sys.modules.get("webview")
+    windows = getattr(webview, "windows", None)
+    if isinstance(windows, list):
+        windows.clear()
 
 
 def _spawn_thread(fn: Callable[[], None]) -> None:

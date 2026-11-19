@@ -348,7 +348,7 @@ class Application:
     def request_quit(self, reason: str = "exit_after") -> None:
         """Salir como el «Salir» de la bandeja (para ``--exit-after`` y pruebas)."""
         self.shutdown(reason=reason)
-        self.ui.quit()
+        self.ui.quit(reason)
 
     @property
     def stopped(self) -> bool:

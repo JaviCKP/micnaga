@@ -136,7 +136,12 @@ def move_to_held(
 
     Idempotente: una carpeta que ya esta dentro de ``_descartadas`` solo actualiza ``held.json``.
     """
-    root = meetings_root if meetings_root is not None else session_dir.parent
+    if meetings_root is not None:
+        root = meetings_root
+    elif session_dir.parent.name == HELD_DIRNAME:
+        root = session_dir.parent.parent  # ya apartada: no anidar ``_descartadas``
+    else:
+        root = session_dir.parent
     target_root = held_root(root)
     if session_dir.parent == target_root:
         dest = session_dir
