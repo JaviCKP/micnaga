@@ -1,9 +1,11 @@
+barlow-400.woff2, barlow-600.woff2 — Barlow Regular / SemiBold (latin subset)
 barlow-semi-condensed-700.woff2 — Barlow Semi Condensed Bold (latin subset)
 
 Copyright 2017 The Barlow Project Authors (https://github.com/jpt/barlow)
 
-Copied from the local Bitnaga website build (assets/fonts/), which self-hosts the same file.
-Unmodified. Used by Micnaga as its display face (titles, timers).
+Copied from the local Bitnaga website build (assets/fonts/), which self-hosts the same files.
+Unmodified. Used by Micnaga as its text face (Barlow) and display face (Barlow Semi Condensed).
+JetBrains Mono (jetbrains-mono-500.woff2) has its own notice in OFL-JetBrainsMono.txt.
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:

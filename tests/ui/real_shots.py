@@ -481,7 +481,7 @@ def run(out: Path, only: set[str] | None = None) -> list[Path]:
         js_api=lib,
         width=LIB_SIZE[0],
         height=LIB_SIZE[1],
-        background_color="#eceef3",
+        background_color="#f3f3f0",
         text_select=False,
         zoomable=False,
     )
@@ -491,7 +491,7 @@ def run(out: Path, only: set[str] | None = None) -> list[Path]:
         js_api=settings,
         width=SET_SIZE[0],
         height=SET_SIZE[1],
-        background_color="#eceef3",
+        background_color="#f3f3f0",
         hidden=not want("settings"),
         text_select=False,
         zoomable=False,

@@ -248,8 +248,32 @@
    */
   mic.wave = function (canvas, opts) {
     const o = Object.assign({ bar: 3, gap: 2, min: 2, fade: 0.28, round: true, curve: 2.2 }, opts || {});
+    // data-dither="2" (cell px): the same history drawn as 1-bit Bayer cells (the Bitnaga skin):
+    // loud = a dense blob that reaches the edges, quiet = a sparse centre line, old = thinning out
+    const cell = canvas.dataset && canvas.dataset.dither ? Math.max(1, parseFloat(canvas.dataset.dither) || 2) : 0;
+    if (cell) { o.bar = cell; o.gap = cell / 2; }
     const ctx = canvas.getContext("2d");
-    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0;
+    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0, pushes = 0;
+    const BAY = [0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22,
+      3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21];
+    function drawCells() {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);                   // whole device pixels: crisp cells
+      const cd = Math.max(1, Math.round(cell * dpr)), gd = Math.max(1, Math.round(o.gap * dpr)), step = cd + gd;
+      const cw = canvas.width, chh = canvas.height;
+      const rows = Math.max(1, Math.floor(chh / cd)), x0 = cw - n * step + gd, y0 = Math.floor((chh - rows * cd) / 2), mid = rows / 2;
+      for (let i = 0; i < n; i++) {
+        const h = Math.pow(hist[(head + i) % n], o.curve) * mid;   // half height, in cells
+        const age = o.fade + (1 - o.fade) * (i / Math.max(1, n - 1));
+        const sx = pushes - (n - 1 - i);                    // the pattern travels with the samples
+        for (let r = 0; r < rows; r++) {
+          const dr = Math.abs(r + 0.5 - mid);
+          const th = (BAY[((r & 7) << 3) | (((sx % 8) + 8) % 8)] + 0.5) / 64;
+          // solid core, dithered tip (1.5 cells), older columns thinning out
+          const k = dr <= Math.max(0.5, h - 0.5) ? age : dr < h + 1.5 ? ((h + 1.5 - dr) / 2) * age : 0;
+          if (th < k) ctx.fillRect(x0 + i * step, y0 + r * cd, cd, cd);
+        }
+      }
+    }
     function size() {
       dpr = window.devicePixelRatio || 1;
       const r = canvas.getBoundingClientRect();
@@ -266,6 +290,7 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = color;
+      if (cell) { drawCells(); return; }
       const used = n * (o.bar + o.gap) - o.gap, x0 = W - used;
       for (let i = 0; i < n; i++) {
         const v = hist[(head + i) % n];                     // i = 0 oldest .. n-1 newest
@@ -287,7 +312,7 @@
         const s = v > last ? v : last * 0.55 + v * 0.45;
         last = s;
         if (!n) return;
-        hist[head] = s; head = (head + 1) % n;
+        hist[head] = s; head = (head + 1) % n; pushes++;
         draw();
       },
       fill(v) { hist.fill(Math.max(0, Math.min(1, v))); last = v; draw(); },

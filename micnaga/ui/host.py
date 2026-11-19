@@ -71,7 +71,7 @@ seguidas en ``GUI_RESTART_WINDOW_S``; despues se sale, registrado)."""
 GUI_RESTART_WINDOW_S = 600.0
 SM_SHUTTINGDOWN = 0x2000
 THEME_POLL_S = 5.0
-_BG = {"light": "#eceef3", "dark": "#050507"}
+_BG = {"light": "#f3f3f0", "dark": "#050507"}
 ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
 
 
