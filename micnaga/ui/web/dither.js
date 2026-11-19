@@ -4,7 +4,7 @@
  *  1. Ground: the planet limb and its haze from the Bitnaga promo, ordered-dithered with an
  *     8x8 Bayer matrix in 4 px cells. WebGL2 renders ONE pixel per cell into a canvas at 1/4 of
  *     the window and CSS scales it up with image-rendering: pixelated (cells stay exact).
- *     ~15 fps; paused while the window is hidden, minimized or not focused; one still frame
+ *     ~12 fps; paused while the window is hidden, minimized or not focused; one still frame
  *     with prefers-reduced-motion or data-motion="off"; a CPU poster of the same light when
  *     WebGL2 is missing. Mounted into `.ambient` (data-rise / data-cx / data-gain / data-fall
  *     tune the limb per surface). Not mounted inside the embedded Ajustes (the parent paints).
@@ -21,7 +21,7 @@
   const embedded = params.get("embed") === "1" && window.parent !== window;
   if (embedded) root.classList.add("embedded");      // transparent page: the parent's limb shows
   const CELL = 4;            // px per dither cell (the promo's cell)
-  const FPS = 15;
+  const FPS = 12;
   const reduced = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : null;
   const darkMq = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
   const motionOn = () => root.dataset.motion !== "off" && !(reduced && reduced.matches);
@@ -155,7 +155,9 @@ void main(){
   function size() {
     if (!ground.cv) return;
     const W = Math.max(1, window.innerWidth), H = Math.max(1, window.innerHeight);
-    ground.cw = Math.ceil(W / CELL); ground.ch = Math.ceil(H / CELL);
+    // only the band where there is light: a smaller layer for the compositor to refresh
+    const band = (ground.cfg ? ground.cfg.rise : 64) + 300;
+    ground.cw = Math.ceil(W / CELL); ground.ch = Math.ceil(Math.min(H, band) / CELL);
     const cv = ground.cv;
     if (cv.width !== ground.cw || cv.height !== ground.ch) { cv.width = ground.cw; cv.height = ground.ch; }
     cv.style.width = ground.cw * CELL + "px";
@@ -165,7 +167,8 @@ void main(){
   function paint() {
     if (!ground.cv) return;
     const tones = (isDark() ? TONES.dark : TONES.light).map(rgb);
-    const c = ground.cfg;
+    // paper needs less light than night for the same presence
+    const c = Object.assign({}, ground.cfg, { gain: ground.cfg.gain * (isDark() ? 1 : 0.85) });
     if (ground.gl) {
       const gl = ground.gl, u = ground.u;
       gl.viewport(0, 0, ground.cw, ground.ch);
@@ -197,7 +200,7 @@ void main(){
     g.putImageData(img, 0, 0);
   }
 
-  // ---- the loop: ~15 fps, only while it can be seen ----------------------------------------
+  // ---- the loop: ~12 fps, only while it can be seen ----------------------------------------
   const visible = () => !document.hidden && document.hasFocus();
   function loop() {
     if (!ground.gl || ground.timer || ground.raf) return;
@@ -237,9 +240,9 @@ void main(){
     // progress edge: 12 cells that thin out to nothing (left = solid, right = empty)
     root.style.setProperty("--dither-edge", texture(12, 2, (x, y) => bayer(x, y) < 1 - (x + 0.5) / 12, color));
     // «thinking»: a soft band of cells, densest in the middle
-    root.style.setProperty("--dither-band", texture(48, 8, (x, y) => {
-      const d = Math.abs((x + 0.5) / 48 - 0.5) * 2;
-      return bayer(x, y) < 0.55 * (1 - d * d);
+    root.style.setProperty("--dither-band", texture(40, 8, (x, y) => {
+      const d = Math.abs((x + 0.5) / 40 - 0.5) * 2;
+      return bayer(x, y) < 0.6 * Math.pow(1 - d, 1.6);
     }, color));
   }
 
@@ -314,7 +317,20 @@ void main(){
   let rz = 0;
   window.addEventListener("resize", () => { clearTimeout(rz); rz = setTimeout(() => { size(); paint(); }, 60); });
 
-  window.micDither = { wipe, repaint: retheme, get running() { return !!(ground.timer || ground.raf); }, get mode() { return ground.gl ? "webgl2" : ground.cpu ? "poster" : "none"; } };
+  /** ms per frame of the ground, GPU included (gl.finish), over n frames: for measuring only */
+  function bench(n) {
+    if (!ground.gl) return null;
+    n = n || 60;
+    const t0 = performance.now();
+    for (let i = 0; i < n; i++) { ground.t += 1 / FPS; paint(); ground.gl.finish(); }
+    return (performance.now() - t0) / n;
+  }
+  window.micDither = {
+    wipe, bench, repaint: retheme,
+    get running() { return !!(ground.timer || ground.raf); },
+    get mode() { return ground.gl ? "webgl2" : ground.cpu ? "poster" : "none"; },
+    get cells() { return [ground.cw, ground.ch]; },
+  };
 
   function boot() { accents(); mountGround(); if (!motionOn()) { ground.t = 8; paint(); } }
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", boot);

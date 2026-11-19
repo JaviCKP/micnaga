@@ -244,12 +244,12 @@ button { cursor: default; }
 
 /* the promo's card: flat plane, hairline, radius 6, two corner brackets */
 .k-card { position: relative; background: var(--surface); box-shadow: inset 0 0 0 1px var(--line); border-radius: var(--r-lg); }
-.k-card::before, .k-card::after, .brackets::before, .brackets::after {
-  content: ""; position: absolute; width: 10px; height: 10px; pointer-events: none;
-  border: 1.5px solid var(--text); opacity: 0.85;
+.k-card::before, .k-card::after {
+  content: ""; position: absolute; width: 14px; height: 14px; pointer-events: none;
+  border: 1.5px solid var(--text); opacity: 0.75;
 }
-.k-card::before, .brackets::before { left: -1px; top: -1px; border-right: 0; border-bottom: 0; border-top-left-radius: 3px; }
-.k-card::after, .brackets::after { right: -1px; bottom: -1px; border-left: 0; border-top: 0; border-bottom-right-radius: 3px; }
+.k-card::before { left: 0; top: 0; border-right: 0; border-bottom: 0; border-top-left-radius: var(--r-lg); }
+.k-card::after { right: 0; bottom: 0; border-left: 0; border-top: 0; border-bottom-right-radius: var(--r-lg); }
 
 /* ---- icons ------------------------------------------------------------------------- */
 .ico {
