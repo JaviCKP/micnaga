@@ -14,11 +14,16 @@ Opciones (para desarrollo y pruebas)::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import ctypes
+import faulthandler
 import hashlib
 import logging
 import os
+import threading
 import time
+from collections.abc import Callable
+from typing import IO, Any
 
 log = logging.getLogger("micnaga.app")
 
@@ -71,6 +76,81 @@ class SingleInstance:
             self._handle = None
 
 
+CTRL_C_EVENT, CTRL_BREAK_EVENT, CTRL_CLOSE_EVENT = 0, 1, 2
+CTRL_LOGOFF_EVENT, CTRL_SHUTDOWN_EVENT = 5, 6
+CONSOLE_CLOSE_WAIT_S = 4.0
+"""Windows mata el proceso ~5 s tras CTRL_CLOSE: se espera hasta aqui a cerrar la grabacion."""
+_CONSOLE_EVENTS = {
+    CTRL_C_EVENT: "console_ctrl_c",
+    CTRL_BREAK_EVENT: "console_ctrl_break",
+    CTRL_CLOSE_EVENT: "console_close",
+    CTRL_LOGOFF_EVENT: "session_logoff",
+    CTRL_SHUTDOWN_EVENT: "system_shutdown",
+}
+
+
+class ConsoleGuard:
+    """Ctrl+C / Ctrl+Break en la consola desde la que se lanzo la app (``micnaga app`` en un
+    terminal, o un Ctrl+C dirigido a OTRO programa de la misma consola, que Windows reparte a
+    todos sus procesos) ya no la cierran: llegaban al manejador de SIGINT de pywebview, que
+    terminaba el bucle de la GUI y la app salia «limpiamente» sin que nadie pulsara «Salir».
+    Se registran y se ignoran. Cerrar la consola, cerrar sesion o apagar si salen, por el camino
+    de «Salir» y con el motivo en el log."""
+
+    def __init__(self, on_exit: Callable[[str], None]) -> None:
+        self._on_exit = on_exit
+        self._handler: Any = None
+
+    def handle(self, event: int) -> bool:
+        reason = _CONSOLE_EVENTS.get(event, f"console_event_{event}")
+        if event in (CTRL_C_EVENT, CTRL_BREAK_EVENT):
+            log.warning("ignored %s (use «Salir» in the tray to exit)", reason)
+            return True
+        log.info("console event %s: exiting", reason)
+        done = threading.Event()
+
+        def _quit() -> None:
+            try:
+                self._on_exit(reason)
+            finally:
+                done.set()
+
+        threading.Thread(target=_quit, name="console-exit", daemon=True).start()
+        done.wait(CONSOLE_CLOSE_WAIT_S)
+        return True
+
+    def install(self) -> bool:
+        try:
+            proto = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_uint)
+            self._handler = proto(lambda ev: 1 if self.handle(int(ev)) else 0)
+            return bool(ctypes.windll.kernel32.SetConsoleCtrlHandler(self._handler, True))
+        except Exception:
+            log.exception("could not install the console control handler")
+            return False
+
+    def uninstall(self) -> None:
+        if self._handler is not None:
+            with contextlib.suppress(Exception):
+                ctypes.windll.kernel32.SetConsoleCtrlHandler(self._handler, False)
+            self._handler = None
+
+
+def _enable_crash_traces() -> IO[str] | None:
+    """Un cierre nativo (access violation en WebView2/PortAudio...) mata el proceso sin pasar
+    por ``logging``: ``faulthandler`` deja la pila de cada hilo en ``logs/crash.log``."""
+    try:
+        from micnaga import paths
+
+        f = open(paths.logs_dir() / "crash.log", "a", encoding="utf-8")  # noqa: SIM115
+        f.write(f"--- app start {time.strftime('%Y-%m-%d %H:%M:%S')} pid {os.getpid()}\n")
+        f.flush()
+        faulthandler.enable(file=f, all_threads=True)
+        return f
+    except Exception:
+        log.exception("could not enable crash traces")
+        return None
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="micnaga app", description="Bandeja, vigilante y ventanas.")
     p.add_argument("--exit-after", type=float, default=0.0, metavar="S", help="salir tras S s")
@@ -88,6 +168,7 @@ def run(argv: list[str]) -> int:
     from micnaga.logging_setup import setup_logging
 
     setup_logging("app")
+    crash_log = _enable_crash_traces()
     guard = SingleInstance()
     if not args.no_single_instance and not guard.acquire():
         log.info("another instance is already running; exiting")
@@ -109,11 +190,23 @@ def run(argv: list[str]) -> int:
             process_start=started,
             exit_after_s=args.exit_after,
         )
+        console = ConsoleGuard(app.request_quit)
+        console.install()
         try:
             app.ui.run(app.start)
         finally:
-            app.shutdown()
-        log.info("exited cleanly after %.1f s", time.time() - (started or time.time()))
+            reason = getattr(app.ui, "exit_reason", "") or "gui_loop_ended"
+            app.shutdown(reason=reason)
+            console.uninstall()
+        log.info(
+            "exited cleanly after %.1f s (reason: %s)",
+            time.time() - (started or time.time()),
+            reason,
+        )
         return 0
     finally:
         guard.release()
+        if crash_log is not None:
+            with contextlib.suppress(Exception):
+                faulthandler.disable()
+                crash_log.close()

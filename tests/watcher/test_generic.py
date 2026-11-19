@@ -3,18 +3,27 @@
 from __future__ import annotations
 
 from micnaga.watcher.machine import (
+    BeginDiscard,
+    CancelDiscard,
+    CloseEndPopup,
     ClosePopup,
     ConfirmRecording,
-    DiscardRecording,
+    EndAnswer,
     HidePill,
+    HoldRecording,
+    MarkEnd,
     Phase,
     PopupAnswer,
     PrivatePause,
+    RecordingFailed,
     RecordNow,
+    ShowEndPopup,
     ShowPill,
     ShowPopup,
     StartRecording,
     StopAndFinalize,
+    SuspendWatching,
+    Undo,
     UserStop,
     WatcherState,
 )
@@ -37,6 +46,7 @@ def asnap(*apps: MicApp, tabs: tuple[object, ...] = ()) -> SignalSnapshot:
 
 IN_TEAMS = asnap(TEAMS)
 IN_CHROME = asnap(CHROME_APP)
+TEAMS_MEETING = MeetingInfo(title="Teams", generic_app=TEAMS.key)
 
 
 def to_recording(sim: Sim, snap: SignalSnapshot = IN_TEAMS) -> None:
@@ -78,8 +88,7 @@ def test_provisional_recording_starts_at_20s_without_popup() -> None:
     sim = Sim()
     assert sim.tick(IN_TEAMS, 20) == []  # t = 1..20 s: aun no (el primero cuenta como 0)
     acts = sim.tick(IN_TEAMS)  # t = 21 s = 20 s despues del primer tick
-    meeting = MeetingInfo(title="Teams", generic_app=TEAMS.key)
-    assert acts == [StartRecording(provisional=True, meeting=meeting), ShowPill(True, False)]
+    assert acts == [StartRecording(provisional=True, meeting=TEAMS_MEETING), ShowPill(True, False)]
     assert sim.m.state is WatcherState.RECORDING_PRE_POPUP
     assert sim.tick(IN_TEAMS, 19) == []  # sin popup todavia
 
@@ -113,15 +122,30 @@ def test_grabar_confirms() -> None:
     assert sim.m.state is WatcherState.RECORDING_CONFIRMED
 
 
-def test_ahora_no_discards_everything_hides_the_pill_and_ignores_the_app_session() -> None:
+def test_ahora_no_offers_undo_hides_the_pill_and_ignores_the_app_session() -> None:
     sim = Sim()
     to_popup(sim)
     acts = sim.event(PopupAnswer(False))
-    assert acts == [DiscardRecording(), ClosePopup("declined"), HidePill()]
+    assert acts == [ClosePopup("declined"), HidePill(), BeginDiscard(8.0)]
+    assert sim.m.state is WatcherState.DISCARD_PENDING
+    assert sim.m.ignored_keys == {TEAMS.key}
+    assert sim.tick(IN_TEAMS, 8) == [HoldRecording("declined", trim=False)]
     assert sim.m.state is WatcherState.IGNORED
     assert sim.tick(IN_TEAMS, 300) == []  # el mismo uso del micro no vuelve a disparar
     assert sim.tick(OFF, 10) == []  # un corte de 10 s no es soltar el micro
     assert sim.tick(IN_TEAMS, 300) == []
+
+
+def test_undo_of_ahora_no_confirms_and_shows_the_pill_again() -> None:
+    sim = Sim()
+    to_popup(sim)
+    sim.event(PopupAnswer(False))
+    sim.tick(IN_TEAMS, 5)
+    acts = sim.event(Undo())
+    assert acts == [CancelDiscard(), ConfirmRecording(), ShowPill(False, False)]
+    assert sim.m.state is WatcherState.RECORDING_CONFIRMED
+    assert sim.m.ignored_keys == frozenset()
+    assert sim.tick(IN_TEAMS, 60) == []
 
 
 def test_new_mic_session_of_the_same_app_after_release_can_trigger_again() -> None:
@@ -139,6 +163,7 @@ def test_other_apps_are_not_ignored_by_ahora_no() -> None:
     sim = Sim()
     to_popup(sim)
     sim.event(PopupAnswer(False))
+    assert sim.tick(IN_TEAMS, 8) == [HoldRecording("declined")]
     both = asnap(TEAMS, ZOOM)
     assert "StartRecording" in names(sim.tick(both, 21))
 
@@ -151,55 +176,95 @@ def test_popup_timeout_keeps_the_recording_provisional_without_a_second_pill() -
     assert sim.m.state is WatcherState.RECORDING_PROVISIONAL
 
 
-def test_on_timeout_discard_drops_hides_pill_and_ignores() -> None:
+def test_on_timeout_discard_holds_hides_pill_and_ignores() -> None:
     sim = Sim(on_timeout="discard")
     to_popup(sim)
     acts = sim.tick(IN_TEAMS, 15)
-    assert acts == [DiscardRecording(), ClosePopup("timeout"), HidePill()]
+    assert acts == [ClosePopup("timeout"), HoldRecording("unanswered"), HidePill()]
     assert sim.tick(IN_TEAMS, 120) == []
 
 
 # ----------------------------------------------------------------------------- fin
 
 
-def test_release_during_the_prepopup_phase_finalizes_provisional() -> None:
+def test_release_during_the_prepopup_phase_is_held_silently() -> None:
+    """Nunca se pregunto: sin popup de fin, se aparta recortada (recuperable)."""
     sim = Sim()
     to_recording(sim)
     sim.tick(IN_TEAMS, 5)
-    assert sim.tick(OFF, 15) == []
+    assert sim.tick(OFF, 2) == []
     assert sim.m.state is WatcherState.ENDING
     acts = sim.tick(OFF, 1)
-    assert [type(a) for a in acts] == [StopAndFinalize, HidePill]
-    final = acts[0]
-    assert isinstance(final, StopAndFinalize) and final.confirmed is False
-    assert final.meeting.title == "Teams" and final.meeting.code is None
+    assert acts == [MarkEnd(), HoldRecording("unanswered", trim=True), HidePill()]
+    assert sim.m.phase is Phase.IDLE and sim.m.session is None
+    assert not any(isinstance(a, (ShowEndPopup, ShowPopup, StopAndFinalize)) for a in sim.log)
 
 
-def test_generic_session_ending_while_the_popup_is_up_is_finalized_not_discarded() -> None:
+def test_prepopup_blip_shorter_than_end_confirm_s_keeps_recording() -> None:
+    sim = Sim()
+    to_recording(sim)
+    assert sim.tick(OFF, 2) == []
+    assert sim.tick(IN_TEAMS) == []
+    assert sim.m.state is WatcherState.RECORDING_PRE_POPUP
+
+
+def test_generic_session_ending_while_the_popup_is_up_asks_with_the_end_popup() -> None:
     sim = Sim()
     to_popup(sim)
     sim.tick(IN_TEAMS, 3)
-    assert sim.tick(OFF, 15) == []  # la cuenta atras del popup se congela con la senal caida
+    assert sim.tick(OFF, 2) == []  # la cuenta atras del popup se congela con la senal caida
+    assert sim.m.popup_remaining_s == 11.0  # 3 s + el tick que detecto la caida; luego quieta
     acts = sim.tick(OFF, 1)
-    assert [type(a) for a in acts] == [ClosePopup, StopAndFinalize, HidePill]
-    assert acts[0] == ClosePopup("meeting_ended")
-    assert isinstance(acts[1], StopAndFinalize) and acts[1].confirmed is False
-    assert not any(isinstance(a, DiscardRecording) for a in sim.log)
+    assert acts == [
+        ClosePopup("meeting_ended"),
+        MarkEnd(),
+        ShowEndPopup(False, "Teams", None, 10.0),
+    ]
+    acts = sim.tick(OFF, 10)  # sin respuesta: se aparta (nunca se dijo «Si»)
+    assert acts == [CloseEndPopup("timeout"), HoldRecording("unanswered", trim=True), HidePill()]
+    assert not any(isinstance(a, StopAndFinalize) for a in sim.log)
 
 
-def test_confirmed_generic_session_finalizes_confirmed() -> None:
+def test_unconfirmed_generic_end_popup_save_finalizes_confirmed() -> None:
+    sim = Sim()
+    to_popup(sim)
+    sim.tick(OFF, 3)
+    acts = sim.event(EndAnswer("save"))
+    assert acts == [
+        CloseEndPopup("answered"),
+        ConfirmRecording(),
+        StopAndFinalize(True, TEAMS_MEETING, trim=True),
+        HidePill(),
+    ]
+
+
+def test_confirmed_generic_session_asks_and_finishes_confirmed() -> None:
     sim = Sim()
     to_popup(sim)
     sim.event(PopupAnswer(True))
-    acts = sim.tick(OFF, 16)
-    assert acts[0] == StopAndFinalize(True, MeetingInfo(title="Teams", generic_app=TEAMS.key))
+    assert sim.tick(OFF, 3) == [MarkEnd(), ShowEndPopup(True, "Teams", None, 10.0)]
+    acts = sim.event(EndAnswer("finish"))
+    assert acts == [
+        CloseEndPopup("answered"),
+        StopAndFinalize(True, TEAMS_MEETING, trim=True),
+        HidePill(),
+    ]
+
+
+def test_generic_mic_back_retracts_the_end_popup() -> None:
+    sim = Sim()
+    to_popup(sim)
+    sim.event(PopupAnswer(True))
+    sim.tick(OFF, 3)
+    assert names(sim.tick(IN_TEAMS)) == ["CloseEndPopup", "ClearEnd"]
+    assert sim.m.state is WatcherState.RECORDING_CONFIRMED
 
 
 def test_other_app_does_not_keep_the_session_alive() -> None:
     sim = Sim()
     to_recording(sim)
-    acts = sim.tick(asnap(ZOOM), 16)
-    assert "StopAndFinalize" in names(acts)
+    acts = sim.tick(asnap(ZOOM), 3)
+    assert "HoldRecording" in names(acts)
 
 
 # ----------------------------------------------------------------------------- tray / usuario
@@ -213,12 +278,54 @@ def test_record_now_during_prepopup_confirms() -> None:
     assert sim.tick(IN_TEAMS, 60) == []  # ya no habra popup
 
 
-def test_user_stop_during_prepopup_is_unconfirmed_and_not_retriggered() -> None:
+def test_user_stop_during_prepopup_asks_to_save_and_is_not_retriggered() -> None:
     sim = Sim()
     to_recording(sim)
     acts = sim.event(UserStop())
-    assert [type(a) for a in acts] == [StopAndFinalize, HidePill]
+    assert acts == [MarkEnd(), ShowEndPopup(False, "Teams", None, 10.0)]
+    assert sim.m.state is WatcherState.END_PROMPT
+    acts = sim.event(EndAnswer("discard"))
+    assert acts == [CloseEndPopup("answered"), HidePill(), BeginDiscard(8.0)]
+    assert sim.tick(IN_TEAMS, 8) == [HoldRecording("declined", trim=True)]
     assert sim.tick(IN_TEAMS, 120) == []
+
+
+def test_recording_failed_in_prepopup_hides_the_pill_and_ignores_the_app() -> None:
+    sim = Sim()
+    to_recording(sim)
+    assert sim.event(RecordingFailed()) == [HidePill()]
+    assert sim.m.phase is Phase.IDLE and sim.m.session is None
+    assert sim.m.state is WatcherState.IGNORED
+    assert sim.tick(IN_TEAMS, 120) == []  # no vuelve a intentarlo solo
+    acts = sim.event(RecordNow())  # pero «Grabar ahora» si, al momento
+    assert acts == [
+        StartRecording(provisional=False, meeting=MeetingInfo(manual=True)),
+        ShowPill(False, False),
+    ]
+
+
+def test_recording_failed_while_the_generic_popup_is_up() -> None:
+    sim = Sim()
+    to_popup(sim)
+    assert sim.event(RecordingFailed()) == [ClosePopup("meeting_ended"), HidePill()]
+    assert sim.m.phase is Phase.IDLE
+    assert sim.tick(IN_TEAMS, 120) == []
+
+
+def test_suspend_during_the_generic_popup_holds_and_hides_the_pill() -> None:
+    sim = Sim()
+    to_popup(sim)
+    acts = sim.event(SuspendWatching())
+    assert acts == [ClosePopup("suspended"), HoldRecording("suspended"), HidePill()]
+    assert sim.m.state is WatcherState.SUSPENDED
+
+
+def test_needs_fast_ticks_when_the_prepopup_signal_is_lost() -> None:
+    sim = Sim()
+    to_recording(sim)
+    assert not sim.m.needs_fast_ticks
+    sim.tick(OFF)
+    assert sim.m.needs_fast_ticks
 
 
 def test_private_pause_freezes_the_prepopup_timer() -> None:
@@ -272,9 +379,10 @@ def test_generic_session_is_upgraded_when_the_meet_tab_appears_before_the_popup(
     assert sim.m.session is not None and sim.m.session.generic_app is None
     assert sim.m.session.code == CODE_A
     assert sum(isinstance(a, StartRecording) for a in sim.log) == 1
-    # la sesion ahora vive de la pestana de Meet
-    final = sim.tick(IN_CHROME, 16)
-    assert isinstance(final[-2], StopAndFinalize) and final[-2].meeting.code == CODE_A
+    # la sesion ahora vive de la pestana de Meet: sin ella (aunque chrome siga con el micro) acaba
+    assert names(sim.tick(IN_CHROME, 3)) == ["ClosePopup", "MarkEnd", "ShowEndPopup"]
+    final = sim.event(EndAnswer("save"))[2]
+    assert isinstance(final, StopAndFinalize) and final.meeting.code == CODE_A
 
 
 def test_upgrade_after_the_popup_was_shown_adopts_the_code_silently() -> None:
@@ -283,7 +391,8 @@ def test_upgrade_after_the_popup_was_shown_adopts_the_code_silently() -> None:
     acts = sim.tick(asnap(CHROME_APP, tabs=(tab(),)))
     assert acts == []  # no se vuelve a mostrar
     sim.event(PopupAnswer(True))
-    final = sim.tick(OFF, 16)[0]
+    sim.tick(OFF, 3)
+    final = sim.event(EndAnswer("finish"))[1]
     assert isinstance(final, StopAndFinalize) and final.meeting.code == CODE_A
 
 
@@ -302,16 +411,20 @@ def test_ahora_no_on_an_upgraded_session_ignores_both_paths() -> None:
     snap = asnap(CHROME_APP, tabs=(tab(),))
     sim.tick(snap)  # mejora a Meet y abre el popup
     acts = sim.event(PopupAnswer(False))
-    assert acts == [DiscardRecording(), ClosePopup("declined"), HidePill()]
+    assert acts == [ClosePopup("declined"), HidePill(), BeginDiscard(8.0)]
     assert sim.m.ignored_keys == {CODE_A, "app:chrome.exe"}
-    assert sim.tick(snap, 120) == []
+    assert sim.tick(snap, 120) == [HoldRecording("declined")]
 
 
-def test_meet_path_ending_before_answering_still_discards() -> None:
+def test_meet_path_ending_before_answering_asks_with_the_end_popup() -> None:
     sim = Sim()
     sim.to_popup(asnap(CHROME_APP, tabs=(tab(),)))
-    acts = sim.tick(OFF, 16)
-    assert acts == [ClosePopup("meeting_ended"), DiscardRecording()]
+    acts = sim.tick(OFF, 3)
+    assert acts == [
+        ClosePopup("meeting_ended"),
+        MarkEnd(),
+        ShowEndPopup(False, None, MONITOR, 10.0),
+    ]
 
 
 # ----------------------------------------------------------------------------- config
@@ -327,8 +440,6 @@ def test_generic_apps_false_only_meet_path_is_active() -> None:
 
 
 def test_suspend_clears_the_generic_counters() -> None:
-    from micnaga.watcher.machine import SuspendWatching
-
     sim = Sim()
     sim.tick(IN_TEAMS, 15)
     sim.event(SuspendWatching(100))

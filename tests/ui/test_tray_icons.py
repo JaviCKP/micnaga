@@ -57,16 +57,27 @@ def test_shipped_ico_exists_and_is_valid() -> None:
     assert Image.open(icons.ICO_PATH).format == "ICO"
 
 
-def test_menu_has_the_five_spec_entries_in_order() -> None:
+def test_menu_has_the_spec_entries_in_order() -> None:
     spec = tray.menu_spec("watching", watching_paused=False)
     assert [e.label for e in spec] == [
         "Grabar ahora",
         "Pausar vigilancia 1 h",
         "Abrir biblioteca",
+        "Rellenar partes de horas",
         "Ajustes",
         "Salir",
     ]
     assert [e.key for e in spec if e.default] == ["open_library"]
+    # siempre presente (el menu se arma por posicion); activo solo con Odoo y permiso de horas
+    assert not spec[3].enabled
+    assert tray.menu_spec("watching", watching_paused=False, timesheets=True)[3].enabled
+
+
+def test_fill_timesheets_entry_opens_the_panel() -> None:
+    seen: list[str] = []
+    t = tray.Tray(UiCallbacks(on_open_timesheets=lambda: seen.append("horas")))
+    t.dispatch("fill_timesheets")
+    assert seen == ["horas"]
 
 
 def test_menu_disables_record_and_pause_while_recording_and_flips_resume() -> None:

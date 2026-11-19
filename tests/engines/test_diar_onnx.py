@@ -193,6 +193,23 @@ def test_turns_from_windows_midpoint_boundaries_and_merging() -> None:
     assert len(segs) == 2
 
 
+def test_speaker_change_boundary_moves_to_the_pause_between_window_centres() -> None:
+    # voz continua con una pausa breve en 1,60-1,70 s (cambio de turno sin hueco de VAD)
+    audio = (0.2 * np.sin(2 * np.pi * 180 * np.arange(int(3.75 * SR)) / SR)).astype(np.float32)
+    audio[int(1.60 * SR) : int(1.70 * SR)] = 0.0
+    energy = onx.frame_energy(audio)
+    assert energy.shape == (375,)
+    spans = [(0.0, 1.5), (0.75, 2.25), (1.5, 3.0), (2.25, 3.75)]
+    segs = onx.turns_from_windows(spans, [0, 0, 1, 1], [(0.0, 3.75)], [0, 0, 0, 0], energy=energy)
+    assert segs[0][2] == 0 and segs[1][2] == 1
+    assert 1.60 <= segs[0][1] <= 1.70 and segs[0][1] == segs[1][0]  # en la pausa, no en 1,875
+    # entre ventanas del mismo hablante no se mueve nada; sin tramas, punto medio
+    same = onx.turns_from_windows(spans, [0, 0, 0, 0], [(0.0, 3.75)], [0] * 4, energy=energy)
+    assert same == [(0.0, 3.75, 0)]
+    assert onx.quietest_point(np.zeros(0, np.float32), 1.0, 2.0) == pytest.approx(1.5)
+    assert onx.frame_energy(np.zeros(10, np.float32)).shape == (0,)
+
+
 def test_turns_never_overlap() -> None:
     rng = np.random.default_rng(7)
     spans = [(0.75 * i, 0.75 * i + 1.5) for i in range(40)]
@@ -460,3 +477,26 @@ def test_real_embedding_matches_wespeakerruntime_on_same_audio(tmp_path: Path) -
             assert cos >= 0.99
     finally:
         d.close()
+
+
+@pytest.mark.models
+@pytest.mark.timeout(900)
+def test_real_models_long_silence_and_noise_burst_make_no_ghost(tmp_path: Path) -> None:
+    """Dialogo de 2 voces + 70 s de silencio + rafaga de ruido: 2 hablantes tras la etapa 7."""
+    from micnaga.pipeline.engines.diar.postfilter import absorb_minor_speakers
+    from tests.engines import diar_compare, diar_eval
+
+    built = diar_compare.mixed_case(tmp_path)
+    if built is None:
+        pytest.skip("SAPI voices unavailable")
+    audio, truth = built
+    d = create_diarizer(Config(), "onnx")
+    try:
+        raw = d.diarize(audio, SR, None)
+        turns = absorb_minor_speakers(raw, d.embed(audio, SR, raw))  # type: ignore[attr-defined]
+    finally:
+        d.close()
+    assert len({t.speaker for t in turns}) == 2
+    end = max(t.end for t in truth)
+    assert all(t.start < end + 1.0 for t in turns)  # nada en el silencio ni en la rafaga
+    assert diar_eval.der(turns, truth) < DER_BOUND

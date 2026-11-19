@@ -6,14 +6,19 @@
 <title>Micnaga</title>
 <link rel="stylesheet" href="tokens.css">
 <link rel="stylesheet" href="library.css">
+<link rel="stylesheet" href="secretaria.css">
+<link rel="stylesheet" href="items.css">
+<link rel="stylesheet" href="horas.css">
 </head>
 <body>
-<div class="ambient" aria-hidden="true"></div>
+<div class="ambient" aria-hidden="true" data-rise="74" data-cx="0.62" data-gain="0.5" data-fall="64"></div>
 <div class="app">
   <aside class="side glass" aria-label="Reuniones" data-i18n-aria-label="library.side_label">
     <header class="side-head">
       <h1 class="display" data-i18n="library.title">Biblioteca</h1>
       <span class="count display tnum" id="count"></span>
+      <button class="icon-btn horas-btn" id="horas-btn" type="button" hidden aria-pressed="false" data-icon="clock" data-i18n-aria-label="secretaria.horas.open" data-i18n-data-tip="secretaria.horas.open"></button>
+      <button class="icon-btn settings-btn" id="settings-btn" type="button" data-icon="sliders" data-i18n-aria-label="library.open_settings" data-i18n-data-tip="library.open_settings"></button>
     </header>
     <div class="search">
       <span data-icon="search" aria-hidden="true"></span>
@@ -23,6 +28,14 @@
       <button class="icon-btn clear" id="q-clear" type="button" hidden data-i18n-aria-label="library.search_clear" data-icon="x"></button>
     </div>
     <div class="side-scroll" id="side" tabindex="-1"></div>
+    <section class="held" id="held" hidden>
+      <button class="held-h" id="held-h" type="button" aria-expanded="false" aria-controls="held-list">
+        <span class="caps" data-i18n="library.held.title">Descartadas</span>
+        <span class="held-n tnum" id="held-n"></span>
+        <span class="held-chev" data-icon="chevron" aria-hidden="true"></span>
+      </button>
+      <div class="held-list" id="held-list" hidden></div>
+    </section>
   </aside>
 
   <main class="main glass" id="main">
@@ -38,7 +51,15 @@
             <h2 class="display" id="m-title"></h2>
             <p class="m-meta tnum" id="m-meta"></p>
           </div>
+          <button class="orig-toggle" id="orig-toggle" type="button" hidden aria-pressed="false" data-i18n="library.original" data-i18n-data-tip="library.original_tip">Original</button>
+          <button class="icon-btn hq-btn" id="hq-btn" type="button" hidden data-icon="hq" data-i18n-aria-label="library.hq" data-i18n-data-tip="library.hq"></button>
           <button class="icon-btn" id="open-folder" type="button" data-icon="folder" data-i18n-aria-label="library.open_folder" data-i18n-data-tip="library.open_folder"></button>
+        </div>
+        <div class="hq-bar" id="hq-bar" hidden>
+          <span class="hq-text tnum" id="hq-text"></span>
+          <button class="hq-act" id="hq-go" type="button"></button>
+          <button class="hq-act quiet" id="hq-no" type="button"></button>
+          <div class="progress hq-progress" id="hq-progress" hidden><i></i></div>
         </div>
         <div class="speakers" id="speakers" role="list" data-i18n-aria-label="library.speakers_label"></div>
         <section class="markers" id="markers" hidden aria-labelledby="markers-h">
@@ -48,7 +69,7 @@
         </section>
       </header>
 
-      <div class="transcript selectable" id="tr" role="group" data-i18n-aria-label="library.transcript_label" tabindex="-1"></div>
+      <div class="transcript selectable" id="tr" role="group" data-i18n-aria-label="library.transcript_label" tabindex="-1"><section class="sec" id="sec" hidden aria-live="polite"></section></div>
 
       <footer class="player" id="player">
         <button class="play" id="play" type="button" data-i18n-aria-label="library.play" data-i18n-title="library.play">
@@ -70,6 +91,7 @@
         <div class="tracks" id="tracks" role="group" data-i18n-aria-label="library.tracks"></div>
       </footer>
     </section>
+    <section class="horas" id="horas" hidden aria-labelledby="hx-title"></section>
   </main>
 </div>
 
@@ -102,7 +124,15 @@
   </form>
 </dialog>
 
+<div class="settings-view" id="settings-view" hidden></div>
 <script src="bridge.js"></script>
 <script src="library.js"></script>
+<script src="items.js"></script>
+<script src="fullacta.js"></script>
+<script src="secretaria.js"></script>
+<script src="views.js"></script>
+<script src="horas.js"></script>
+<script src="dither.js"></script>
+<script src="motion.js"></script>
 </body>
 </html>

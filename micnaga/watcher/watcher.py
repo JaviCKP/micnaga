@@ -20,15 +20,19 @@ from micnaga.config import Config, DetectionConfig
 from micnaga.watcher.controller import WatcherController, dispatch_actions
 from micnaga.watcher.machine import (
     Action,
+    EndAnswer,
+    EndChoice,
     Event,
     Phase,
     PopupAnswer,
     PopupHover,
     PrivatePause,
+    RecordingFailed,
     RecordNow,
     ResumeWatching,
     SuspendWatching,
     Tick,
+    Undo,
     UserStop,
     WatcherState,
     WatcherStateMachine,
@@ -40,7 +44,8 @@ from micnaga.watcher.sources import ExtensionSignalSource
 log = logging.getLogger("micnaga.watcher")
 
 POPUP_TIMER_STEP_S = 0.25
-"""Mientras hay popup, los temporizadores se evaluan cada 0.25 s (las senales siguen a 1 s)."""
+"""Con un temporizador corto en marcha (popup, popup de fin, «Deshacer», fin de reunion) los
+temporizadores se evaluan cada 0.25 s (las senales siguen a 1 s)."""
 
 
 class Watcher:
@@ -115,6 +120,17 @@ class Watcher:
             return self._machine.popup_remaining_s
 
     @property
+    def popup_total_s(self) -> float | None:
+        """Duracion total de la cuenta atras del popup visible (normal o de fin)."""
+        with self._lock:
+            return self._machine.popup_total_s
+
+    @property
+    def needs_fast_ticks(self) -> bool:
+        with self._lock:
+            return self._machine.needs_fast_ticks
+
+    @property
     def popup_frozen(self) -> bool:
         """La cuenta atras esta congelada (raton encima, pausa privada o senal caida)."""
         with self._lock:
@@ -127,6 +143,7 @@ class Watcher:
             session = m.session
             info: dict[str, Any] = {
                 "state": m.state.value,
+                "confirmed": m.confirmed,
                 "phase": m.phase.value,
                 "paused": m.paused,
                 "popup_remaining_s": m.popup_remaining_s,
@@ -172,6 +189,18 @@ class Watcher:
 
     def resume_watching(self) -> None:
         self._submit(ResumeWatching())
+
+    def end_answer(self, choice: EndChoice) -> None:
+        """Popup de fin: ``finish`` | ``keep`` (confirmada) o ``save`` | ``discard``."""
+        self._submit(EndAnswer(choice))
+
+    def undo(self) -> None:
+        """«Deshacer» del aviso «Descartada»."""
+        self._submit(Undo())
+
+    def recording_failed(self) -> None:
+        """El controlador no pudo abrir la captura: la maquina vuelve a vigilar."""
+        self._submit(RecordingFailed())
 
     def feed(self, snapshot: SignalSnapshot | None) -> None:
         """Inyecta una instantanea (pruebas / fuentes externas); ``None`` = solo temporizadores."""
@@ -249,9 +278,9 @@ class Watcher:
                     if self._poll_errors <= 3 or self._poll_errors % 60 == 0:
                         log.exception("signal sampling failed (%d)", self._poll_errors)
                 self._submit(Tick(snap))
-            elif self.phase is Phase.PROMPTING:
+            elif self.needs_fast_ticks:
                 self._submit(Tick(None))
             wait = max(0.0, next_poll - self._clock())
-            if self.phase is Phase.PROMPTING:
+            if self.needs_fast_ticks:
                 wait = min(wait, POPUP_TIMER_STEP_S)
             self._stop.wait(wait)

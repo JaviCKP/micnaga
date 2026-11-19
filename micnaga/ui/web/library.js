@@ -260,6 +260,7 @@
     if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
     renderSpeakers();
     renderMarkers();
+    renderOriginalToggle();
     renderTranscript();
     $("open-folder").onclick = async () => {
       const x = await mic.call("open_folder", S.folder);
@@ -277,6 +278,90 @@
     $("total").textContent = mic.fmtClock(player.duration || tr.meeting.duration_s);
     updateTime(keepPlayback ? t : 0);
     renderTicks(tr);
+    hqRender();
+    document.dispatchEvent(new CustomEvent("mic:meeting", { detail: { folder: S.folder } }));
+  }
+
+  // «Mejorar transcripcion»: icono en la cabecera, confirmacion en linea y linea de progreso
+  const HQ = { timer: 0, folder: "", info: null };
+  function hqShow(text, go, no) {
+    const bar = $("hq-bar");
+    bar.hidden = false;
+    $("hq-text").textContent = text;
+    $("hq-go").hidden = !go; $("hq-no").hidden = !no;
+    if (go) { $("hq-go").textContent = go[0]; $("hq-go").onclick = go[1]; }
+    if (no) { $("hq-no").textContent = no[0]; $("hq-no").onclick = no[1]; }
+  }
+  function hqHide() {
+    clearTimeout(HQ.timer);
+    $("hq-bar").hidden = true; $("hq-progress").hidden = true;
+    $("hq-btn").setAttribute("aria-pressed", "false");
+  }
+  async function hqRender() {
+    const btn = $("hq-btn");
+    clearTimeout(HQ.timer);
+    if (!S.hq) { btn.hidden = true; $("hq-bar").hidden = true; return; }
+    btn.hidden = false;
+    btn.onclick = hqAsk;
+    HQ.folder = S.folder;
+    hqHide();
+    const r = await mic.call("hq", "status", S.folder);
+    if (!r || !r.ok || HQ.folder !== S.folder) return;
+    if (r.status && r.status.state === "running") hqPoll();
+    else if (r.previa) hqOffer();
+  }
+  function hqOffer() {
+    hqShow("", null, [mic.t("library.hq_restore"), hqRestore]);
+  }
+  function hqPhase(fase, v) {
+    if (fase === "descarga") return mic.t("library.hq_phase_descarga", v);
+    if (fase === "prepara") return mic.t("library.hq_phase_prepara", v);
+    if (fase === "transcribe") return mic.t("library.hq_phase_transcribe", v);
+    if (fase === "ensambla") return mic.t("library.hq_phase_ensambla", v);
+    return mic.t("library.hq_phase_cola", v);
+  }
+  async function hqAsk() {
+    if (!$("hq-bar").hidden) { hqHide(); return; }
+    const r = await mic.call("hq", "info", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); return; }
+    if (r.status && r.status.state === "running") { hqPoll(); return; }
+    $("hq-btn").setAttribute("aria-pressed", "true");
+    const vars = { min: r.minutes, mb: r.download_mb };
+    const ask = r.download_mb ? mic.t("library.hq_ask_dl", vars) : mic.t("library.hq_ask", vars);
+    hqShow(ask,
+      [mic.t("library.hq_go"), hqStart], [mic.t("library.hq_cancel"), hqHide]);
+  }
+  async function hqStart() {
+    const r = await mic.call("hq", "start", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); hqHide(); return; }
+    hqPoll();
+  }
+  async function hqPoll() {
+    const folder = S.folder;
+    const r = await mic.call("hq", "status", folder);
+    if (folder !== S.folder) return;
+    const st = (r && r.ok && r.status) || null;
+    if (st && st.state === "running") {
+      const pct = Math.round((st.pct || 0) * 100);
+      hqShow(hqPhase(st.fase, { pct }), null,
+        [mic.t("library.hq_cancel"), () => mic.call("hq", "cancel", folder)]);
+      const bar = $("hq-progress");
+      bar.hidden = false;
+      bar.style.setProperty("--p", String(st.pct || 0));
+      HQ.timer = setTimeout(hqPoll, 1500);
+      return;
+    }
+    hqHide();
+    if (st && st.state === "done") { snack(mic.t("library.hq_done")); await openMeeting(folder); return; }
+    if (st && st.state === "failed") snack(mic.t("library.hq_failed"));
+    if (st && st.state === "cancelled") snack(mic.t("library.hq_cancelled"));
+    if (r && r.previa) hqOffer();
+  }
+  async function hqRestore() {
+    const r = await mic.call("hq", "restore", S.folder);
+    if (!r || !r.ok) { snack(errText(r)); return; }
+    snack(mic.t("library.hq_restored"));
+    await openMeeting(S.folder);
   }
 
   function renderTracks() {
@@ -513,10 +598,42 @@
     return out;
   }
 
+  /** Phrase text: the AI-corrected words get a faint underline with the heard words on hover;
+   *  with «Original» on, the ASR text as it was. Search highlights apply inside each piece. */
+  function fillText(tx, s) {
+    const q = S.highlightQuery;
+    if (S.showOriginal && typeof s.text_original === "string") { highlightInto(tx, s.text_original, q); return; }
+    const fix = Array.isArray(s.fix) ? s.fix : [];
+    if (!fix.length) { highlightInto(tx, s.text, q); return; }
+    let pos = 0;
+    for (const [a, b, o] of fix) {
+      if (a < pos || b > s.text.length) continue;
+      if (a > pos) { const t = el("span"); highlightInto(t, s.text.slice(pos, a), q); tx.append(...t.childNodes); }
+      const f = el("span", "fx");
+      f.title = mic.t("library.fixed_from", { o: o || "—" });
+      highlightInto(f, s.text.slice(a, b), q);
+      tx.append(f);
+      pos = b;
+    }
+    const t = el("span");
+    highlightInto(t, s.text.slice(pos), q);
+    tx.append(...t.childNodes);
+  }
+
+  function renderOriginalToggle() {
+    const b = $("orig-toggle");
+    const has = S.data.transcript.segments.some((s) => typeof s.text_original === "string");
+    b.hidden = !has;
+    if (!has) S.showOriginal = false;
+    b.setAttribute("aria-pressed", String(!!S.showOriginal));
+    $("tr").classList.toggle("orig", !!S.showOriginal);
+    b.onclick = () => { S.showOriginal = !S.showOriginal; renderOriginalToggle(); renderTranscript(); };
+  }
+
   function renderTranscript() {
     const tr = S.data.transcript;
     const box = $("tr");
-    box.replaceChildren();
+    box.replaceChildren(...[$("sec")].filter(Boolean));   // the Secretaria panel stays on top
     S.playingIdx = -1;
     const marks = markerSegIndexes(tr);
     let prev = null;
@@ -533,7 +650,7 @@
       who.append(el("i"), el("span", "", nameOf(s.speaker)));
       row.append(who);
       const tx = el("span", "tx");
-      highlightInto(tx, s.text, S.highlightQuery);
+      fillText(tx, s);
       row.append(tx);
       if (marks.has(i)) {
         const f = el("span", "flag");
@@ -650,28 +767,146 @@
     else if (e.key === "ArrowLeft" && e.target.id !== "scrub") { player.seek(player.time - 5); }
   });
   $("q").addEventListener("input", onQuery);
+  $("settings-btn").addEventListener("click", () => showSettings());
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
+
+  // ------------------------------------------------------------------ «Descartadas»
+  const heldBox = $("held"), heldList = $("held-list"), heldHead = $("held-h");
+  heldHead.addEventListener("click", () => {
+    const open = heldHead.getAttribute("aria-expanded") !== "true";
+    heldHead.setAttribute("aria-expanded", String(open));
+    heldList.hidden = !open;
+  });
+  function daysLeft(iso) {
+    const ms = new Date(iso) - new Date();
+    return Math.max(0, Math.ceil(ms / 86400000));
+  }
+  function renderHeld(items) {
+    S.held = items || [];
+    heldBox.hidden = !S.held.length;
+    $("held-n").textContent = S.held.length ? String(S.held.length) : "";
+    heldList.replaceChildren();
+    for (const h of S.held) {
+      const row = el("div", "held-row");
+      const txt = el("div", "");
+      txt.append(el("div", "held-t", h.title || mic.t("library.held.untitled")));
+      const when = h.started_at ? mic.fmtDate(h.started_at) : "";
+      const left = mic.t("library.held.days_left", { n: daysLeft(h.expires_at) });
+      txt.append(el("div", "held-s tnum", [when, mic.fmtDuration(h.duration_s), left].filter(Boolean).join(" · ")));
+      const rec = el("button", "held-rec", mic.t("library.held.recover"));
+      rec.type = "button";
+      rec.title = mic.t("library.held.recover_tip");
+      rec.addEventListener("click", async () => {
+        rec.disabled = true;
+        const r = await mic.call("recover_held", h.name);
+        if (r && r.ok) { renderHeld(r.held); snack(mic.t("library.held.recovered")); }
+        else { rec.disabled = false; snack(mic.t((r && r.error) || "library.err.op_failed")); }
+      });
+      const del = el("button", "held-del");
+      del.type = "button";
+      del.innerHTML = mic.icon("x");
+      del.setAttribute("aria-label", mic.t("library.held.delete"));
+      del.title = mic.t("library.held.delete");
+      del.addEventListener("click", async () => {
+        const r = await mic.call("delete_held", h.name);
+        if (r && r.ok) renderHeld(r.held);
+      });
+      row.append(txt, rec, del);
+      heldList.append(row);
+    }
+  }
+
+  // ------------------------------------------------------------------ Ajustes in this window
+  function settingsFrame() {
+    const v = $("settings-view");
+    let f = v.querySelector("iframe");
+    if (!f) {
+      const root = document.documentElement;
+      const p = new URLSearchParams({ embed: "1" });
+      if (root.dataset.theme) p.set("theme", root.dataset.theme);
+      if (root.dataset.motion === "off") p.set("motion", "off");
+      if (root.dataset.backdrop) p.set("backdrop", root.dataset.backdrop);
+      f = document.createElement("iframe");
+      f.src = "settings.html?" + p.toString();
+      f.title = mic.t("library.open_settings");
+      v.append(f);
+    }
+    return f;
+  }
+  function showSettings() {
+    const v = $("settings-view");
+    const f = settingsFrame();
+    const app = document.querySelector(".app");
+    if (window.micDither && mic.motion && !v.classList.contains("on")) {
+      // the dithered wipe (dither.js) covers the window, the view swaps underneath, it uncovers
+      window.micDither.wipe(() => {
+        v.hidden = false; app.inert = true; app.classList.add("behind"); v.classList.add("on");
+        try { f.contentWindow.focus(); } catch (e) { /* not loaded yet */ }
+      });
+      return;
+    }
+    v.hidden = false;
+    app.inert = true;
+    app.classList.add("behind");
+    setTimeout(() => {
+      v.classList.add("on");
+      try { f.contentWindow.focus(); } catch (e) { /* not loaded yet */ }
+    }, 16);
+  }
+  function hideSettings() {
+    const v = $("settings-view");
+    const app = document.querySelector(".app");
+    if (window.micDither && mic.motion && v.classList.contains("on")) {
+      window.micDither.wipe(() => {
+        v.classList.remove("on"); v.hidden = true; app.inert = false; app.classList.remove("behind");
+        $("settings-btn").focus({ preventScroll: true, focusVisible: false });
+      });
+      return;
+    }
+    v.classList.remove("on");
+    app.inert = false;
+    app.classList.remove("behind");
+    setTimeout(() => { if (!v.classList.contains("on")) v.hidden = true; }, mic.dur(200));
+    $("settings-btn").focus({ preventScroll: true, focusVisible: false });
+  }
+  // the host pushes theme/motion to this window only: mirror them into the embedded Ajustes
+  document.addEventListener("mic:theme", () => {
+    const f = $("settings-view").querySelector("iframe");
+    const w = f && f.contentWindow;
+    if (w && w.mic) w.mic.setTheme(document.documentElement.dataset.theme);
+  });
 
   // ------------------------------------------------------------------ boot
   const api = (window.micnaga = window.micnaga || {});
   api.library = {
     open(folder, t) { return openMeeting(folder, typeof t === "number" ? t : undefined); },
     get player() { return player; },
+    jumpTo,
+    /** after the Secretaria rewrote the transcript (names, words): reload it in place */
+    async reload() {
+      const r = await mic.call("get_meeting", S.folder);
+      if (r && r.ok) { applyUpdate(r); renderMarkers(); refreshListEntry(); }
+    },
+    refreshList: refreshListEntry,
+    showSettings,
+    hideSettings,
   };
 
   (async () => {
     await mic.i18nReady;
     const boot = await mic.call("bootstrap");
-    if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; }
+    if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; S.hq = !!boot.hq; }
     if (S.vpEnabled && S.canEdit) {
       const vps = await mic.call("list_voiceprints");
       S.vpNames = new Set((vps || []).map((v) => v.name));
     }
     S.meetings = (await mic.call("list_meetings", 500, 0)) || [];
     renderList();
+    if (boot && boot.has_held) renderHeld(await mic.call("list_held"));
     const q = mic.params;
     if (q.get("folder")) await openMeeting(q.get("folder"), q.get("t") ? parseFloat(q.get("t")) : undefined);
     else if (q.get("select") === "first" && S.meetings.length) await openMeeting(S.meetings[0].folder);
+    if (q.get("view") === "settings") showSettings();
     if (q.get("q")) { $("q").value = q.get("q"); onQuery(); }
   })();
 })();

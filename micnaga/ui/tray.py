@@ -38,8 +38,13 @@ STATE_LABEL_KEYS: dict[str, str] = {
 }
 
 
-def menu_spec(state: TrayState, *, watching_paused: bool, language: str = "es") -> list[MenuEntry]:
-    """Entradas del menu en orden. «Grabar ahora» se desactiva mientras se graba."""
+def menu_spec(
+    state: TrayState, *, watching_paused: bool, language: str = "es", timesheets: bool = False
+) -> list[MenuEntry]:
+    """Entradas del menu en orden. «Grabar ahora» se desactiva mientras se graba.
+
+    «Rellenar partes de horas» esta siempre (el menu se construye por posicion) y solo se activa
+    si la Secretaria tiene Odoo con permiso para registrar horas (``timesheets``)."""
     recording = state in ("recording", "paused")
     return [
         MenuEntry("record_now", i18n.t("tray.record_now", language), enabled=not recording),
@@ -54,6 +59,7 @@ def menu_spec(state: TrayState, *, watching_paused: bool, language: str = "es") 
             default=True,
             separator_before=True,
         ),
+        MenuEntry("fill_timesheets", i18n.t("tray.fill_timesheets", language), enabled=timesheets),
         MenuEntry("open_settings", i18n.t("tray.settings", language)),
         MenuEntry("quit", i18n.t("tray.quit", language), separator_before=True),
     ]
@@ -62,9 +68,16 @@ def menu_spec(state: TrayState, *, watching_paused: bool, language: str = "es") 
 class Tray:
     """Icono de bandeja. ``set_state`` cambia color/glifo y el tooltip."""
 
-    def __init__(self, callbacks: UiCallbacks, *, language: str = "es") -> None:
+    def __init__(
+        self,
+        callbacks: UiCallbacks,
+        *,
+        language: str = "es",
+        timesheets: Callable[[], bool] | None = None,
+    ) -> None:
         self._cb = callbacks
         self._language = language
+        self._timesheets = timesheets or (lambda: False)
         self._state: TrayState = "watching"
         self._watching_paused = False
         self._icon: Any = None
@@ -97,6 +110,12 @@ class Tray:
         icon.title = self.title()
         icon.update_menu()
 
+    def _timesheets_on(self) -> bool:
+        try:
+            return bool(self._timesheets())
+        except Exception:
+            return False
+
     # -- acciones
     def dispatch(self, key: str) -> None:
         cb = self._cb
@@ -106,6 +125,7 @@ class Tray:
             "resume_watching": cb.on_resume_watching,
             "open_library": cb.on_open_library,
             "open_settings": cb.on_open_settings,
+            "fill_timesheets": cb.on_open_timesheets,
             "quit": cb.on_quit,
         }
         action = actions.get(key)
@@ -132,7 +152,10 @@ class Tray:
 
             def entry(i: int = idx) -> MenuEntry:
                 return menu_spec(
-                    self._state, watching_paused=self._watching_paused, language=self._language
+                    self._state,
+                    watching_paused=self._watching_paused,
+                    language=self._language,
+                    timesheets=self._timesheets_on(),
                 )[i]
 
             def action(i: int = idx) -> Callable[[Any, Any], None]:

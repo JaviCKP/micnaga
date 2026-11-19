@@ -16,7 +16,7 @@
   "use strict";
   const $ = (id) => document.getElementById(id);
   const lift = $("lift"), card = $("card");
-  const bRec = $("b-rec"), bNo = $("b-no"), notice = $("notice"), live = $("live");
+  const bRec = $("b-rec"), bNo = $("b-no"), bAlt = $("b-alt"), notice = $("notice"), live = $("live");
   bRec.querySelector(".swap-b").innerHTML = mic.icon("check");
   mic.applyIcons();
 
@@ -29,6 +29,7 @@
     lastTick: 0, raf: 0, shownAt: 0, ariaT: 0, timers: [], frozen: false,
     authority: "local",            // "python" when popup_state() answers
     remotePaused: false, pollTimer: 0, pollBusy: false, showSeq: 0,
+    mode: "ask", confirmed: false,   // mode "end": popup de fin (Terminar/Seguir, Guardar/Descartar)
   };
   const later = (fn, ms) => { const id = setTimeout(fn, ms); S.timers.push(id); return id; };
   const clearTimers = () => { S.timers.forEach(clearTimeout); S.timers = []; };
@@ -122,6 +123,7 @@
   // ---- outcomes ---------------------------------------------------------------------
   function accept() {
     if (S.phase !== "shown") return;
+    if (S.mode === "end") { endDecide(S.confirmed ? "finish" : "save"); return; }
     stopCountdown();
     setPhase("confirming");
     live.textContent = mic.t("popup.recording_started");
@@ -130,6 +132,7 @@
   }
   function dismiss() {
     if (S.phase !== "shown") return;
+    if (S.mode === "end") return;     // el popup de fin no tiene «cerrar»: dos respuestas claras
     stopCountdown();
     mic.send("popup_decide", "dismiss");
     leave("leaving");
@@ -137,13 +140,14 @@
   /** Local fallback only: the popup decided the timeout itself. */
   function timeout() {
     if (S.phase !== "shown") return;
+    if (S.mode === "end") { stopCountdown(); leave("fading"); return; }
     stopCountdown();
     mic.send("popup_decide", "timeout");
     settleTimeout();
   }
   /** Python decided the timeout (watcher): play the outcome, do not report a decision. */
   function expire() {
-    if (S.phase !== "shown") return;
+    if (S.phase !== "shown" || S.mode === "end") return;
     stopCountdown();
     settleTimeout();
   }
@@ -171,6 +175,19 @@
     later(() => { setPhase("done"); poll.stop(); mic.send("popup_closed", "morphed"); }, mic.dur(400) + 20);
   }
 
+  /** Popup de fin: la respuesta va a Python (el vigilante decide) y la tarjeta se va. */
+  function endDecide(choice) {
+    if (S.phase !== "shown" || S.mode !== "end") return;
+    stopCountdown();
+    mic.send("popup_end_decide", choice);
+    if (choice === "finish" || choice === "save") {
+      setPhase("confirming");
+      later(() => leave("leaving"), mic.motion ? 260 : 0);
+    } else {
+      leave("leaving");
+    }
+  }
+  bAlt.addEventListener("click", () => endDecide(S.confirmed ? "keep" : "discard"));
   bRec.addEventListener("click", accept);
   bNo.addEventListener("click", dismiss);
   $("notice-x").addEventListener("click", () => {
@@ -184,27 +201,55 @@
   });
 
   // ---- Python -> JS -----------------------------------------------------------------
+  function prepare(timeoutS, mode) {
+    clearTimers();
+    stopCountdown();
+    S.showSeq++;
+    S.mode = mode;
+    S.authority = "local";
+    S.remotePaused = false;
+    S.total = S.remaining = Math.max(1, Number(timeoutS) || 15);
+    S.hovering = false;
+    S.shownAt = performance.now();
+    card.classList.add("reset");          // a reused window: snap out of the last morph
+    card.dataset.mode = mode;
+    card.dataset.hover = "false";
+    card.dataset.held = "false";
+    card.dataset.morph = "false";
+    card.dataset.provisional = "false";
+    void card.offsetWidth;
+    card.classList.remove("reset");
+  }
+  function reveal(o, announce) {
+    waves.mic.reset(); waves.sys.reset();
+    paintBar();
+    setPhase("hidden");
+    void lift.offsetWidth;                 // commit the hidden pose, then animate to rest
+    const seq = S.showSeq;
+    // Sin depender de requestAnimationFrame: con la ventana aun oculta Chromium no da
+    // fotogramas y la tarjeta se quedaria transparente («popup que no aparece»).
+    setTimeout(() => {
+      if (seq !== S.showSeq || S.phase !== "hidden") return;
+      setPhase("shown");
+      poll.start();
+      startCountdown();
+      negotiateAuthority(seq);
+      bRec.focus({ preventScroll: true, focusVisible: false });
+      live.textContent = announce;
+    }, 16);
+  }
+
   const api = (window.micnaga = window.micnaga || {});
   api.popup = {
     /** {title, code, timeoutS, onTimeout, remindNotice} — no code = a generic app (Teams, Zoom…) */
     show(o) {
       o = o || {};
-      clearTimers();
-      stopCountdown();
-      S.showSeq++;
-      S.authority = "local";
-      S.remotePaused = false;
-      S.total = S.remaining = Math.max(1, Number(o.timeoutS) || 15);
+      prepare(o.timeoutS, "ask");
       S.onTimeout = o.onTimeout === "discard" ? "discard" : "provisional";
-      S.hovering = false;
-      S.shownAt = performance.now();
-      card.classList.add("reset");          // a reused window: snap out of the last morph
-      card.dataset.hover = "false";
-      card.dataset.held = "false";
-      card.dataset.morph = "false";
-      card.dataset.provisional = "false";
-      void card.offsetWidth;
-      card.classList.remove("reset");
+      $("p-title").textContent = mic.t("popup.title");
+      bRec.setAttribute("aria-label", mic.t("popup.record"));
+      bRec.title = mic.t("popup.record_tip");
+      bRec.querySelector(".swap-a").innerHTML = "";
       const generic = !o.code;
       card.dataset.kind = generic ? "app" : "meet";
       $("p-ico").innerHTML = mic.icon(generic ? "app" : "video");
@@ -215,20 +260,36 @@
       code.textContent = o.code || "";
       code.hidden = !o.code;
       notice.classList.toggle("gone", o.remindNotice === false);
-      waves.mic.reset(); waves.sys.reset();
-      paintBar();
-      setPhase("hidden");
-      void lift.offsetWidth;                 // commit the hidden pose, then animate to rest
-      const seq = S.showSeq;
-      requestAnimationFrame(() => {
-        if (seq !== S.showSeq) return;
-        setPhase("shown");
-        poll.start();
-        startCountdown();
-        negotiateAuthority(seq);
-        bRec.focus({ preventScroll: true, focusVisible: false });
-        live.textContent = mic.t("popup.announce", { title: o.title || "" });
-      });
+      reveal(o, mic.t("popup.announce", { title: o.title || "" }));
+    },
+    /** Popup de fin: {title, durationS, confirmed, timeoutS} */
+    showEnd(o) {
+      o = o || {};
+      prepare(o.timeoutS, "end");
+      S.confirmed = !!o.confirmed;
+      card.dataset.confirmed = String(S.confirmed);
+      card.dataset.kind = "end";
+      $("p-ico").innerHTML = mic.icon("check");
+      const meet = $("p-meet");
+      const dur = mic.fmtClock(Number(o.durationS) || 0);
+      meet.textContent = (o.title ? o.title + " · " : "") + dur;
+      meet.title = meet.textContent;
+      $("p-code").hidden = true;
+      notice.classList.add("gone");
+      $("p-title").textContent = mic.t(S.confirmed ? "end.title_confirmed" : "end.title_unconfirmed");
+      const primary = mic.t(S.confirmed ? "end.finish" : "end.save");
+      bRec.setAttribute("aria-label", primary);
+      bRec.title = primary + " · Intro";
+      bRec.querySelector(".swap-a").innerHTML = S.confirmed ? '<span class="stop-sq"></span>' : mic.icon("check");
+      $("alt-ico").innerHTML = mic.icon(S.confirmed ? "mic" : "x");
+      $("alt-label").textContent = mic.t(S.confirmed ? "end.keep" : "end.discard");
+      reveal(o, mic.t("end.announce", { title: o.title || "" }));
+    },
+    /** Python retira el popup de fin (respondido, el micro volvio o sin respuesta). */
+    endClose(reason) {
+      if (S.mode !== "end" || S.phase === "hidden" || S.phase === "done") return;
+      stopCountdown();
+      leave(reason === "answered" ? "leaving" : "fading");
     },
     accept, dismiss, end, expire,
     setLevels(m, s) { waves.mic.fill(mic.levelToUi(m)); waves.sys.fill(mic.levelToUi(s)); },
@@ -244,6 +305,10 @@
   mic.i18nReady.then(() => {
     if (!mic.isHost) {
       const q = mic.params;
+      if (q.get("mode") === "end") {
+        api.popup.showEnd({ title: q.get("title") || "Revisión semanal", durationS: Number(q.get("dur") || 2834), confirmed: q.get("confirmed") !== "0", timeoutS: 10 });
+        return;
+      }
       api.popup.show({
         title: q.get("title") || "Revisión semanal",
         code: q.get("generic") === "1" ? "" : (q.get("code") || "abc-defg-hij"),

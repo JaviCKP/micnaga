@@ -26,8 +26,8 @@ def test_popup_api_exposes_popup_state() -> None:
 
 def test_expire_falls_back_to_a_python_morph_when_the_js_does_not_react() -> None:
     rig = Rig()
-    rig.ctl.show_popup(title="x", code=None, monitor_hint=None, timeout_s=15.0)
     rig.ctl.start_recording(provisional=True, meeting=MeetingInfo())
+    rig.ctl.show_popup(title="x", code=None, monitor_hint=None, timeout_s=15.0)
     host = rig.host
     assert host is not None
     host.expire_popup()

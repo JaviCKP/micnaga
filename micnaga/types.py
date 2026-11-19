@@ -143,24 +143,36 @@ class Segment:
     speaker: str
     text: str
     words: list[Word] = field(default_factory=list)
+    text_original: str | None = None
+    """Texto del ASR antes de la limpieza con IA (``micnaga.brain.cleanup``); solo si cambio."""
+    merged_from: list[int] = field(default_factory=list)
+    """Indices (antes de la limpieza) de los segmentos que la limpieza unio en este."""
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        d: dict[str, Any] = {
             "start": self.start,
             "end": self.end,
             "speaker": self.speaker,
             "text": self.text,
             "words": [w.to_dict() for w in self.words],
         }
+        if self.text_original is not None:  # opcionales: el JSON de siempre no cambia
+            d["text_original"] = self.text_original
+        if self.merged_from:
+            d["merged_from"] = list(self.merged_from)
+        return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Segment:
+        original = d.get("text_original")
         return cls(
             start=float(d["start"]),
             end=float(d["end"]),
             speaker=str(d["speaker"]),
             text=str(d["text"]),
             words=[Word.from_dict(w) for w in d.get("words", [])],
+            text_original=None if original is None else str(original),
+            merged_from=[int(i) for i in d.get("merged_from") or []],
         )
 
 

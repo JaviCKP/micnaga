@@ -78,6 +78,14 @@ def set_low_priority() -> bool:
         return False
 
 
+LIVE_MAX_THREADS = 2
+
+
+def live_threads(config: Config) -> int:
+    """Hilos del proceso en vivo: pocos (corre durante la reunion, al lado de la captura)."""
+    return max(1, min(LIVE_MAX_THREADS, config.processing.threads // 2))
+
+
 def configure_process(config: Config) -> None:
     apply_thread_limits(config.processing.threads)
     if config.processing.low_priority:
@@ -92,17 +100,18 @@ def _mutex_name() -> str:
     return f"Local\\micnaga-worker-{digest}"
 
 
-class WorkerLock:
-    """Mutex con nombre: ``acquire()`` es ``False`` si ya hay otro worker."""
+class NamedMutex:
+    """Mutex con nombre: ``acquire()`` es ``False`` si otro proceso ya lo tiene."""
 
-    def __init__(self) -> None:
+    def __init__(self, name: str) -> None:
+        self._name = name
         self._handle: Any = None
 
     def acquire(self) -> bool:
         import win32api
         import win32event
 
-        handle = win32event.CreateMutex(None, True, _mutex_name())  # type: ignore[arg-type]
+        handle = win32event.CreateMutex(None, True, self._name)  # type: ignore[arg-type]
         if win32api.GetLastError() == ERROR_ALREADY_EXISTS:
             handle.Close()
             return False
@@ -115,11 +124,30 @@ class WorkerLock:
                 self._handle.Close()
             self._handle = None
 
-    def __enter__(self) -> WorkerLock:
+    def __enter__(self) -> NamedMutex:
         return self
 
     def __exit__(self, *exc: object) -> None:
         self.release()
+
+
+class WorkerLock(NamedMutex):
+    """Mutex del worker: ``acquire()`` es ``False`` si ya hay otro worker."""
+
+    def __init__(self) -> None:
+        super().__init__(_mutex_name())
+
+
+def mutex_exists(name: str) -> bool:
+    try:
+        import win32api
+        import win32event
+
+        handle = win32event.OpenMutex(win32event.SYNCHRONIZE, False, name)
+    except Exception:
+        return False
+    win32api.CloseHandle(handle)
+    return True
 
 
 def is_worker_running() -> bool:
@@ -239,6 +267,21 @@ def worker_command(extra_args: tuple[str, ...] = ()) -> list[str]:
     if getattr(sys, "frozen", False):
         return [sys.executable, "worker", *extra_args]
     return [sys.executable, "-m", "micnaga", "worker", *extra_args]
+
+
+def spawn_live(session: Path) -> subprocess.Popen[bytes]:
+    """Lanza ``micnaga live <carpeta>`` (sin ventana, prioridad baja, grupo propio)."""
+    flags = CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP | BELOW_NORMAL_PRIORITY_CLASS
+    cmd = worker_command(())
+    cmd[-1] = "live"  # ``... worker`` -> ``... live``
+    return subprocess.Popen(
+        [*cmd, str(session)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=flags,
+        close_fds=True,
+    )
 
 
 def spawn_worker(

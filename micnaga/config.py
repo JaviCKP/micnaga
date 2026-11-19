@@ -31,9 +31,12 @@ class DetectionConfig:
     browsers: list[str] = field(default_factory=lambda: ["chrome.exe", "msedge.exe", "brave.exe"])
     poll_interval_s: float = 1.0
     confirm_after_s: float = 5.0  # senales estables antes del popup
-    end_after_s: float = 15.0  # una senal obligatoria caida este tiempo = fin
-    popup_timeout_s: float = 15.0
-    on_timeout: str = "provisional"  # provisional | discard
+    end_after_s: float = 15.0  # una reunion ignorada se olvida tras este tiempo sin verse
+    popup_timeout_s: float = 15.0  # sin respuesta: el popup se convierte en pastilla provisional
+    on_timeout: str = "provisional"  # provisional | discard (discard = apartar, nunca borrar)
+    end_confirm_s: float = 2.0  # micro soltado este tiempo seguido = fin -> popup de fin
+    end_popup_timeout_s: float = 10.0  # popup de fin sin respuesta: termina (o aparta)
+    undo_s: float = 8.0  # «Ahora no» / «Descartar»: tiempo para deshacer
     # Ruta generica: cualquier app que use el micro (no solo Meet en un navegador).
     generic_apps: bool = True
     mic_grace_s: float = 20.0  # uso continuo del micro antes de grabar provisionalmente
@@ -43,9 +46,12 @@ class DetectionConfig:
 
 @dataclass
 class GatesConfig:
-    min_duration_s: float = 180.0
-    min_remote_speech_s: float = 30.0
-    min_turns: int = 6
+    # Desvio pedido por el usuario (DECISIONS §18): decide el usuario con el popup, no las
+    # compuertas. Solo queda una comprobacion minima de duracion; 0 desactiva cada compuerta.
+    min_duration_s: float = 30.0
+    min_remote_speech_s: float = 0.0
+    min_turns: int = 0
+    require_confirmed: bool = True  # una sesion sin «Si» nunca se transcribe (se aparta)
 
 
 @dataclass
@@ -68,10 +74,13 @@ class VadConfig:
 class ProcessingConfig:
     asr_engine: str = "parakeet"  # parakeet | whisper
     whisper_model: str = "small"
+    hq_model: str = "large-v3"  # «Mejorar transcripcion»: large-v3 | large-v3-turbo
+    hq_transcribe: bool = True  # boton «Mejorar transcripcion» en la biblioteca
     diarization: str = "onnx"  # onnx | diarize | pyannote
     aec: str = "auto"  # auto | webrtc | speex | off
     threads: int = 6
     low_priority: bool = True  # BELOW_NORMAL_PRIORITY_CLASS en el worker
+    live: bool = True  # transcribir mientras se graba (proceso aparte, prioridad baja)
     echo_similarity: float = 0.8  # etapa 9 (rapidfuzz, 0..1)
     merge_gap_s: float = 1.5  # etapa 11
     glossary: list[str] = field(default_factory=list)  # MIC-16
@@ -81,6 +90,7 @@ class ProcessingConfig:
 class StorageConfig:
     root: str = "~/Documents/Micnaga"
     models_dir: str = ""  # vacio = <app data>/models
+    discarded_keep_days: int = 7  # «Descartadas»: audio apartado (sin transcribir) N dias
 
 
 @dataclass
@@ -108,6 +118,42 @@ class StartupConfig:
     run_at_login: bool = True
 
 
+CONFIG_VERSION = 2
+
+
+@dataclass
+class MetaConfig:
+    version: int = CONFIG_VERSION  # formato de config.toml (ver ``_migrate``)
+
+
+@dataclass
+class SecretariaConfig:
+    """Capa de IA (``micnaga/brain``, ``docs/design/ai_brain.md``). Los secretos (token o clave
+    de Claude, clave de Odoo) viven en el Administrador de credenciales, nunca aqui."""
+
+    enabled: bool = False  # se activa al conectar Claude (Ajustes > Secretaria)
+    auth: str = "session"  # session | token | api_key
+    model_acta: str = "sonnet"
+    model_title: str = "haiku"
+    live_title: bool = True  # titulo provisional hacia el minuto 2 de una grabacion confirmada
+    clean_transcript: bool = True  # Haiku corrige la transcripcion antes del acta (brain/cleanup)
+    horas_nudge: bool = False  # aviso del viernes por la tarde si faltan partes de horas
+    odoo_url: str = ""
+    odoo_db: str = ""
+    odoo_login: str = ""
+    # Servidores MCP extra (solo lectura, contexto): un objeto JSON por linea, p. ej.
+    # {"name": "drive", "command": "npx", "args": ["..."], "env": {}, "tools": ["search"]}
+    mcp_servers: list[str] = field(default_factory=list)
+    # Google (conectores oficiales de tu cuenta de claude.ai; Micnaga no guarda tokens de Google).
+    # Todo pasa por ``claude -p``: lectura en el analisis, escrituras solo tras «Aplicar».
+    google_gmail: bool = False
+    google_calendar: bool = False
+    google_drive: bool = False
+    google_calendar_id: str = "primary"
+    google_drive_folder_id: str = ""  # vacio = «Mi unidad»
+    google_email_mode: str = "draft"  # draft | off. «Enviar directamente» nunca sale elegido
+
+
 @dataclass
 class Config:
     detection: DetectionConfig = field(default_factory=DetectionConfig)
@@ -120,6 +166,8 @@ class Config:
     ui: UiConfig = field(default_factory=UiConfig)
     privacy: PrivacyConfig = field(default_factory=PrivacyConfig)
     startup: StartupConfig = field(default_factory=StartupConfig)
+    meta: MetaConfig = field(default_factory=MetaConfig)
+    secretaria: SecretariaConfig = field(default_factory=SecretariaConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -139,6 +187,9 @@ class Config:
             "popup_timeout_s",
             "mic_grace_s",
             "popup_after_recording_s",
+            "end_confirm_s",
+            "end_popup_timeout_s",
+            "undo_s",
         ):
             if getattr(d, key) < 0:
                 raise ConfigError(f"detection.{key} must be >= 0")
@@ -146,6 +197,8 @@ class Config:
             raise ConfigError("detection.poll_interval_s must be > 0")
         if d.end_after_s <= 0:
             raise ConfigError("detection.end_after_s must be > 0")
+        if self.storage.discarded_keep_days < 1:
+            raise ConfigError("storage.discarded_keep_days must be >= 1")
         if self.processing.threads < 1:
             raise ConfigError("processing.threads must be >= 1")
         if self.capture.sample_rate <= 0:
@@ -154,6 +207,15 @@ class Config:
             raise ConfigError("processing.echo_similarity must be in [0, 1]")
         if not 0.0 <= self.privacy.voiceprint_threshold <= 1.0:
             raise ConfigError("privacy.voiceprint_threshold must be in [0, 1]")
+        sec = self.secretaria
+        _check_choice("secretaria.auth", sec.auth, ("session", "token", "api_key"))
+        _check_choice("secretaria.model_acta", sec.model_acta, ("sonnet", "opus", "haiku"))
+        _check_choice("secretaria.model_title", sec.model_title, ("haiku", "sonnet"))
+        for line in sec.mcp_servers:
+            _check_mcp_server(line)
+        _check_choice("secretaria.google_email_mode", sec.google_email_mode, ("draft", "off"))
+        if not sec.google_calendar_id.strip():
+            raise ConfigError("secretaria.google_calendar_id must not be empty")
 
     # Atajos utiles para el resto de modulos --------------------------------------------
 
@@ -170,6 +232,44 @@ class Config:
 def _check_choice(key: str, value: str, choices: tuple[str, ...]) -> None:
     if value not in choices:
         raise ConfigError(f"{key} must be one of {choices}, got {value!r}")
+
+
+MCP_SERVER_NAME_RE = r"^[a-z][a-z0-9_-]{0,31}$"
+
+
+def _check_mcp_server(line: str) -> None:
+    """Una linea de ``secretaria.mcp_servers``: objeto JSON con ``name``, ``command``, ``args``
+    (lista), ``env`` (objeto) y ``tools`` (las herramientas permitidas, al menos una)."""
+    import json
+    import re
+
+    where = "secretaria.mcp_servers"
+    try:
+        data = json.loads(line)
+    except ValueError as exc:
+        raise ConfigError(f"{where}: each line must be a JSON object ({exc})") from exc
+    if not isinstance(data, dict):
+        raise ConfigError(f"{where}: each line must be a JSON object")
+    name = data.get("name")
+    if not isinstance(name, str) or not re.match(MCP_SERVER_NAME_RE, name) or name == "micnaga":
+        raise ConfigError(f"{where}: invalid server name {name!r}")
+    if not isinstance(data.get("command"), str) or not data["command"].strip():
+        raise ConfigError(f"{where}: {name}: 'command' must be a non-empty string")
+    args = data.get("args", [])
+    if not isinstance(args, list) or not all(isinstance(a, str) for a in args):
+        raise ConfigError(f"{where}: {name}: 'args' must be a list of strings")
+    env = data.get("env", {})
+    if not isinstance(env, dict) or not all(
+        isinstance(k, str) and isinstance(v, str) for k, v in env.items()
+    ):
+        raise ConfigError(f"{where}: {name}: 'env' must map strings to strings")
+    tools = data.get("tools")
+    if (
+        not isinstance(tools, list)
+        or not tools
+        or not all(isinstance(t, str) and re.match(r"^[A-Za-z0-9_.-]+$", t) for t in tools)
+    ):
+        raise ConfigError(f"{where}: {name}: 'tools' must list the allowed tool names")
 
 
 def _coerce(section: str, key: str, value: Any, default: Any) -> Any:
@@ -207,8 +307,35 @@ def _build_section(cls: type[Any], name: str, data: Mapping[str, Any]) -> Any:
     return cls(**values)
 
 
+_V1_GATES: dict[str, float] = {"min_duration_s": 180.0, "min_remote_speech_s": 30.0, "min_turns": 6}
+
+
+def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
+    """Sube un ``config.toml`` antiguo al formato actual.
+
+    v1 -> v2: las compuertas por defecto pasan a ``30 s / 0 / 0`` (decide el usuario con el
+    popup). Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
+    el usuario se respeta. ``save_config`` escribe todas las claves, asi que sin esto un fichero
+    guardado una vez fijaria para siempre los defectos viejos.
+    """
+    out: dict[str, Any] = {k: (dict(v) if isinstance(v, Mapping) else v) for k, v in data.items()}
+    meta = out.get("meta")
+    version = meta.get("version", 1) if isinstance(meta, Mapping) else 1
+    if not isinstance(version, int) or isinstance(version, bool):
+        version = 1
+    if version < 2:
+        gates = out.get("gates")
+        if isinstance(gates, dict):
+            for key, old in _V1_GATES.items():
+                if key in gates and gates[key] == old:
+                    gates[key] = getattr(GatesConfig(), key)
+    out["meta"] = {"version": CONFIG_VERSION}
+    return out
+
+
 def config_from_dict(data: Mapping[str, Any]) -> Config:
     """Construye un ``Config`` desde un dict (p. ej. el TOML ya parseado) y lo valida."""
+    data = _migrate(data)
     sections: dict[str, Any] = {}
     for f in dataclasses.fields(Config):
         raw = data.get(f.name, {})
@@ -258,4 +385,13 @@ def ensure_config(path: Path | None = None) -> Config:
         cfg = Config()
         save_config(cfg, path)
         return cfg
-    return load_config(path)
+    cfg = load_config(path)
+    try:
+        with path.open("rb") as fh:
+            raw = tomllib.load(fh)
+        meta = raw.get("meta")
+        if not isinstance(meta, dict) or meta.get("version") != CONFIG_VERSION:
+            save_config(cfg, path)  # migrado: se reescribe una vez con el formato actual
+    except (OSError, tomllib.TOMLDecodeError, ConfigError):
+        pass
+    return cfg

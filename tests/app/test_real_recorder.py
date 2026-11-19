@@ -66,15 +66,28 @@ def test_provisional_session_is_queued_unconfirmed() -> None:
     assert len(rig.jobs()) == 1
 
 
-def test_discard_removes_the_real_session_folder() -> None:
+def test_no_with_the_real_recorder_is_held_and_the_mark_survives_stop() -> None:
+    """Hallazgo 1 con el grabador real: la marca sobrevive a ``stop()`` (que reescribe
+    ``capture.json``) y la sesion acaba apartada (FLAC), nunca en la cola."""
+    from micnaga import holding
+
     rig = make_rig()
     rig.ctl.start_recording(provisional=True, meeting=MeetingInfo(title="Teams"))
     session = rig.ctl.session_dir
     assert session is not None
     time.sleep(0.5)
-    rig.ctl.discard_recording()
-    rig.settle()
-    assert not session.exists()
+    rig.ctl.begin_discard(undo_s=8)
+    assert holding.discard_reason(session) == holding.REASON_DECLINED
+    rec = rig.ctl._session.recorder  # type: ignore[union-attr]
+    rec.stop()  # p. ej. la app se cierra justo aqui: stop() reescribe capture.json
+    assert holding.discard_reason(session) == holding.REASON_DECLINED
+    db = open_database()
+    try:
+        assert recover_and_enqueue(rig.cfg, db) == []  # el arranque NO la encola...
+    finally:
+        db.close()
+    held = holding.held_root(session.parent) / session.name
+    assert not session.exists() and (held / paths.AUDIO_ME_FLAC).is_file()  # ...la aparta
     assert rig.jobs() == []
 
 
@@ -113,8 +126,24 @@ def _make_it_look_crashed(folder: Path) -> None:
     write_capture_json(folder, dataclasses.replace(meta, extra=extra))
 
 
+def test_boot_recovery_holds_an_unconfirmed_crashed_session(tmp_storage: Path) -> None:
+    from micnaga import holding
+
+    folder = _record(tmp_storage / "2026-11-18_1000_sin-si")
+    _make_it_look_crashed(folder)
+    db = open_database()
+    try:
+        assert recover_and_enqueue(Rig().cfg, db) == []
+        assert db.list_jobs() == []
+    finally:
+        db.close()
+    held = holding.held_root(tmp_storage) / folder.name
+    assert (held / paths.AUDIO_ME_FLAC).is_file()
+    assert holding.list_held(tmp_storage)[0].reason == holding.REASON_INTERRUPTED
+
+
 def test_boot_recovery_enqueues_crashed_session(tmp_storage: Path) -> None:
-    folder = _record(tmp_storage / "2026-11-18_1000_rota")
+    folder = _record(tmp_storage / "2026-11-18_1000_rota", confirmed=True)
     _make_it_look_crashed(folder)
     db = open_database()
     try:
@@ -129,9 +158,9 @@ def test_boot_recovery_enqueues_crashed_session(tmp_storage: Path) -> None:
 
 
 def test_boot_sweep_picks_up_stopped_orphans_but_not_known_or_done(tmp_storage: Path) -> None:
-    orphan = _record(tmp_storage / "orphan")
-    known = _record(tmp_storage / "known")
-    done = _record(tmp_storage / "done")
+    orphan = _record(tmp_storage / "orphan", confirmed=True)
+    known = _record(tmp_storage / "known", confirmed=True)
+    done = _record(tmp_storage / "done", confirmed=True)
     (done / paths.TRANSCRIPT_JSON).write_text("{}", encoding="utf-8")
     db = open_database()
     try:
@@ -145,7 +174,7 @@ def test_boot_sweep_picks_up_stopped_orphans_but_not_known_or_done(tmp_storage: 
 
 
 def test_application_boot_recovers_and_kicks_the_worker(tmp_storage: Path) -> None:
-    folder = _record(tmp_storage / "boot")
+    folder = _record(tmp_storage / "boot", confirmed=True)
     _make_it_look_crashed(folder)
     rig = Rig()
     rig.app._recover_at_boot = True

@@ -8,10 +8,15 @@
     if (text !== undefined) n.textContent = text;
     return n;
   };
-  const ICONS = { general: "sliders", detection: "mic", processing: "wave", storage: "folder", privacy: "shield", diagnostics: "activity", about: "info" };
-  const CARD_OF = { startup: "ui", ui: "ui" };
+  const ICONS = { general: "sliders", detection: "mic", processing: "wave", storage: "folder", secretaria: "feather", privacy: "shield", diagnostics: "activity", about: "info" };
+  const CARD_OF = {
+    startup: "ui", ui: "ui",
+    "secretaria.odoo_url": "odoo", "secretaria.odoo_db": "odoo", "secretaria.odoo_login": "odoo",
+    "secretaria.google_gmail": "google", "secretaria.google_calendar": "google", "secretaria.google_drive": "google",
+    "secretaria.horas_nudge": "odoo",
+  };
 
-  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
+  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const get = (path) => { const [s, k] = path.split("."); return S.cur[s][k]; };
@@ -203,7 +208,7 @@
     const adv = [];
     for (const f of g.fields) {
       if (f.advanced) { adv.push(f); continue; }
-      const sec = CARD_OF[f.path.split(".")[0]] || f.path.split(".")[0];
+      const sec = CARD_OF[f.path] || CARD_OF[f.path.split(".")[0]] || f.path.split(".")[0];
       if (!cards.has(sec)) {
         const title = mic.t("settings.cards." + sec);
         const c = group(title === mic.t("settings.groups." + g.id) ? "" : title);   // no echo of the pane title
@@ -212,6 +217,7 @@
       }
       cards.get(sec).append(fieldRow(f));
     }
+    if (g.id === "secretaria" && S.hasSec) secretariaExtras(pane, cards);
     if (g.id === "privacy" && S.hasVp) pane.append(voiceprintCard());
     if (g.id === "privacy") pane.append(legalCard());
     if (adv.length) {
@@ -237,6 +243,281 @@
     }
     return pane;
   }
+
+  // ------------------------------------------------------------------ secretaria
+  const sec = (action, args) => mic.call("secretaria", action, args || {});
+
+  /** A status line: live dot + text, an optional action on the right. With `card`, the same
+      state also lights a dot beside that card's title (Claude, Odoo and Google read alike). */
+  function statusRow(card) {
+    const row = el("div", "frow sec-status");
+    const left = el("div", "finfo");
+    const dot = el("span", "sig");
+    dot.dataset.s = "off";
+    const text = el("span", "sec-st-text");
+    left.append(dot, text);
+    const right = el("div", "ctl");
+    row.append(left, right);
+    let head = null;
+    const h3 = card && card.parentElement && card.parentElement.querySelector(":scope > h3");
+    if (h3) {
+      head = el("span", "sig sig-h");
+      head.dataset.s = "off";
+      h3.append(head);
+    }
+    return {
+      row, right,
+      set(state, msg) {
+        dot.dataset.s = state;
+        text.textContent = msg;
+        if (head) head.dataset.s = state;
+      },
+    };
+  }
+
+  /** Secrets go in and never come back: the field only says «guardada». */
+  function secretRow(kind, label, onSaved) {
+    const row = el("div", "frow");
+    const info = el("div", "finfo");
+    info.append(el("div", "flabel", label));
+    const ctl = el("div", "ctl");
+    const inp = el("input", "field-input");
+    inp.type = "password";
+    inp.autocomplete = "off";
+    inp.spellcheck = false;
+    inp.setAttribute("aria-label", label);
+    const b = el("button", "btn btn-sm", mic.t("secretaria.save_secret"));
+    b.type = "button";
+    b.addEventListener("click", async () => {
+      const r = await sec("set_secret", { kind, value: inp.value || null });
+      inp.value = "";
+      inp.placeholder = r && r.stored ? mic.t("secretaria.stored") : "";
+      onSaved();
+    });
+    ctl.append(inp, b);
+    row.append(info, ctl);
+    return { row, inp };
+  }
+
+  function secretariaExtras(pane, cards) {
+    const title = pane.querySelector("h2");
+    const consent = el("p", "legal sec-consent");
+    consent.innerHTML = mic.icon("lock");
+    consent.append(el("span", "", mic.t("secretaria.consent")));
+    title.after(consent);
+
+    // Claude: detected Claude Code session + «Probar»; token / API key only in those modes
+    const claude = cards.get("secretaria");
+    const st = statusRow(claude);
+    const test = el("button", "btn btn-sm", mic.t("secretaria.test"));
+    test.type = "button";
+    st.right.append(test);
+    let refresh = () => {};
+    const token = secretRow("token", mic.t("secretaria.token"), () => refresh());
+    const key = secretRow("api_key", mic.t("secretaria.api_key"), () => refresh());
+    claude.prepend(st.row);
+    claude.append(token.row, key.row);
+    const showSecret = () => {
+      const auth = get("secretaria.auth");
+      token.row.hidden = auth !== "token";
+      key.row.hidden = auth !== "api_key";
+    };
+    pane.addEventListener("change", showSecret);
+    showSecret();
+    test.addEventListener("click", async () => {
+      test.disabled = true;
+      st.set("warn", mic.t("secretaria.testing"));
+      const r = await sec("claude_test");
+      test.disabled = false;
+      if (r && r.ok) st.set("ok", mic.t("secretaria.test_ok", { title: r.title, s: (r.ms / 1000).toFixed(1) }));
+      else st.set("fail", mic.t((r && r.error) || "secretaria.err.failed"));
+    });
+
+    // Odoo: the key (never shown back) + «Probar»: who you are and what is readable
+    const odoo = cards.get("odoo");
+    const okey = secretRow("odoo", mic.t("secretaria.odoo_key"), () => refresh());
+    const ost = statusRow(odoo);
+    const otest = el("button", "btn btn-sm", mic.t("secretaria.test"));
+    otest.type = "button";
+    ost.right.append(otest);
+    const caps = capsRow();
+    odoo.prepend(ost.row);
+    const nudge = odoo.querySelector('.frow[data-path="secretaria.horas_nudge"]');
+    if (nudge) odoo.querySelector('.frow[data-path="secretaria.odoo_login"]').after(okey.row);
+    else odoo.append(okey.row);
+    odoo.append(caps.row);
+    let known = null;   // the last «Probar» this Odoo answered (no network to know it)
+    sec("caps").then((r) => {
+      caps.set(r && r.ok ? r.capacidades : []);
+      if (r && r.ok && r.comprobado && (r.capacidades || []).length) known = r.comprobado;
+      refresh();
+    });
+    otest.addEventListener("click", async () => {
+      otest.disabled = true;
+      ost.set("warn", mic.t("secretaria.testing"));
+      const r = await sec("odoo_test", {
+        url: get("secretaria.odoo_url"), db: get("secretaria.odoo_db"), login: get("secretaria.odoo_login"),
+        key: okey.inp.value || null,
+      });
+      otest.disabled = false;
+      if (r && r.ok) {
+        const names = { "crm.lead": "CRM", "res.partner": mic.t("secretaria.contacts"), "mail.activity": mic.t("secretaria.activities") };
+        const readable = Object.entries(r.readable || {}).filter(([m]) => names[m]).map(([m, v]) => names[m] + (v ? " ✓" : " ✗")).join(" · ");
+        ost.set("ok", mic.t("secretaria.odoo_ok", { user: r.user || "?", version: r.version || "", readable }));
+        caps.set(r.capacidades || []);
+      } else ost.set("fail", mic.t((r && r.error) || "secretaria.err.failed"));
+    });
+
+    refresh = async () => {
+      const s = await sec("status");
+      if (!s || !s.ok) return;
+      if (!s.claude_installed) st.set("fail", mic.t("secretaria.not_installed"));
+      else if (s.auth === "session") {
+        const d = await sec("claude_detect");
+        if (d && d.logged_in) st.set("ok", mic.t("secretaria.session_ok", { plan: d.plan ? " · " + String(d.plan).toUpperCase() : "" }));
+        else st.set("warn", mic.t("secretaria.session_missing"));
+      } else {
+        const has = s.auth === "token" ? s.has_token : s.has_api_key;
+        if (has) st.set("ok", mic.t("secretaria.secret_ok"));
+        else st.set("warn", mic.t("secretaria.secret_missing"));
+      }
+      okey.inp.placeholder = s.has_odoo_key ? mic.t("secretaria.stored") : "";
+      if (otest.disabled) return;   // a «Probar» is answering right now
+      if (s.has_odoo_key && known) ost.set("ok", mic.t("secretaria.odoo_known", { t: shortWhen(known) }));
+      else ost.set("off", s.has_odoo_key ? mic.t("secretaria.odoo_untested") : mic.t("secretaria.odoo_none"));
+    };
+    if (cards.get("google")) googleCard(cards.get("google"));
+    pane.append(learnedCard());
+  }
+
+  /** Google: Gmail / Calendar / Drive rows with a live dot. The connectors live in the user's
+      Claude account: «Conectar» opens that page, «Comprobar» asks the local claude again. */
+  function googleCard(card) {
+    const STATE = {
+      connected: ["ok", () => mic.t("secretaria.g.connected")],
+      needs_auth: ["warn", () => mic.t("secretaria.g.needs_auth")],
+      failed: ["fail", () => mic.t("secretaria.g.failed")],
+      absent: ["off", () => mic.t("secretaria.g.absent")],
+      unknown: ["off", () => mic.t("secretaria.g.unknown")],
+    };
+    const rows = {};
+    for (const svc of ["gmail", "calendar", "drive"]) {
+      const row = card.querySelector('.frow[data-path="secretaria.google_' + svc + '"]');
+      if (!row) continue;
+      const info = row.querySelector(".finfo");
+      const dot = el("span", "sig");
+      dot.dataset.s = "off";
+      const st = el("span", "g-st");
+      info.prepend(dot);
+      info.append(st);
+      const connect = el("button", "btn btn-sm btn-ghost", mic.t("secretaria.g.connect"));
+      connect.type = "button";
+      connect.hidden = true;
+      connect.addEventListener("click", () => sec("google_open"));
+      row.querySelector(".ctl").prepend(connect);
+      rows[svc] = { dot, st, connect };
+    }
+    const foot = statusRow(card);
+    const check = el("button", "btn btn-sm", mic.t("secretaria.g.check"));
+    check.type = "button";
+    foot.right.append(check);
+    card.prepend(foot.row);
+    const gcaps = capsRow();
+    card.append(gcaps.row);
+    let timer = 0;
+    async function load() {
+      const r = await sec("google_status");
+      if (!r || !r.ok) return r;
+      for (const [svc, v] of Object.entries(r.services || {})) {
+        const ui = rows[svc];
+        if (!ui) continue;
+        const [s, text] = STATE[v.state] || STATE.unknown;
+        ui.dot.dataset.s = r.checking ? "warn" : s;
+        ui.st.textContent = text();
+        ui.connect.hidden = v.state === "connected";
+      }
+      check.disabled = !!r.checking;
+      const svc = r.services || {};
+      const live = Object.keys(svc).filter((k) => svc[k].enabled && svc[k].state === "connected");
+      const any = Object.keys(svc).some((k) => svc[k].enabled);
+      const when = r.checked ? shortWhen(new Date(r.checked * 1000).toISOString()) : "";
+      if (r.checking) foot.set("warn", mic.t("secretaria.g.checking"));
+      else if (r.auth !== "session") foot.set("warn", mic.t("secretaria.g.session_only"));
+      else if (live.length) foot.set("ok", mic.t("secretaria.g.live", { n: live.length, t: when }));
+      else if (r.checked) foot.set(any ? "warn" : "off", mic.t("secretaria.g.checked", { t: when }));
+      else foot.set("off", mic.t("secretaria.g.never"));
+      gcaps.set(GOOGLE_CAPS.filter((c) => live.includes(c.svc)).map((c) => ({ clave: c.icon, etiqueta: c.label(), nivel: "escritura" })));
+      clearTimeout(timer);
+      if (r.checking) timer = setTimeout(load, 1000);
+      return r;
+    }
+    check.addEventListener("click", async () => { await sec("google_check"); load(); });
+    load().then((r) => { if (r && r.ok && !r.checked && !r.checking) check.click(); });   // first time: detect once
+  }
+
+  /** What the Secretaria can do in this Odoo (from «Probar»): icon + short label per area. */
+  const CAP_ICON = {
+    horas: "clock", tareas: "task", calendario: "calendar", actividades: "bell", gastos: "receipt", contactos: "users", crm: "trend",
+    mail: "mail", meet: "video", doc: "doc",
+  };
+  /** …and with Google, from what is switched on and connected. */
+  const GOOGLE_CAPS = [
+    { svc: "gmail", icon: "mail", label: () => mic.t("secretaria.g.cap.drafts") },
+    { svc: "calendar", icon: "meet", label: () => mic.t("secretaria.g.cap.events") },
+    { svc: "drive", icon: "doc", label: () => mic.t("secretaria.g.cap.acta") },
+  ];
+  function shortWhen(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
+  function capsRow() {
+    const row = el("div", "frow sec-caps");
+    const info = el("div", "finfo");
+    info.append(el("div", "flabel", mic.t("secretaria.caps.title")));
+    const list = el("div", "sec-caplist");
+    info.append(list);
+    row.append(info);
+    return {
+      row,
+      set(items) {
+        list.replaceChildren();
+        row.hidden = !items || !items.length;
+        if (!items || !items.length) return;
+        for (const c of items) {
+          const chip = el("span", "sec-cap" + (c.nivel === "lectura" ? " ro" : ""));
+          chip.innerHTML = mic.icon(CAP_ICON[c.clave] || "check");
+          chip.append(el("span", "", c.etiqueta));
+          if (c.nivel === "lectura") chip.append(el("span", "sec-capro", mic.t("secretaria.caps.reading")));
+          list.append(chip);
+        }
+      },
+    };
+  }
+
+  function learnedCard() {
+    const c = group(mic.t("secretaria.learned"));
+    const list = el("div");
+    c.append(list);
+    async function load(r) {
+      r = r || (await sec("learned"));
+      list.replaceChildren();
+      const items = (r && r.items) || [];
+      if (!items.length) { list.append(el("p", "empty-note", mic.t("secretaria.learned_none"))); return; }
+      items.forEach((it, i) => {
+        const row = el("div", "vp sec-learn" + (it.review ? " review" : ""));
+        const mid = el("div");
+        mid.append(el("div", "n", it.fact), el("div", "s", it.review ? it.day + " · " + mic.t("secretaria.review") : it.day));
+        const b = el("button", "btn btn-sm btn-ghost", mic.t("secretaria.forget"));
+        b.type = "button";
+        b.addEventListener("click", async () => load(await sec("forget", { index: i })));
+        row.append(mid, b);
+        list.append(row);
+      });
+    }
+    load();
+    return c.parentElement;
+  }
+
 
   function legalCard() {
     const d = el("p", "legal");
@@ -375,6 +656,7 @@
     S.orig = clone(data.values);
     S.hasDiag = !!data.has_diagnostics;
     S.hasVp = !!data.has_voiceprints;
+    S.hasSec = !!data.has_secretaria;
     const nav = $("nav"), panes = $("panes");
     const ids = [];
     const addTab = (id) => {
@@ -410,4 +692,16 @@
     refreshDirty();
   }
   init();
+})();
+
+// ---- inside the library window: «‹ Biblioteca» and Esc go back ---------------------------
+(function () {
+  "use strict";
+  if (!window.mic || !mic.embedded) return;
+  const back = () => window.parent.micnaga && window.parent.micnaga.library.hideSettings();
+  const btn = document.getElementById("nav-back");
+  if (btn) { btn.hidden = false; btn.addEventListener("click", back); }
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !e.defaultPrevented && !document.querySelector("dialog[open]")) back();
+  });
 })();

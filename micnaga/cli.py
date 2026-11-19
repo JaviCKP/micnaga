@@ -14,8 +14,12 @@ comando    funcion                                       dueno
 record     ``micnaga.capture.cli:run``                   capture/
 process    ``micnaga.pipeline.cli:run_process``          pipeline/
 worker     ``micnaga.pipeline.cli:run_worker``           pipeline/
+live       ``micnaga.pipeline.cli:run_live``             pipeline/
 bench      ``micnaga.bench.cli:run``                     bench/  (``python -m micnaga.bench``)
 app        ``micnaga.app:run``                           app.py (bandeja, vigilante, UI)
+tools      ``micnaga.brain.mcp:run``                     brain/ (servidor MCP stdio)
+brain      ``micnaga.brain.cli:run``                     brain/ (Secretaria)
+hook-guard ``micnaga.brain.google.guard:main``           brain/google (gancho PreToolUse)
 =========  ============================================  =================================
 
 Si el modulo aun no existe (``ModuleNotFoundError`` de ese modulo o de un paquete
@@ -37,16 +41,26 @@ COMMANDS: dict[str, tuple[str, str]] = {
     "record": ("micnaga.capture.cli", "run"),
     "process": ("micnaga.pipeline.cli", "run_process"),
     "worker": ("micnaga.pipeline.cli", "run_worker"),
+    "live": ("micnaga.pipeline.cli", "run_live"),
+    "hq": ("micnaga.pipeline.hq", "run_cli"),
     "bench": ("micnaga.bench.cli", "run"),
     "app": ("micnaga.app", "run"),
+    "tools": ("micnaga.brain.mcp", "run"),
+    "brain": ("micnaga.brain.cli", "run"),
+    "hook-guard": ("micnaga.brain.google.guard", "main"),
 }
 
 HELP: dict[str, str] = {
     "record": "grabar micro + sistema en dos pistas",
     "process": "procesar una sesion grabada (transcribir)",
     "worker": "proceso de trabajo: consume la cola de procesado",
+    "live": "(interno) procesado en vivo de la sesion que se graba",
+    "hq": "(interno) mejorar la transcripcion de una reunion con Whisper grande",
     "bench": "banco de pruebas",
     "app": "bandeja, vigilante y ventanas",
+    "tools": "servidor MCP de solo lectura de la Secretaria (lo lanza claude -p)",
+    "brain": "Secretaria: analizar una reunion, probar Claude/Odoo, titulo en directo",
+    "hook-guard": "(interno) gancho PreToolUse: solo deja pasar lo aprobado",
 }
 
 EXIT_NOT_IMPLEMENTED = 2

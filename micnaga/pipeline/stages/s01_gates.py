@@ -4,7 +4,9 @@ Una sesion confirmada solo exige la duracion (basta con la cabecera de los fiche
 audio ni se ejecuta el VAD). Una provisional carga ambas pistas, detecta voz en cada una y aplica
 las tres compuertas (``micnaga.gates``; la compuerta 3 se calcula con el micro **sin** cancelar
 el eco, de ahi la sombra de eco de ``gates.turn_spells``). Si no pasa se lanza
-``SessionDiscarded``: el ``runner`` borra la carpeta y anota solo fecha + motivo.
+``SessionDiscarded``: el ``runner`` aparta la carpeta en «Descartadas» (``micnaga.holding``) y
+anota solo fecha + motivo. Con ``gates.require_confirmed`` (defecto) una sesion sin confirmar
+no se transcribe nunca.
 
 Salida: ``work/01_gates.json``.
 """
@@ -22,11 +24,16 @@ from micnaga.pipeline.stages.base import (
 )
 
 OUTPUT = "01_gates.json"
+UNCONFIRMED = "sin confirmar"
 
 
 def run(ctx: StageContext) -> StageResult:
     cfg = ctx.config.gates
     confirmed = ctx.meta.confirmed
+    if cfg.require_confirmed and not confirmed:
+        # Red de seguridad: sin «Si» del usuario nunca se transcribe (se aparta, DECISIONS §18).
+        ctx.write_json(OUTPUT, {"passed": False, "reason": UNCONFIRMED, "confirmed": False})
+        raise SessionDiscarded(UNCONFIRMED)
     frames = [audio_frames(ctx.source_track_path(t)) for t in ("mic", "system")]
     duration_s = max(n / sr for n, sr in frames)
     me_regions: list[Any] = []

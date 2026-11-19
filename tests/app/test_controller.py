@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from micnaga import paths
+from micnaga import holding, paths
 from micnaga.watcher import MeetingInfo
 from tests.app.fakes import Rig
 from tests.watcher.helpers import CODE_A, MONITOR
@@ -52,13 +52,31 @@ def test_failed_start_makes_everything_else_a_noop(rig: Rig) -> None:
     rig.ctl.show_pill(provisional=True, paused=False)
     assert not rig.pill.visible  # nunca una pastilla sin grabacion
     rig.ctl.stop_and_finalize(confirmed=True, meeting=MEETING)
-    rig.ctl.discard_recording()
+    rig.ctl.begin_discard(undo_s=8)
+    rig.ctl.hold_recording(reason="declined", trim=False)
+    rig.ctl.show_popup(title="x", code=None, monitor_hint=None, timeout_s=15.0)
+    assert not rig.popup.visible  # ni popup sin grabacion detras
     assert rig.ctl.add_marker() is False
     rig.settle()
     assert rig.jobs() == []
 
 
+def test_failed_start_tells_the_user_and_the_watcher(rig: Rig) -> None:
+    """Hallazgo 2: el fallo de apertura se ve (toast) y la maquina vuelve a vigilar."""
+    rig.recorders.fail_next = True
+    assert rig.watcher is not None
+    rig.watcher.record_now()  # «Grabar ahora» -> StartRecording falla
+    assert not rig.ctl.recording
+    assert rig.toaster.toasts, "no error toast"
+    assert rig.watcher.phase.value == "idle"
+    assert not rig.pill.visible
+    rig.watcher.record_now()  # reintento inmediato: ahora si abre
+    assert rig.ctl.recording and rig.pill.visible
+    assert rig.watcher.phase.value == "recording_confirmed"
+
+
 def test_show_popup_uses_watcher_rect_long_timeout_and_real_total(rig: Rig) -> None:
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
     rig.ctl.show_popup(title="Revisión semanal", code=CODE_A, monitor_hint=MONITOR, timeout_s=15.0)
     assert ("monitor_info", (MONITOR.rect,)) in rig.w32.calls
     shown = next(a for a in rig.js(rig.popup) if a.startswith("micnaga.popup.show("))
@@ -68,6 +86,7 @@ def test_show_popup_uses_watcher_rect_long_timeout_and_real_total(rig: Rig) -> N
 
 
 def test_show_popup_generic_uses_foreground_window(rig: Rig) -> None:
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
     rig.ctl.show_popup(title="Teams", code=None, monitor_hint=None, timeout_s=15.0)
     assert ("monitor_info", (4321,)) in rig.w32.calls
 
@@ -83,6 +102,7 @@ def test_show_popup_generic_uses_foreground_window(rig: Rig) -> None:
     ],
 )
 def test_close_popup_maps_every_reason(rig: Rig, reason: str, expected: str) -> None:
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
     rig.ctl.show_popup(title="x", code=None, monitor_hint=None, timeout_s=15.0)
     rig.ctl.close_popup(reason=reason)
     assert any(expected in js for js in rig.js(rig.popup)), rig.js(rig.popup)
@@ -94,14 +114,42 @@ def test_confirm_sets_the_recorder_flag(rig: Rig) -> None:
     assert ("set_confirmed", True) in rig.rec.calls
 
 
-def test_discard_stops_and_deletes_and_queues_nothing(rig: Rig) -> None:
+def test_no_is_persisted_synchronously_and_pauses_capture(rig: Rig) -> None:
+    """Hallazgo 1: la marca de descartada esta en disco al volver de ``begin_discard`` (antes
+    de cerrar el popup); la captura se pausa y la UI ofrece «Deshacer»."""
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
+    folder = rig.rec.dir
+    assert folder is not None
+    rig.ctl.begin_discard(undo_s=8)
+    assert holding.discard_reason(folder) == holding.REASON_DECLINED
+    assert "pause" in rig.rec.names and "stop" not in rig.rec.names
+    assert any(js.startswith("micnaga.pill.undo(") for js in rig.js(rig.pill))
+    assert rig.pill.visible  # la capsula muestra «Descartada · Deshacer»
+
+
+def test_undo_removes_the_mark_and_resumes(rig: Rig) -> None:
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
+    folder = rig.rec.dir
+    assert folder is not None
+    rig.ctl.begin_discard(undo_s=8)
+    rig.ctl.cancel_discard()
+    assert holding.discard_reason(folder) is None
+    assert rig.rec.names[-1] == "resume"
+    assert rig.ctl.recording
+
+
+def test_hold_stops_and_moves_to_descartadas_and_queues_nothing(rig: Rig) -> None:
     rig.ctl.start_recording(provisional=True, meeting=MEETING)
     folder = rig.rec.dir
     assert folder is not None and folder.is_dir()
-    rig.ctl.discard_recording()
+    rig.ctl.begin_discard(undo_s=8)
+    rig.ctl.hold_recording(reason="declined", trim=False)
     rig.settle()
     assert "stop" in rig.rec.names
-    assert not folder.exists()
+    assert not folder.exists()  # ya no esta entre las reuniones...
+    held = holding.held_root(folder.parent) / folder.name
+    assert held.is_dir() and (held / holding.HELD_FILE).is_file()  # ...sino apartada
+    assert not (held / holding.DISCARD_MARKER).exists()
     assert rig.jobs() == []
     assert not rig.ctl.recording
 
@@ -183,14 +231,25 @@ def test_levels_follow_the_recorder(rig: Rig) -> None:
     assert rig.app.ui.levels() == (0.25, 0.5)  # type: ignore[attr-defined]
 
 
-def test_shutdown_with_active_recording_queues_instead_of_discarding(rig: Rig) -> None:
-    rig.ctl.start_recording(provisional=True, meeting=MEETING)
-    rig.ctl.show_pill(provisional=True, paused=False)
+def test_shutdown_with_a_confirmed_recording_queues_it(rig: Rig) -> None:
+    rig.ctl.start_recording(provisional=False, meeting=MEETING)
+    rig.ctl.show_pill(provisional=False, paused=False)
     rig.ctl.shutdown(wait_s=10)
     assert "stop" in rig.rec.names
     assert rig.rec.dir is not None and rig.rec.dir.is_dir()  # no se borra
     assert len(rig.jobs()) == 1
     assert not rig.pill.visible
+
+
+def test_shutdown_with_an_unconfirmed_recording_holds_it(rig: Rig) -> None:
+    """Sin «Si» nunca se transcribe, ni siquiera al salir; tampoco se pierde."""
+    rig.ctl.start_recording(provisional=True, meeting=MEETING)
+    folder = rig.rec.dir
+    assert folder is not None
+    rig.ctl.shutdown(wait_s=10)
+    assert "stop" in rig.rec.names
+    assert rig.jobs() == []
+    assert (holding.held_root(folder.parent) / folder.name).is_dir()
 
 
 def test_ticker_syncs_pill_clock(rig: Rig) -> None:

@@ -35,11 +35,16 @@
   });
   mic.dur = (ms) => (mic.motion ? ms : 0);
   mic.isHost = !!(window.chrome && window.chrome.webview);
+  // Embedded surface (Ajustes inside the library window): same origin, so every call goes through
+  // the parent's pywebview bridge (LibraryApi.settings_call).
+  mic.embedded = params.get("embed") === "1" && window.parent !== window && !!window.parent.mic;
 
   // ---- python <-> js ----------------------------------------------------------------
   let readyResolve;
   mic.ready = new Promise((r) => { readyResolve = r; });
-  if (mic.isHost) {
+  if (mic.embedded) {
+    readyResolve();
+  } else if (mic.isHost) {
     if (window.pywebview && window.pywebview.api) readyResolve();
     else window.addEventListener("pywebviewready", () => readyResolve());
   } else {
@@ -47,6 +52,7 @@
   }
   mic.call = async function (name, ...args) {
     await mic.ready;
+    if (mic.embedded) return window.parent.mic.call("settings_call", name, args);
     if (mic.isHost && window.pywebview && window.pywebview.api && window.pywebview.api[name]) {
       return window.pywebview.api[name](...args);
     }
@@ -156,6 +162,7 @@
     edit: '<path d="M4 20h4L19 9a2.1 2.1 0 0 0-3-3L5 17z"/>',
     arrow: '<path d="M5 12h14M13 6l6 6-6 6"/>',
     external: '<path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/>',
+    hq: '<path d="M5 16v3M9 12v7M13 8v11M17 4v15"/>',
     refresh: '<path d="M4.5 12a7.5 7.5 0 0 1 13-5l2 2M19.5 4v5h-5M19.5 12a7.5 7.5 0 0 1-13 5l-2-2M4.5 20v-5h5"/>',
     library: '<path d="M5 4.5v15M10 4.5v15M15 6l4 .9L16 19.5l-4-.9"/>',
     activity: '<path d="M3 12h4l3-7 4 14 3-7h4"/>',
@@ -176,6 +183,18 @@
     cpu: '<rect x="6.5" y="6.5" width="11" height="11" rx="2"/><path d="M9.5 3.5v3M14.5 3.5v3M9.5 17.5v3M14.5 17.5v3M3.5 9.5h3M3.5 14.5h3M17.5 9.5h3M17.5 14.5h3"/>',
     eye: '<path d="M2.8 12S6 5.5 12 5.5 21.2 12 21.2 12 18 18.5 12 18.5 2.8 12 2.8 12z"/><circle cx="12" cy="12" r="3"/>',
     plus: '<path d="M12 5v14M5 12h14"/>',
+    clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
+    calendar: '<rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>',
+    // Secretaria: one glyph per kind of proposal, and the «tell it what to change» spark
+    spark: '<path d="M12 3.5c.5 3.9 2.6 6 6.5 6.5-3.9.5-6 2.6-6.5 6.5-.5-3.9-2.6-6-6.5-6.5 3.9-.5 6-2.6 6.5-6.5zM18.5 15.5c.2 1.6 1 2.4 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.1 2.3-.9 2.5-2.5z"/>',
+    task: '<rect x="4.5" y="4.5" width="15" height="15" rx="3.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
+    note: '<path d="M6.5 3.5h7.5l4 4v13h-11.5z"/><path d="M13.5 3.5V8h4.5M9.5 12.5h5M9.5 16h5"/>',
+    mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7 7.5 6 7.5-6"/>',
+    doc: '<path d="M6.5 3.5h7.5l4 4v13h-11.5z"/><path d="M13.5 3.5V8h4.5"/>',
+    receipt: '<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/>',
+    trend: '<path d="M3.5 17 9.5 11l4 4 7-7.5"/><path d="M15.5 7.5h5v5"/>',
+    text: '<path d="M4 18.5 8.5 6l4.5 12.5M5.6 14h5.8M15.5 12.5a2.6 2.6 0 0 1 5 1v5M20.5 15.5c-3.2-.4-5 .4-5 1.6 0 1 .8 1.6 1.9 1.6 1.6 0 3.1-1.1 3.1-3.2"/>',
+    send: '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/>',
     dots: '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
   };
   mic.icon = function (name, cls) {
@@ -230,8 +249,32 @@
    */
   mic.wave = function (canvas, opts) {
     const o = Object.assign({ bar: 3, gap: 2, min: 2, fade: 0.28, round: true, curve: 2.2 }, opts || {});
+    // data-dither="2" (cell px): the same history drawn as 1-bit Bayer cells (the Bitnaga skin):
+    // loud = a dense blob that reaches the edges, quiet = a sparse centre line, old = thinning out
+    const cell = canvas.dataset && canvas.dataset.dither ? Math.max(1, parseFloat(canvas.dataset.dither) || 2) : 0;
+    if (cell) { o.bar = cell; o.gap = cell / 2; }
     const ctx = canvas.getContext("2d");
-    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0;
+    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0, pushes = 0;
+    const BAY = [0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22,
+      3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21];
+    function drawCells() {
+      ctx.setTransform(1, 0, 0, 1, 0, 0);                   // whole device pixels: crisp cells
+      const cd = Math.max(1, Math.round(cell * dpr)), gd = Math.max(1, Math.round(o.gap * dpr)), step = cd + gd;
+      const cw = canvas.width, chh = canvas.height;
+      const rows = Math.max(1, Math.floor(chh / cd)), x0 = cw - n * step + gd, y0 = Math.floor((chh - rows * cd) / 2), mid = rows / 2;
+      for (let i = 0; i < n; i++) {
+        const h = Math.pow(hist[(head + i) % n], o.curve) * mid;   // half height, in cells
+        const age = o.fade + (1 - o.fade) * (i / Math.max(1, n - 1));
+        const sx = pushes - (n - 1 - i);                    // the pattern travels with the samples
+        for (let r = 0; r < rows; r++) {
+          const dr = Math.abs(r + 0.5 - mid);
+          const th = (BAY[((r & 7) << 3) | (((sx % 8) + 8) % 8)] + 0.5) / 64;
+          // solid core, dithered tip (1.5 cells), older columns thinning out
+          const k = dr <= Math.max(0.5, h - 0.5) ? age : dr < h + 1.5 ? ((h + 1.5 - dr) / 2) * age : 0;
+          if (th < k) ctx.fillRect(x0 + i * step, y0 + r * cd, cd, cd);
+        }
+      }
+    }
     function size() {
       dpr = window.devicePixelRatio || 1;
       const r = canvas.getBoundingClientRect();
@@ -248,6 +291,7 @@
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
       ctx.fillStyle = color;
+      if (cell) { drawCells(); return; }
       const used = n * (o.bar + o.gap) - o.gap, x0 = W - used;
       for (let i = 0; i < n; i++) {
         const v = hist[(head + i) % n];                     // i = 0 oldest .. n-1 newest
@@ -269,7 +313,7 @@
         const s = v > last ? v : last * 0.55 + v * 0.45;
         last = s;
         if (!n) return;
-        hist[head] = s; head = (head + 1) % n;
+        hist[head] = s; head = (head + 1) % n; pushes++;
         draw();
       },
       fill(v) { hist.fill(Math.max(0, Math.min(1, v))); last = v; draw(); },

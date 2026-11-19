@@ -11,7 +11,7 @@ from micnaga.bench.synthetic import SyntheticSpec, generate_session
 from micnaga.config import GatesConfig
 from micnaga.types import SpeechRegion
 
-CFG = GatesConfig()  # 180 s / 30 s / 6 turnos
+CFG = GatesConfig(min_duration_s=180.0, min_remote_speech_s=30.0, min_turns=6)  # spec §5
 
 
 def test_evaluate_gates_all_pass() -> None:

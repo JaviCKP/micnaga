@@ -3,13 +3,17 @@
 Verificado (onnx-asr 0.12): el modelo ``nemo-conformer-tdt`` devuelve **tokens** con marca de
 tiempo (resolucion 80 ms) y log-probabilidad; las palabras se reconstruyen aqui agrupando los
 tokens SentencePiece (los que empiezan por espacio abren palabra; los demas, incluida la
-puntuacion, se pegan a la anterior). El modelo v3 es multilingue (incluye espanol) y emite
-puntuacion y mayusculas por si mismo.
+puntuacion, se pegan a la anterior). El vocabulario no tiene digitos con marca de palabra
+(``▁8`` no existe): un numero llega como un token ``▁`` suelto (``" "`` tras decodificar) seguido
+de los digitos (``" ", "5", "0"``), asi que un token solo de espacio abre la palabra siguiente
+(si no, salia «a las8 y50»). El modelo v3 es multilingue (incluye espanol) y emite puntuacion y
+mayusculas por si mismo.
 
 * Ficheros: ``<models_dir>/parakeet-tdt-0.6b-v3-int8/{encoder-model.int8.onnx,
   decoder_joint-model.int8.onnx, vocab.txt, config.json}``. El preprocesador de mel va dentro
   del paquete ``onnx_asr``. Nunca se descarga nada desde aqui (carga con ``path=``).
-* ``processing.threads`` -> ``intra_op_num_threads`` de todas las sesiones ONNX.
+* ``processing.threads`` -> ``intra_op_num_threads`` de todas las sesiones ONNX, sin espera
+  activa (``engines.ort_options``: con prioridad baja y el equipo ocupado era 10 veces mas lento).
 * Fin de palabra: inicio de la siguiente palabra, con tope de 0,32 s tras el ultimo token (el
   modelo no da duraciones); en pausas largas la palabra no se estira.
 * ``p`` de la palabra: media geometrica de las probabilidades de sus tokens.
@@ -49,13 +53,16 @@ def words_from_tokens(
     groups: list[dict[str, Any]] = []
     prefix = ""
     prefix_ts: float | None = None
+    boundary = False  # hubo un token solo de espacio (``▁``): el siguiente abre palabra
     for i, tok in enumerate(tokens):
         ts = timestamps[i]
         lp = logprobs[i] if logprobs is not None else 0.0
         stripped = tok.strip()
         if not stripped:
+            boundary = boundary or bool(tok)
             continue
-        starts_word = tok.startswith(" ") or not groups or bool(prefix)
+        starts_word = tok[:1].isspace() or boundary or not groups or bool(prefix)
+        boundary = False
         if starts_word and all(c in OPENING_MARKS for c in stripped):
             prefix += stripped  # «¿» suelto: se pega a la palabra siguiente
             prefix_ts = ts if prefix_ts is None else prefix_ts
@@ -99,15 +106,13 @@ class ParakeetEngine:
     def __init__(self, model_dir: str, threads: int) -> None:
         try:
             import onnx_asr
-            import onnxruntime as ort
         except ImportError as exc:
             raise EngineUnavailableError(
                 f"onnx-asr is not installed: {exc} (pip install micnaga[asr])"
             ) from exc
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = max(1, threads)
-        so.inter_op_num_threads = 1
-        so.log_severity_level = 3
+        from micnaga.pipeline.engines.ort_options import session_options
+
+        so = session_options(threads)
         try:
             self._model: Any = onnx_asr.load_model(
                 "nemo-conformer-tdt",

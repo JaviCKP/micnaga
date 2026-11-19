@@ -28,12 +28,14 @@ from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
 from micnaga.types import SPEAKER_ME, Transcript
-from micnaga.ui import settings_schema, sound, startup
+from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
+    BrainPort,
     ConfigStore,
     Diagnostic,
     DiagnosticsProvider,
     DownloadModels,
+    HeldOps,
     LevelsProvider,
     LibraryOps,
     ModelProgress,
@@ -86,6 +88,12 @@ class SurfaceController(Protocol):
 
     def handle_pill_stop(self) -> None: ...
 
+    def handle_end_decide(self, choice: str) -> None: ...
+
+    def handle_pill_undo(self) -> None: ...
+
+    def handle_pill_save(self) -> None: ...
+
 
 class PopupApi:
     """``pywebview.api`` del popup."""
@@ -112,6 +120,11 @@ class PopupApi:
     def popup_closed(self, kind: str) -> None:
         if kind in self._CLOSED:
             self._c.handle_popup_closed(kind)
+
+    def popup_end_decide(self, choice: str) -> None:
+        """Popup de fin: ``finish`` | ``keep`` | ``save`` | ``discard``."""
+        if choice in ("finish", "keep", "save", "discard"):
+            self._c.handle_end_decide(choice)
 
     def popup_notice_dismissed(self) -> None:
         self._c.handle_notice_dismissed()
@@ -145,6 +158,68 @@ class PillApi:
 
     def pill_stop(self) -> None:
         self._c.handle_pill_stop()
+
+    def pill_undo(self) -> None:
+        """«Deshacer» del aviso «Descartada»."""
+        self._c.handle_pill_undo()
+
+    def pill_save(self) -> None:
+        """«¿Guardar?» de la pastilla provisional: confirma la grabacion."""
+        self._c.handle_pill_save()
+
+
+# ============================================================================ secretaria
+
+LIBRARY_BRAIN_ACTIONS = frozenset(
+    {
+        "acta",
+        "apply",
+        "undo",
+        "dismiss",
+        "analyze",
+        "edit",
+        "refine",
+        "refine_plan",
+        "refine_undo",
+        "refine_status",
+        "open_link",
+        "full_acta",
+        "full_acta_make",
+        "full_acta_open",
+        "caps",
+        "horas_plan",
+        "horas_apply",
+        "horas_undo",
+        "horas_off",
+    }
+)
+SETTINGS_BRAIN_ACTIONS = frozenset(
+    {
+        "status",
+        "claude_detect",
+        "claude_test",
+        "set_secret",
+        "odoo_test",
+        "caps",
+        "learned",
+        "forget",
+        "restore",
+        "google_status",
+        "google_check",
+        "google_open",
+    }
+)
+
+
+def call_brain(
+    brain: BrainPort | None, allowed: frozenset[str], action: object, args: object
+) -> Result:
+    """Puerta unica JS -> Secretaria: solo acciones de esa superficie, argumentos dict."""
+    if brain is None:
+        return fail("secretaria.err.disabled")
+    if not isinstance(action, str) or action not in allowed:
+        return fail("secretaria.err.unknown")
+    return brain.api(action, args if isinstance(args, dict) else {})
 
 
 # ============================================================================ biblioteca
@@ -185,13 +260,24 @@ class LibraryApi:
         config: Callable[[], Config],
         ops: LibraryOps | None = None,
         opener: Callable[[Path], None] | None = None,
+        held: HeldOps | None = None,
+        brain: BrainPort | None = None,
+        open_settings: Callable[[], None] | None = None,
+        settings: Callable[[], SettingsApi] | None = None,
     ) -> None:
         self._db_factory = db_factory
+        self._open_settings = open_settings
+        self._settings_factory = settings
+        self._settings_api: SettingsApi | None = None
         self._root = meetings_root
         self._audio_url = audio_url
         self._config = config
         self._ops = ops
+        self._held = held
         self._opener = opener or _startfile
+        self._brain = brain
+        self._hq_procs: dict[str, Any] = {}
+        self._hq_lock = threading.Lock()
 
     # ---------------------------------------------------------------- lectura
 
@@ -200,7 +286,67 @@ class LibraryApi:
         return ok(
             voiceprints_enabled=cfg.privacy.voiceprints_enabled,
             can_edit=self._ops is not None,
+            has_held=self._held is not None,
+            secretaria=self._brain is not None,
+            hq=cfg.processing.hq_transcribe and self._ops is not None,
         )
+
+    def open_settings(self) -> Result:
+        """Abre (o trae al frente) la ventana de Ajustes desde la biblioteca."""
+        if self._open_settings is None:
+            return fail("library.err.not_found")
+        try:
+            self._open_settings()
+        except Exception:
+            log.exception("open_settings failed")
+            return fail("library.err.not_found")
+        return ok()
+
+    def settings_call(self, name: str, args: list[Any] | None = None) -> Any:
+        """Ajustes embebido en esta ventana: delega en ``SettingsApi`` (solo metodos publicos)."""
+        if self._settings_factory is None or not isinstance(name, str) or name.startswith("_"):
+            return fail("library.err.not_found")
+        if self._settings_api is None:
+            self._settings_api = self._settings_factory()
+        fn = getattr(self._settings_api, name, None)
+        if not callable(fn):
+            return fail("library.err.not_found")
+        return fn(*(args if isinstance(args, list) else []))
+
+    # ------------------------------------------------------------- «Descartadas»
+
+    def list_held(self) -> list[dict[str, Any]]:
+        """Grabaciones apartadas sin transcribir (recuperables ``discarded_keep_days`` dias)."""
+        if self._held is None:
+            return []
+        try:
+            return self._held.list_held()
+        except Exception:
+            log.exception("list_held failed")
+            return []
+
+    def recover_held(self, name: str) -> Result:
+        """La aparta de «Descartadas» y la encola como reunion confirmada."""
+        if self._held is None or not _valid_held_name(name):
+            return fail("library.err.not_found")
+        try:
+            self._held.recover_held(name)
+        except FileNotFoundError:
+            return fail("library.err.not_found")
+        except Exception:
+            log.exception("recover_held failed")
+            return fail("library.err.op_failed")
+        return ok(held=self.list_held())
+
+    def delete_held(self, name: str) -> Result:
+        if self._held is None or not _valid_held_name(name):
+            return fail("library.err.not_found")
+        try:
+            self._held.delete_held(name)
+        except Exception:
+            log.exception("delete_held failed")
+            return fail("library.err.op_failed")
+        return ok(held=self.list_held())
 
     def list_meetings(self, limit: int = 200, offset: int = 0) -> list[dict[str, Any]]:
         limit = max(1, min(int(limit), 1000))
@@ -226,8 +372,11 @@ class LibraryApi:
         limit = max(1, min(int(limit), 200))
         with self._db_factory() as db:
             hits = db.search(query, limit)
+            originals = self._original_hits(
+                db, query, {(h.folder, round(h.start, 2)) for h in hits}
+            )
             names: dict[str, dict[str, str]] = {}
-            for h in hits:
+            for h in [*hits, *originals]:
                 if h.folder not in names:
                     rec = db.get_meeting(h.folder)
                     names[h.folder] = {s.id: s.name for s in rec.speakers} if rec else {}
@@ -240,13 +389,50 @@ class LibraryApi:
                 "speaker": names.get(h.folder, {}).get(h.speaker, h.speaker),
                 "parts": split_snippet(h.snippet),
             }
-            for h in hits
+            for h in [*hits, *originals]
         ]
+        if self._brain is not None:  # el texto de las actas tambien se encuentra
+            try:
+                label = i18n.t("library.acta_hit", self._config().ui.language)
+                for a in self._brain.search(query, 10):
+                    out.append(
+                        {
+                            "folder": a["folder"],
+                            "title": a["title"],
+                            "start": 0.0,
+                            "speaker_id": "",
+                            "speaker": label,
+                            "parts": split_snippet(str(a["snippet"])),
+                            "acta": True,
+                        }
+                    )
+            except Exception:
+                log.exception("acta search failed")
         return {
             "query": query,
             "hits": out,
             "ms": round((time.perf_counter() - started) * 1000, 1),
         }
+
+    @staticmethod
+    def _original_hits(db: Any, query: str, have: set[tuple[str, float]]) -> list[Any]:
+        """Lo que se oyo antes de la limpieza con IA (``original_fts``): la busqueda encuentra
+        tambien la palabra original. Sin repetir un parrafo que ya salio por su texto nuevo."""
+        try:
+            from micnaga.brain import store as bstore
+            from micnaga.store.db import SearchHit
+
+            bstore.ensure_schema(db)
+            out = []
+            for o in bstore.search_originals(db, query, 10):
+                rec = db.get_meeting(o.folder)
+                if rec is None or (o.folder, round(o.start, 2)) in have:
+                    continue
+                out.append(SearchHit(0, o.folder, rec.title, 0, o.start, o.speaker, "", o.snippet))
+            return out
+        except Exception:
+            log.debug("original wording search failed", exc_info=True)
+            return []
 
     def get_meeting(self, folder: str) -> Result:
         """Transcripcion (fuente de verdad: ``transcripcion.json``) + URLs del audio."""
@@ -259,8 +445,13 @@ class LibraryApi:
             log.exception("cannot read %s", path)
             return fail("library.err.unreadable")
         d = tr.to_dict()
-        for seg in d["segments"]:
+        from micnaga.brain.cleanup import marks
+
+        for seg, s in zip(d["segments"], tr.segments, strict=True):
             seg.pop("words", None)  # el visor trabaja por frases; ahorra carga
+            seg.pop("merged_from", None)
+            if s.text_original is not None:  # limpieza con IA: palabras cambiadas y original
+                seg["fix"] = marks(s)
         audio: dict[str, str | None] = {}
         for track, filename in (("yo", paths.AUDIO_ME_FLAC), ("remoto", paths.AUDIO_REMOTE_FLAC)):
             audio[track] = (
@@ -345,6 +536,92 @@ class LibraryApi:
             return fail("library.err.op_failed")
         return ok(voiceprints=self.list_voiceprints())
 
+    def secretaria(self, action: str, args: dict[str, Any] | None = None) -> Result:
+        """Acta, propuestas (aplicar / deshacer / descartar) y «Analizar» de una reunion."""
+        return call_brain(self._brain, LIBRARY_BRAIN_ACTIONS, action, args)
+
+    def hq(self, action: str, folder: str) -> Result:
+        """«Mejorar transcripcion» (``pipeline.hq``): ``info`` | ``start`` | ``status`` |
+        ``cancel`` | ``restore``. El trabajo es un proceso aparte (``micnaga hq``)."""
+        from micnaga.pipeline import hq
+
+        cfg = self._config()
+        if not cfg.processing.hq_transcribe or self._ops is None:
+            return fail("library.err.read_only")
+        path = self._meeting_json(folder)
+        if path is None:
+            return fail("library.err.not_found")
+        meeting = path.parent
+        if action == "info":
+            return ok(
+                minutes=hq.estimate_minutes(meeting, hq.model_name(cfg)),
+                download_mb=round(hq.download_bytes(cfg) / 1e6),
+                model=hq.model_name(cfg),
+                previa=hq.has_previa(meeting),
+                status=self._hq_status(meeting),
+            )
+        if action == "status":
+            return ok(status=self._hq_status(meeting), previa=hq.has_previa(meeting))
+        if action == "start":
+            if self._hq_alive(meeting):
+                return ok(status=self._hq_status(meeting))
+            try:
+                proc = hq.spawn(meeting)
+            except Exception:
+                log.exception("could not start the hq transcription")
+                return fail("library.err.op_failed")
+            with self._hq_lock:
+                self._hq_procs[meeting.name] = proc
+            threading.Thread(
+                target=self._hq_wait, args=(meeting, proc), name="micnaga-hq-wait", daemon=True
+            ).start()
+            return ok(status=self._hq_status(meeting))
+        if action == "cancel":
+            hq.request_cancel(meeting)
+            return ok()
+        if action == "restore":
+            if self._hq_alive(meeting):
+                return fail("library.err.op_failed")
+            try:
+                restored = hq.restore(meeting)
+            except Exception:
+                log.exception("hq restore failed")
+                return fail("library.err.op_failed")
+            if not restored:
+                return fail("library.err.not_found")
+            return self.get_meeting(folder)
+        return fail("library.err.op_failed")
+
+    def _hq_alive(self, meeting: Path) -> bool:
+        from micnaga.pipeline import hq
+        from micnaga.pipeline.worker import mutex_exists
+
+        with self._hq_lock:
+            proc = self._hq_procs.get(meeting.name)
+        if proc is not None and proc.poll() is None:
+            return True
+        return mutex_exists(hq.mutex_name(meeting))  # lanzado por otra ventana o antes
+
+    def _hq_status(self, meeting: Path) -> dict[str, Any] | None:
+        from micnaga.pipeline import hq
+
+        st = hq.read_status(meeting)
+        if st and st.get("state") == "running" and not self._hq_alive(meeting):
+            return None  # un estado «en marcha» huerfano (la app se reinicio, o lo mataron)
+        return st
+
+    def _hq_wait(self, meeting: Path, proc: Any) -> None:
+        """Al terminar bien: limpieza con IA y acta otra vez (si la Secretaria esta activa)."""
+        from micnaga.pipeline import hq
+
+        proc.wait()
+        st = hq.read_status(meeting) or {}
+        if st.get("state") == "done" and self._brain is not None:
+            try:
+                self._brain.api("analyze", {"folder": meeting.name})
+            except Exception:
+                log.exception("secretaria re-run after hq failed")
+
     def open_folder(self, folder: str) -> Result:
         if not valid_folder_name(folder):
             return fail("library.err.not_found")
@@ -381,6 +658,10 @@ class LibraryApi:
         return None
 
 
+def _valid_held_name(name: object) -> bool:
+    return isinstance(name, str) and valid_folder_name(name)
+
+
 def _startfile(path: Path) -> None:  # pragma: no cover - abre el Explorador real
     os.startfile(path)  # type: ignore[attr-defined,unused-ignore]
 
@@ -401,7 +682,9 @@ class SettingsApi:
         ops: LibraryOps | None = None,
         folder_picker: Callable[[str], str | None] | None = None,
         on_applied: Callable[[Config], None] | None = None,
+        brain: BrainPort | None = None,
     ) -> None:
+        self._brain = brain
         self._store = store
         self._cb = callbacks
         self._registry = registry
@@ -421,6 +704,7 @@ class SettingsApi:
             "schema": settings_schema.schema_for_js(),
             "has_diagnostics": self._diagnostics is not None,
             "has_voiceprints": self._ops is not None,
+            "has_secretaria": self._brain is not None,
         }
 
     def save_settings(self, values: dict[str, Any]) -> Result:
@@ -475,6 +759,10 @@ class SettingsApi:
             log.exception("delete_voiceprint failed")
             return fail("library.err.op_failed")
         return ok(voiceprints=self.list_voiceprints())
+
+    def secretaria(self, action: str, args: dict[str, Any] | None = None) -> Result:
+        """Conectar Claude / Odoo (los secretos entran y nunca salen) y «Lo que ha aprendido»."""
+        return call_brain(self._brain, SETTINGS_BRAIN_ACTIONS, action, args)
 
     def pick_folder(self, current: str = "") -> str | None:
         return self._picker(str(current)) if self._picker is not None else None

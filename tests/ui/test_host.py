@@ -391,9 +391,19 @@ def test_settings_and_wizard_windows() -> None:
     r = Rig()
     r.host.open_settings()
     r.host.open_wizard()
-    assert {s.key for s in r.fac.created} >= {"settings", "wizard"}
+    # Ajustes vive dentro de la biblioteca (misma ventana, vista «settings»)
+    assert {s.key for s in r.fac.created} >= {"library", "wizard"}
+    assert "settings" not in r.fac.windows
+    assert r.fac.windows["library"].spec.params["view"] == "settings"
     assert r.fac.windows["wizard"].spec.resizable is False
-    assert r.fac.windows["settings"].spec.js_api is not None
+    assert hasattr(r.fac.windows["library"].spec.js_api, "settings_call")
+
+
+def test_open_settings_again_switches_the_open_library_to_settings() -> None:
+    r = Rig()
+    r.host.open_library()
+    r.host.open_settings()
+    assert any("showSettings()" in js for js in r.fac.windows["library"].js_calls())
 
 
 def test_apply_config_pushes_theme_to_every_window() -> None:
@@ -410,14 +420,14 @@ def test_system_theme_param_follows_the_registry_value() -> None:
     r = Rig()
     r.w32.hkcu[(winapi.PERSONALIZE_KEY, "AppsUseLightTheme")] = 0
     r.host.open_settings()
-    assert r.fac.windows["settings"].spec.params["theme"] == "dark"
-    assert r.fac.windows["settings"].spec.background == "#050507"
+    assert r.fac.windows["library"].spec.params["theme"] == "dark"
+    assert r.fac.windows["library"].spec.background == "#050507"
 
 
 def test_motion_param_when_windows_animations_off() -> None:
     r = Rig()
     r.host.open_settings()
-    assert r.fac.windows["settings"].spec.params.get("motion") == "off"
+    assert r.fac.windows["library"].spec.params.get("motion") == "off"
 
 
 def test_toast_open_navigates_library_and_notifies_integrator() -> None:
@@ -444,3 +454,82 @@ def test_show_popup_before_run_is_a_clear_error() -> None:
     )
     with pytest.raises(RuntimeError, match="run"):
         host.show_popup("x")
+
+
+# ------------------------------------------------- regresion A: el popup no salia en uso real
+
+
+class _StubbornWindow(FakeWindow):
+    """El primer ``show`` no deja la ventana visible (como un WebView2 que no se pinta)."""
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.shows = 0
+
+    def show(self, *, activate: bool) -> None:
+        self.shows += 1
+        self.log.append(("show", activate))
+        self.visible = self.shows > 1
+
+
+def test_popup_that_is_not_visible_after_show_is_presented_again() -> None:
+    r = Rig()
+    pop = _StubbornWindow(r.popup.spec, r.popup.hwnd)
+    r.host._popup = pop
+    r.host.show_popup("Reunión", "abc-defg-hij")
+    assert not pop.visible
+    shown_at = r.host._popup_shown_at
+    assert r.host._verify_popup(shown_at) is False  # lo detecta y lo vuelve a presentar
+    assert pop.visible and pop.shows == 2
+    assert sum(1 for js in pop.js_calls() if js.startswith("micnaga.popup.show(")) == 2
+    assert r.host._verify_popup(shown_at) is True
+
+
+def test_verify_ignores_a_popup_that_was_already_answered() -> None:
+    r = Rig()
+    pop = _StubbornWindow(r.popup.spec, r.popup.hwnd)
+    r.host._popup = pop
+    r.host.show_popup("Reunión")
+    shown_at = r.host._popup_shown_at
+    r.host.handle_popup_closed("leaving")  # el JS avisa de que la tarjeta se fue
+    assert r.host._verify_popup(shown_at) is True and pop.shows == 1
+
+
+def test_bootstrap_hides_overlays_that_navigation_made_visible() -> None:
+    """pywebview (edgechromium) hace ``form.Show()`` al navegar una ventana transparente aunque
+    se creara oculta: al arrancar quedaban una tarjeta vacia y una pastilla visibles."""
+    r = Rig()
+    r.host._want_tray = False
+    r.popup.visible = r.pill.visible = True
+    r.host._bootstrap(None)
+    assert not r.popup.visible and not r.pill.visible
+    r.host._stopping.set()
+
+
+def test_bootstrap_keeps_an_overlay_that_is_in_use() -> None:
+    r = Rig()
+    r.host._want_tray = False
+    r.host.show_pill(elapsed_s=5.0)
+    assert r.pill.visible
+    r.host._bootstrap(None)
+    assert r.pill.visible
+    r.host._stopping.set()
+
+
+def test_verify_does_not_re_present_an_answered_or_quitting_popup() -> None:
+    for finish in ("answer", "end_answer", "quit"):
+        r = Rig()
+        pop = _StubbornWindow(r.popup.spec, r.popup.hwnd)
+        r.host._popup = pop
+        if finish == "end_answer":
+            r.host.show_end_popup("Reunión", duration_s=60.0, confirmed=True)
+            r.host.handle_end_decide("finish")
+        else:
+            r.host.show_popup("Reunión")
+            if finish == "answer":
+                r.host.handle_popup_decide("record")
+            else:
+                r.host._stopping.set()
+        # la tarjeta se esta yendo (o la app sale): la comprobacion no la vuelve a mostrar
+        assert r.host._verify_popup(r.host._popup_shown_at) is True, finish
+        assert pop.shows == 1, finish

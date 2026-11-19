@@ -14,7 +14,10 @@ from __future__ import annotations
 from micnaga.watcher.controller import WatcherController, dispatch_actions
 from micnaga.watcher.machine import (
     Action,
+    EndChoice,
+    EndCloseReason,
     Event,
+    HoldReason,
     Phase,
     PopupCloseReason,
     WatcherState,
@@ -27,9 +30,12 @@ from micnaga.watcher.watcher import Watcher
 
 __all__ = [
     "Action",
+    "EndChoice",
+    "EndCloseReason",
     "Event",
     "ExtensionSignalSource",
     "ExtensionState",
+    "HoldReason",
     "MeetTab",
     "MeetingInfo",
     "MonitorHint",

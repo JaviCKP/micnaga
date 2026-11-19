@@ -22,7 +22,7 @@ from typing import Any
 import psutil
 import pytest
 
-from micnaga import paths
+from micnaga import holding, paths
 from micnaga.config import Config, save_config
 from micnaga.types import Transcript
 from tests.e2e.tts_session import TtsSession, build_session
@@ -157,6 +157,7 @@ def test_real_pipeline_on_tts_meeting(storage: Path, case: str, output: str, ech
         seconds=215.0,
         output=output,
         echo=echo,  # type: ignore[arg-type]
+        confirmed=True,  # «Si» en el popup: sin el, la etapa 1 la aparta (DECISIONS §18)
     )
     assert len(session.remote) >= 8 and len(session.mine) >= 8
     res = _run_process(session.folder)
@@ -194,6 +195,14 @@ def test_voice_note_trap_is_discarded(storage: Path, seconds: float) -> None:
     )
     res = _run_process(session.folder)
     _report("voice_note_trap", {"code": res["code"], "wall_s": round(res["wall_s"], 1)})
-    assert res["code"] == 3, (res["stdout"], res["stderr"][-1500:])  # descartada por compuertas
-    assert not session.folder.exists()  # se borra
-    assert [p for p in storage.iterdir() if p.is_dir() and not p.name.startswith("_tts_")] == []
+    # Sin «Si» no se transcribe; se aparta en «Descartadas» (recuperable), no se borra.
+    assert res["code"] == 3, (res["stdout"], res["stderr"][-1500:])
+    assert not session.folder.exists()
+    held = holding.list_held(storage)
+    assert [h.reason for h in held] == [holding.REASON_UNCONFIRMED]
+    assert not any((storage / "_descartadas" / held[0].name).glob("transcripcion.*"))
+    assert [
+        p
+        for p in storage.iterdir()
+        if p.is_dir() and not p.name.startswith("_tts_") and p.name != holding.HELD_DIRNAME
+    ] == []

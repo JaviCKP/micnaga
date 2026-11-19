@@ -78,6 +78,18 @@ def test_markdown_matches_the_spec_sample() -> None:
     assert md.endswith("\n") and "\r" not in md
 
 
+def test_markdown_participants_skip_speakers_without_segments() -> None:
+    t = spec_transcript()
+    # transcripciones antiguas listaban siempre a «Yo» aunque el micro no hablara
+    silent_me = Transcript(
+        t.meeting, t.speakers, [s for s in t.segments if s.speaker != "me"], [], t.engines
+    )
+    md = output.render_markdown(silent_me)
+    assert "Participantes: Laura, Hablante 2\n" in md and "Yo" not in md
+    empty = Transcript(t.meeting, [], [], [], t.engines)
+    assert "Participantes: —\n" in output.render_markdown(empty)
+
+
 def test_json_matches_the_spec_schema() -> None:
     data = spec_transcript().to_dict()
     assert list(data) == ["version", "meeting", "speakers", "segments", "markers", "engines"]

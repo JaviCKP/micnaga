@@ -15,6 +15,7 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
@@ -43,6 +44,14 @@ DEFAULT_THRESHOLD = 0.5
 NEG_THRESHOLD_DELTA = 0.15
 
 
+@dataclass(frozen=True)
+class VadCarry:
+    """Estado de Silero al final de un trozo (para seguir en el siguiente)."""
+
+    state: NDArray[np.float32]
+    context: NDArray[np.float32]
+
+
 class ProbModel(Protocol):
     """Cualquier cosa que devuelva una probabilidad de voz por trama de 32 ms."""
 
@@ -60,10 +69,9 @@ class SileroVad:
                 f"Silero VAD model not found at {model_path}; run the first-start model download "
                 "(micnaga.models.download_models)."
             )
-        so = ort.SessionOptions()
-        so.intra_op_num_threads = max(1, threads)
-        so.inter_op_num_threads = 1
-        so.log_severity_level = 3
+        from micnaga.pipeline.engines.ort_options import session_options
+
+        so = session_options(threads)
         try:
             self._sess = ort.InferenceSession(
                 str(model_path), sess_options=so, providers=["CPUExecutionProvider"]
@@ -74,14 +82,24 @@ class SileroVad:
 
     def probs(self, audio_16k: AudioArray) -> NDArray[np.float32]:
         """Probabilidad de voz de cada trama de 512 muestras (la ultima se rellena con ceros)."""
+        return self.probs_from(audio_16k, None)[0]
+
+    def probs_from(
+        self, audio_16k: AudioArray, carry: VadCarry | None
+    ) -> tuple[NDArray[np.float32], VadCarry]:
+        """Como ``probs`` pero continuando el estado recurrente de un trozo anterior.
+
+        Trocear el audio en multiplos de 512 muestras y encadenar ``carry`` da exactamente las
+        mismas probabilidades que procesarlo de una vez (lo usa el procesado en vivo).
+        """
         x = np.ascontiguousarray(audio_16k, dtype=np.float32)
+        state = np.zeros((2, 1, 128), dtype=np.float32) if carry is None else carry.state.copy()
+        context = np.zeros(CONTEXT, dtype=np.float32) if carry is None else carry.context.copy()
         n_frames = -(-len(x) // FRAME)
         if n_frames == 0:
-            return np.zeros(0, dtype=np.float32)
+            return np.zeros(0, dtype=np.float32), VadCarry(state, context)
         padded = np.zeros(n_frames * FRAME, dtype=np.float32)
         padded[: len(x)] = x
-        state = np.zeros((2, 1, 128), dtype=np.float32)
-        context = np.zeros(CONTEXT, dtype=np.float32)
         out = np.empty(n_frames, dtype=np.float32)
         buf = np.empty((1, CONTEXT + FRAME), dtype=np.float32)
         for i in range(n_frames):
@@ -90,8 +108,8 @@ class SileroVad:
             buf[0, CONTEXT:] = chunk
             prob, state = self._sess.run(None, {"input": buf, "state": state, "sr": self._sr})
             out[i] = float(prob[0, 0])
-            context = chunk[-CONTEXT:]
-        return out
+            context = chunk[-CONTEXT:].copy()
+        return out, VadCarry(np.asarray(state, dtype=np.float32), context)
 
     def close(self) -> None:
         self._sess = None
@@ -247,24 +265,31 @@ def _to_16k(audio: AudioArray, sr: int) -> AudioArray:
     return np.asarray(soxr.resample(np.asarray(audio, dtype=np.float32), sr, MODEL_SR), np.float32)
 
 
-def detect_speech(
-    audio: AudioArray,
-    sr: int,
+@dataclass(frozen=True)
+class RegionParams:
+    """Parametros del post-proceso (``regions_from_probs``) ya resueltos."""
+
+    min_speech_ms: int
+    min_silence_ms: int
+    pad_ms: int
+    max_speech_s: float | None
+    threshold: float = DEFAULT_THRESHOLD
+
+    @property
+    def stable_guard_s(self) -> float:
+        """Un tramo que acaba al menos esto antes del final del audio ya no puede cambiar."""
+        return (self.min_silence_ms + 3 * self.pad_ms) / 1000.0 + 2 * FRAME_S + 0.5
+
+
+def region_params(
+    config: Config | None = None,
     min_speech_ms: int | None = None,
     min_silence_ms: int | None = None,
     pad_ms: int | None = None,
-    *,
-    threshold: float = DEFAULT_THRESHOLD,
     max_speech_s: float | None = None,
-    model: ProbModel | None = None,
-    config: Config | None = None,
-) -> list[SpeechRegion]:
-    """Tramos de voz de ``audio`` (segundos relativos al inicio del array).
-
-    Los parametros salen, por orden: argumento explicito > ``config.vad`` > valores de la
-    spec (250 ms / 500 ms / 200 ms, bloques de 30 s). ``model`` permite inyectar un modelo
-    falso en los tests; por defecto se carga (y cachea) el Silero ONNX de la carpeta de modelos.
-    """
+    threshold: float = DEFAULT_THRESHOLD,
+) -> RegionParams:
+    """Argumento explicito > ``config.vad`` > valores de la spec (250/500/200 ms, 30 s)."""
     cfg = config.vad if config is not None else None
     mv = (
         min_speech_ms
@@ -282,22 +307,66 @@ def detect_speech(
         if max_speech_s is not None
         else (cfg.max_block_s if cfg else DEFAULT_MAX_BLOCK_S)
     )
+    return RegionParams(mv, ms, pd, mx, threshold)
+
+
+def regions_with(
+    probs: Sequence[float] | NDArray[np.float32], duration_s: float, params: RegionParams
+) -> list[SpeechRegion]:
+    return regions_from_probs(
+        probs,
+        duration_s,
+        min_speech_ms=params.min_speech_ms,
+        min_silence_ms=params.min_silence_ms,
+        pad_ms=params.pad_ms,
+        max_speech_s=params.max_speech_s,
+        threshold=params.threshold,
+    )
+
+
+def speech_probs(
+    audio: AudioArray, sr: int, *, model: ProbModel | None = None, config: Config | None = None
+) -> NDArray[np.float32]:
+    """Probabilidad de voz por trama de 32 ms (Silero, o ``model`` si se inyecta)."""
+    if audio.ndim != 1:
+        raise ValueError("audio must be mono (1-D)")
+    x = _to_16k(audio, sr)
+    if len(x) == 0:
+        return np.zeros(0, dtype=np.float32)
+    mdl: ProbModel = model if model is not None else load_model(config)
+    return mdl.probs(x)
+
+
+def detect_speech(
+    audio: AudioArray,
+    sr: int,
+    min_speech_ms: int | None = None,
+    min_silence_ms: int | None = None,
+    pad_ms: int | None = None,
+    *,
+    threshold: float = DEFAULT_THRESHOLD,
+    max_speech_s: float | None = None,
+    model: ProbModel | None = None,
+    config: Config | None = None,
+    probs: NDArray[np.float32] | None = None,
+) -> list[SpeechRegion]:
+    """Tramos de voz de ``audio`` (segundos relativos al inicio del array).
+
+    Los parametros salen, por orden: argumento explicito > ``config.vad`` > valores de la
+    spec (250 ms / 500 ms / 200 ms, bloques de 30 s). ``model`` permite inyectar un modelo
+    falso en los tests; por defecto se carga (y cachea) el Silero ONNX de la carpeta de modelos.
+    ``probs`` (ya calculadas sobre este mismo audio) evita volver a pasar el modelo.
+    """
+    params = region_params(config, min_speech_ms, min_silence_ms, pad_ms, max_speech_s, threshold)
     if audio.ndim != 1:
         raise ValueError("audio must be mono (1-D)")
     x = _to_16k(audio, sr)
     if len(x) == 0:
         return []
-    mdl: ProbModel = model if model is not None else load_model(config)
-    probs = mdl.probs(x)
-    return regions_from_probs(
-        probs,
-        len(x) / MODEL_SR,
-        min_speech_ms=mv,
-        min_silence_ms=ms,
-        pad_ms=pd,
-        max_speech_s=mx,
-        threshold=threshold,
-    )
+    if probs is None:
+        mdl: ProbModel = model if model is not None else load_model(config)
+        probs = mdl.probs(x)
+    return regions_with(probs, len(x) / MODEL_SR, params)
 
 
 def speech_seconds(regions: Sequence[SpeechRegion]) -> float:
@@ -306,11 +375,16 @@ def speech_seconds(regions: Sequence[SpeechRegion]) -> float:
 
 
 __all__ = [
+    "RegionParams",
     "SileroVad",
+    "VadCarry",
     "detect_speech",
     "group_regions",
     "load_model",
+    "region_params",
     "regions_from_probs",
+    "regions_with",
     "release_model",
+    "speech_probs",
     "speech_seconds",
 ]

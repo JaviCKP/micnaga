@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import threading
 import time
@@ -19,11 +20,16 @@ from micnaga.watcher.sources import MicReading, TabsReading
 from tests.watcher.helpers import CODE_A, FakeController
 
 FAST = DetectionConfig(
-    poll_interval_s=0.03, confirm_after_s=0.15, end_after_s=0.3, popup_timeout_s=30.0
+    poll_interval_s=0.03,
+    confirm_after_s=0.15,
+    end_after_s=0.3,
+    end_confirm_s=0.1,
+    end_popup_timeout_s=30.0,  # los popups esperan respuesta: el test contesta explicitamente
+    undo_s=30.0,
+    popup_timeout_s=30.0,
 )
-SHORT_TIMEOUT = DetectionConfig(
-    poll_interval_s=0.03, confirm_after_s=0.15, end_after_s=0.3, popup_timeout_s=0.5
-)
+SHORT_TIMEOUT = dataclasses.replace(FAST, popup_timeout_s=0.5)
+SHORT_END_TIMEOUT = dataclasses.replace(FAST, end_popup_timeout_s=0.3)
 
 
 class Signals:
@@ -119,10 +125,85 @@ def test_end_to_end_prompt_confirm_and_hangup(
     w.popup_answer(True)
     assert ctl.names()[2:5] == ["confirm_recording", "close_popup", "show_pill"]
     sig.on = False
-    assert until(lambda: "stop_and_finalize" in ctl.names())
-    assert ctl.calls[-2][1] == {"confirmed": True, "meeting": ctl.calls[-2][1]["meeting"]}
-    assert ctl.names()[-1] == "hide_pill"
-    assert ctl.calls[-2][1]["meeting"].code == CODE_A
+    assert until(lambda: "show_end_popup" in ctl.names())
+    assert ctl.names()[-2:] == ["mark_end", "show_end_popup"]
+    assert ctl.calls[-1][1]["confirmed"] is True
+    assert w.state is WatcherState.END_PROMPT
+    w.end_answer("finish")
+    assert ctl.names()[-3:] == ["close_end_popup", "stop_and_finalize", "hide_pill"]
+    final = ctl.calls[-2][1]
+    assert final == {"confirmed": True, "meeting": final["meeting"], "trim": True}
+    assert final["meeting"].code == CODE_A
+    assert "hold_recording" not in ctl.names()
+
+
+def test_end_popup_timeout_finalizes_a_confirmed_session() -> None:
+    sig, ctl = Signals(), FakeController()
+    w = Watcher(SHORT_END_TIMEOUT, ctl, sampler=sig.sampler())
+    sig.on = True
+    w.start()
+    try:
+        assert until(lambda: "show_popup" in ctl.names())
+        w.popup_answer(True)
+        sig.on = False
+        assert until(lambda: "hide_pill" in ctl.names()[-1:])
+        assert ctl.names()[-3:] == ["close_end_popup", "stop_and_finalize", "hide_pill"]
+        assert ctl.calls[-3] == ("close_end_popup", {"reason": "timeout"})
+        assert ctl.calls[-2][1]["trim"] is True and ctl.calls[-2][1]["confirmed"] is True
+    finally:
+        w.stop()
+
+
+def test_undo_window_is_timed_by_fast_ticks_not_by_polls() -> None:
+    """Con el sondeo a 5 s, solo los ticks rapidos (0.25 s) pueden cerrar el «Deshacer»."""
+    cfg = dataclasses.replace(FAST, poll_interval_s=5.0, confirm_after_s=0.0, undo_s=1.5)
+    sig, ctl = Signals(), FakeController()
+    w = Watcher(cfg, ctl, sampler=sig.sampler())
+    sig.on = True
+    w.start()
+    try:
+        assert until(lambda: "show_popup" in ctl.names())  # primer sondeo
+        w.popup_answer(False)
+        assert ctl.names()[-2:] == ["close_popup", "begin_discard"]
+        assert w.state is WatcherState.DISCARD_PENDING and w.needs_fast_ticks
+        assert until(lambda: "hold_recording" in ctl.names(), timeout=4.0)  # < sondeo de 5 s
+        assert ctl.calls[-1] == ("hold_recording", {"reason": "declined", "trim": False})
+        assert w.state is WatcherState.IGNORED
+    finally:
+        w.stop()
+
+
+def test_recording_failed_from_inside_start_recording_returns_to_watching() -> None:
+    sig = Signals()
+    holder: list[Watcher] = []
+
+    class FailsOnce(FakeController):
+        failed = False
+
+        def start_recording(self, **kw: Any) -> None:
+            super().start_recording(**kw)
+            if not self.failed:
+                self.failed = True
+                holder[0].recording_failed()  # reentrada: la captura no se pudo abrir
+
+    ctl = FailsOnce()
+    w = Watcher(FAST, ctl, sampler=sig.sampler())
+    holder.append(w)
+    sig.on = True
+    w.start()
+    try:
+        assert until(lambda: "close_popup" in ctl.names())
+        assert ctl.names()[:3] == ["start_recording", "show_popup", "close_popup"]
+        assert ctl.calls[2][1] == {"reason": "meeting_ended"}
+        assert w.state is WatcherState.IGNORED
+        time.sleep(0.4)  # la reunion sigue: no se reintenta sola
+        assert ctl.names().count("start_recording") == 1
+        w.record_now()  # pero «Grabar ahora» si
+        assert ctl.names().count("start_recording") == 2
+        assert ctl.calls[-2][1]["provisional"] is False
+        assert w.state is WatcherState.RECORDING_CONFIRMED
+    finally:
+        w.stop()
 
 
 def test_popup_timeout_becomes_provisional(

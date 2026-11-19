@@ -154,6 +154,7 @@ excepcion que permite distribuirlo en cualquier aplicacion (ver «Componentes na
 | SDK de WebView2 en `webview/lib` (`Microsoft.Web.WebView2.Core.dll`, `...WinForms.dll`, `WebView2Loader.dll`; pywebview) | Microsoft (licencia propia del paquete NuGet Microsoft.Web.WebView2) | Licencia **sin verificar**: la rueda de pywebview no la incluye; revisar antes de publicar. pywebview: BSD-3-Clause (metadatos). |
 | pythonnet (`pythonnet/runtime/Python.Runtime.dll`) y clr_loader (`ClrLoader.dll`) | MIT | Verificado en metadatos / fichero de licencia. |
 | WebView2 Runtime | Microsoft | **No se incluye**: ya viene con Windows 11 (en Windows 10 lo instala Microsoft). |
+| Fuentes de la interfaz (`micnaga/ui/web/assets/fonts`): Barlow 400 y 600, Barlow Semi Condensed 700, JetBrains Mono 500 (subconjunto latino, woff2) | SIL OFL 1.1 | Sin modificar salvo el subconjunto y la instancia 500 de JetBrains Mono. Avisos y texto de la licencia en `assets/fonts/OFL.txt` (Barlow) y `assets/fonts/OFL-JetBrainsMono.txt`. |
 | FFmpeg / PyAV (`av`) | LGPL/GPL (la rueda de PyAV enlaza libx264/libx265: GPL-2.0+) | **Excluido** del instalador: Micnaga no decodifica ficheros con PyAV; `faster-whisper` recibe arrays y `packaging/stubs/av` sustituye al modulo. |
 | NVIDIA cuDNN (`cudnn64_9.dll`, en la rueda de ctranslate2) | Propietaria (NVIDIA) | **Excluido** del instalador (solo sirve con CUDA). |
 

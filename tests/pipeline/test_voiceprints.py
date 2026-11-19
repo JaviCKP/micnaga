@@ -22,6 +22,30 @@ def test_dpapi_round_trip(tmp_home: Path) -> None:
         vp._unprotect(b"no es dpapi")
 
 
+def test_protected_json_round_trip_never_writes_plaintext(tmp_path: Path) -> None:
+    target = tmp_path / "sub" / "emb.dpapi"
+    vp.write_protected_json(target, {"S1": [0.0371337, 0.25]})
+    raw = target.read_bytes()
+    assert b'"S1": [' not in raw and b"0.0371337" not in raw
+    assert vp.read_protected_json(target) == {"S1": [0.0371337, 0.25]}
+    assert [p.name for p in target.parent.iterdir()] == ["emb.dpapi"]  # sin temporales
+    target.write_bytes(b"basura")
+    with pytest.raises(vp.VoiceprintError):
+        vp.read_protected_json(target)
+
+
+def test_protected_json_writes_nothing_if_dpapi_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def broken(_data: bytes) -> bytes:
+        raise vp.VoiceprintError("DPAPI encryption failed: test")
+
+    monkeypatch.setattr(vp, "_protect", broken)
+    with pytest.raises(vp.VoiceprintError):
+        vp.write_protected_json(tmp_path / "emb.dpapi", {"S1": [0.5]})
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_save_match_delete_list(tmp_home: Path) -> None:
     store = VoiceprintStore(threshold=0.75)
     store.save("Laura", vec(1))
@@ -106,7 +130,8 @@ def test_delete_all(tmp_home: Path) -> None:
 def test_meeting_embeddings_round_trip(tmp_path: Path) -> None:
     data = {"S1": vec(1), "S2": vec(2)}
     file = vp.save_meeting_embeddings(tmp_path, data, engine="x")
-    assert b"S1" not in file.read_bytes()
+    # patron largo: 2 bytes sueltos pueden aparecer por azar en el cifrado (test inestable)
+    assert b'"S1": [' not in file.read_bytes()
     loaded, engine = vp.load_meeting_embeddings(tmp_path)
     assert engine == "x" and set(loaded) == {"S1", "S2"}
     assert np.allclose(loaded["S1"], data["S1"], atol=1e-6)

@@ -13,9 +13,11 @@
   <span class="state-ico" aria-hidden="true"><span class="rec-dot"></span><span class="pause-glyph"></span></span>
   <time class="pill-time" id="time" role="timer" aria-live="off">00:00</time>
   <span class="pill-tag" id="tag" data-i18n="pill.provisional">provisional</span>
+  <button class="pill-save" id="b-save" type="button" data-i18n-title="pill.save_tip"><span class="save-ico" data-icon="check" aria-hidden="true"></span><span data-i18n="pill.save">¿Guardar?</span></button>
+  <span class="pill-title" id="ptitle" hidden></span>
   <span class="pill-meters" aria-hidden="true">
-    <canvas class="wave" id="m-mic"></canvas>
-    <canvas class="wave" id="m-sys"></canvas>
+    <canvas class="wave" data-dither="2" id="m-mic"></canvas>
+    <canvas class="wave" data-dither="2" id="m-sys"></canvas>
   </span>
   <span class="pill-actions">
     <button class="pb" id="b-marker" type="button" data-i18n-aria-label="pill.marker" data-i18n-title="pill.marker" data-icon="flag"></button>
@@ -25,6 +27,12 @@
     <button class="pb stop" id="b-stop" type="button" data-i18n-aria-label="pill.stop" data-i18n-title="pill.stop"><span class="stop-sq"></span></button>
   </span>
   <span class="sr-only" id="live" role="status" aria-live="polite"></span>
+  <!-- «Descartada · Deshacer»: ocupa la misma capsula durante unos segundos tras un «No» -->
+  <span class="undo" id="undo" aria-hidden="true">
+    <span class="undo-text" data-i18n="undo.discarded">Descartada</span>
+    <button class="undo-btn" id="b-undo" type="button" data-i18n="undo.undo">Deshacer</button>
+    <i class="undo-bar" id="undo-bar"></i>
+  </span>
 </div>
 <script src="bridge.js"></script>
 <script src="pill.js"></script>

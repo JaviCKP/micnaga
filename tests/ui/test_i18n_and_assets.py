@@ -46,6 +46,101 @@ def _dynamic_keys() -> set[str]:
     keys |= set(ERR_KEY.findall(_read(UI / "bridge.py")))
     keys |= {"settings.err.save_failed", "settings.err.invalid", "settings.err.startup_failed"}
     keys |= {"wizard.err.no_downloader", "wizard.err.generic"}
+    # Secretaria: tarjeta de Odoo (CARD_OF por ruta) y textos que el JS elige de un mapa o
+    # compone con el estado/el error que devuelve Python.
+    keys.add("settings.cards.odoo")
+    keys.add("settings.cards.google")
+    keys |= {f"secretaria.group.{g}" for g in ("crm", "fix", "google")}
+    keys |= {
+        f"secretaria.st.{s}"
+        for s in (
+            "contacts",
+            "companies",
+            "leads",
+            "lead",
+            "stages",
+            "history",
+            "activities",
+            "meetings",
+            "prev",
+            "gmail",
+            "drive",
+        )
+    }
+    keys |= {f"secretaria.w.{w}" for w in ("similar", "changed", "dup_activity", "unchecked")}
+    keys |= {f"secretaria.odoo.{s}" for s in ("clave", "sin_conexion", "sin_herramientas", "error")}
+    keys |= {
+        f"secretaria.err.{e}"
+        for e in (
+            "failed",
+            "offline",
+            "auth",
+            "not_found",
+            "rate_limit",
+            "timeout",
+            "output",
+            "disabled",
+            "unknown",
+            "invalid",
+            "odoo_incomplete",
+            "odoo_auth",
+            "odoo_offline",
+            "odoo_access",
+            "odoo_failed",
+        )
+    }
+    keys |= {"toast.proposals_one", "toast.proposals_other", "toast.hours.body_one"}
+    keys |= {"toast.hours.body_other"}
+    # Odoo de negocio: grupos, herramientas, avisos y errores de las lineas de horas
+    keys |= {f"secretaria.group.{g}" for g in ("horas", "agenda")}
+    keys |= {
+        f"secretaria.st.{s}"
+        for s in ("hours", "projects", "tasks", "calendar", "my_activities", "expenses")
+    }
+    keys |= {f"secretaria.w.{w}" for w in ("task_similar", "event_similar")}
+    keys |= {
+        f"secretaria.err.{e}"
+        for e in ("incomplete", "readonly", "not_editable", "no_acta", "access")
+    }
+    keys |= {
+        f"secretaria.horas.err.{e}"
+        for e in (
+            "horas",
+            "futuro",
+            "dia_lleno",
+            "proyecto",
+            "tarea",
+            "fecha",
+            "ya_existe",
+            "no_access",
+        )
+    }
+    keys |= {f"secretaria.horas.o.{o}" for o in ("reunion", "calendario", "patron")}
+    # etiquetas del editor de items: una por campo editable (``plan.EDIT_FIELDS``)
+    from micnaga.brain.plan import EDIT_FIELDS
+
+    keys |= {f"secretaria.f.{f['clave']}" for fs in EDIT_FIELDS.values() for f in fs}
+    from micnaga.brain.google.items import SCHEMAS as GOOGLE_FIELDS
+
+    keys |= {f["etiqueta"] for fs in GOOGLE_FIELDS.values() for f in fs}
+    # investigacion: fuente y estado de «Desde la ultima vez» (items.js, por mapa)
+    keys |= {f"items.src.{s}" for s in ("acta", "gmail", "drive", "calendar", "odoo")}
+    keys |= {f"items.state.{s}" for s in ("hecho", "abierto", "desconocido")}
+    # «corregir con un mensaje»: errores en una linea (service._refine)
+    keys |= {
+        f"secretaria.refine.err.{e}"
+        for e in (
+            "empty",
+            "no_acta",
+            "not_editable",
+            "odoo_unavailable",
+            "declined",
+            "unchanged",
+            "stale",
+            "invalid",
+            "duplicate",
+        )
+    }
     return keys
 
 
@@ -99,6 +194,18 @@ def test_no_orphan_keys() -> None:
         "settings.about.models",
         "settings.about.privacy",
         "tray.pause_watching",
+        "end.title_confirmed",
+        "end.title_unconfirmed",
+        "end.finish",
+        "end.save",
+        "end.keep",
+        "end.discard",
+        "toast.error.capture_failed.title",
+        "toast.error.capture_failed.body",
+        "views.resumen",
+        "views.acta",
+        "views.propuestas",
+        "views.transcripcion",
     }  # compuestos con un bucle / condicional
     orphans = sorted(k for k in ES if k not in used)
     assert not orphans, orphans

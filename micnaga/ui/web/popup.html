@@ -25,8 +25,12 @@
           </p>
           <h1 class="question display" id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
           <div class="levels" role="group" data-i18n-aria-label="popup.levels">
-            <span class="lvl"><span data-icon="mic" aria-hidden="true"></span><canvas class="wave" id="m-mic" role="meter" data-i18n-aria-label="popup.me" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
-            <span class="lvl"><span data-icon="speaker" aria-hidden="true"></span><canvas class="wave" id="m-sys" role="meter" data-i18n-aria-label="popup.them" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+            <span class="lvl"><span data-icon="mic" aria-hidden="true"></span><canvas class="wave" data-dither="2" id="m-mic" role="meter" data-i18n-aria-label="popup.me" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+            <span class="lvl"><span data-icon="speaker" aria-hidden="true"></span><canvas class="wave" data-dither="2" id="m-sys" role="meter" data-i18n-aria-label="popup.them" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+          </div>
+          <!-- popup de fin: la alternativa (Seguir grabando / Descartar) como chip de texto -->
+          <div class="end-row" id="end-row">
+            <button class="chip-btn" id="b-alt" type="button"><span class="chip-ico" id="alt-ico" aria-hidden="true"></span><span id="alt-label"></span></button>
           </div>
         </div>
 

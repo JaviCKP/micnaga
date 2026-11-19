@@ -127,9 +127,92 @@ def _composite(
     return out
 
 
+DEMO_FULL_ACTA = """# Acta: Dental Triana · alcance ampliado
+
+**Fecha:** jueves 19 de noviembre de 2026, 10:30 · **Duración:** 1 min · **Asistentes:** Yo,
+Carlos (Dental Triana), Marta Gil (recepción)
+
+## Orden del día
+1. Alcance de la fase 1
+2. Presupuesto
+3. Integraciones y demo
+
+## 1. Alcance de la fase 1
+Carlos confirma que dirección aprueba incluir el **panel de ventas** en la fase 1 [00:20].
+Marta se incorpora como responsable de recepción [00:05] y deja su correo para los envíos.
+
+## 2. Presupuesto
+El total sube a unos 6.900 € [00:23]. Yo me comprometo a enviar el presupuesto revisado
+antes del viernes [00:26].
+
+## 3. Integraciones y demo
+Se pide integración con Odoo y con la sede de Triana [00:33]. La demo será el 3 de diciembre
+con datos reales [00:36]. Queda abierta la gestión de respuestas fuera de horario [00:39].
+
+## Decisiones
+- Panel de ventas en la fase 1, por decisión de dirección [00:20].
+
+## Acuerdos y tareas
+- **Yo:** presupuesto revisado, antes del viernes 20/11 [00:26].
+- **Marta:** lista de plantillas de WhatsApp, el martes 24/11 [00:29].
+
+## Preguntas abiertas
+- Respuestas a pacientes fuera de horario [00:39].
+
+## Próximos pasos
+- Demo con datos reales el 3 de diciembre [00:36].
+
+## Fuentes consultadas
+Ninguna, salvo la transcripción.
+"""
+
+
+def _dress_cleanup(folder: Path, root: Path) -> None:
+    """La reunion de demo como queda tras la limpieza con IA (texto original guardado) y con su
+    «Acta completa» ya escrita (un ``claude`` falso en proceso)."""
+    import dataclasses
+
+    from micnaga.brain import cleanup, full_acta
+    from micnaga.brain.claude import ClaudeResult
+    from micnaga.config import Config
+    from micnaga.pipeline import output
+    from micnaga.store.db import Database
+
+    tr = output.read_transcript(folder)
+    fixes = {
+        1: "Buenos días, Javier. Te presento a Marta, que lleva la recepción de la clínica.",
+        5: "El total sube a unos 6.900 euros.",
+        8: "Queremos que esté integrado con Odoo y con la sede de Triana.",
+        9: "Hacemos la demo el 3 de diciembre con datos reales.",
+    }
+    segs = list(tr.segments)
+    for i, text in fixes.items():
+        s = segs[i]
+        segs[i] = dataclasses.replace(
+            s, text=text, text_original=s.text, words=cleanup.remap_words(s.words, text)
+        )
+    output.write_transcript(folder, dataclasses.replace(tr, segments=segs))
+
+    class Writer:
+        def run_once(self, req: Any, on_event: Any = None) -> ClaudeResult:
+            return ClaudeResult(None, DEMO_FULL_ACTA, 0.15, {}, 40.0, 1, "claude-demo")
+
+    def with_db(fn: Any) -> Any:
+        with Database(root / "micnaga.db") as db:
+            return fn(db)
+
+    full_acta.FullActa(Config(), Writer(), with_db=with_db).make(folder)
+
+
 def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
     tmp = Path(tempfile.mkdtemp(prefix="micnaga-shots-"))
-    env_keys = ("MICNAGA_HOME", "MICNAGA_STORAGE", "MICNAGA_MODELS", "MICNAGA_UI_DEMO")
+    env_keys = (
+        "MICNAGA_HOME",
+        "MICNAGA_STORAGE",
+        "MICNAGA_MODELS",
+        "MICNAGA_UI_DEMO",
+        "MICNAGA_CLAUDE_EXE",
+    )
     saved = {k: os.environ.get(k) for k in env_keys}
     os.environ.update(
         MICNAGA_HOME=str(tmp / "home"),
@@ -156,8 +239,83 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
         startup.set_default_backend(startup.MemoryRegistry())
         cfg = Config()
         cfg.privacy.voiceprints_enabled = True
+        cfg.secretaria.enabled = True
+        cfg.secretaria.odoo_url = "https://odoo.example.com"
+        cfg.secretaria.odoo_db = "empresa"
+        cfg.secretaria.odoo_login = "javier@example.com"
         root = paths.meetings_root(cfg)
         folders = fake.build_demo_library(root)
+        # Secretaria: una reunion con acta y propuestas, un claude falso (sesion detectada)
+        from micnaga.brain import secrets
+        from micnaga.brain.service import BrainService
+        from tests.brain.demo import write_demo_meeting
+
+        acta_folder = write_demo_meeting(root)
+        _dress_cleanup(root / acta_folder, root)
+        # Odoo de negocio: un Odoo falso con permisos de empleado (sin CRM, contactos de solo
+        # lectura) para el panel «Partes de horas» y una reunion con propuestas agrupadas.
+        from datetime import datetime
+
+        from micnaga.brain import capabilities
+        from micnaga.brain.odoo import OdooClient, OdooConfig
+        from tests.brain.demo import write_followup_meeting
+        from tests.brain.fake_odoo import DB as FAKE_DB
+        from tests.brain.fake_odoo import KEY as FAKE_KEY
+        from tests.brain.fake_odoo import LOGIN as FAKE_LOGIN
+        from tests.brain.fake_odoo import FakeOdoo
+
+        odoo_srv = FakeOdoo().start()
+        odoo_srv.access.update(
+            {
+                "crm.lead": set(),
+                "res.partner": {"read"},
+                "project.project": {"read"},
+                "crm.stage": {"read"},
+            }
+        )
+
+        def odoo_factory(_cfg: object) -> OdooClient:
+            return OdooClient(OdooConfig(odoo_srv.url, FAKE_DB, FAKE_LOGIN, FAKE_KEY))
+
+        oc = odoo_factory(cfg)
+        oc.authenticate()
+        profile = capabilities.discover(oc)
+        s_cfg = cfg.secretaria
+        profile["key"] = capabilities.connection_key(
+            s_cfg.odoo_url, s_cfg.odoo_db, s_cfg.odoo_login
+        )
+        capabilities.save(profile)
+        followup_folder = write_followup_meeting(root, oc, profile)
+        fake_claude = tmp / "claude_fake.py"
+        fake_claude.write_text(
+            "import sys\n"
+            f"sys.path.insert(0, {str(REPO / 'tests' / 'brain')!r})\n"
+            "import fake_claude\n"
+            "sys.exit(fake_claude.main(sys.argv[1:]))\n",
+            encoding="utf-8",
+        )
+        os.environ["MICNAGA_CLAUDE_EXE"] = str(fake_claude)
+        secrets.put(secrets.ODOO_KEY, "demo")
+        from micnaga.brain import learn
+
+        learn.add_learnings(
+            [
+                {
+                    "hecho": "Las oportunidades se titulan «Empresa · servicio».",
+                    "fuente": "crm",
+                    "evidencia": "crm.lead",
+                    "confianza": 0.9,
+                },
+                {
+                    "hecho": "En las reuniones con Dental Triana suele estar recepción.",
+                    "fuente": "reunion",
+                    "evidencia": "#1",
+                    "confianza": 0.8,
+                },
+            ]
+        )
+        brain = BrainService(lambda: cfg, odoo_factory=odoo_factory)
+        brain.now = lambda: datetime(2026, 11, 19, 12, 0)
         ops = fake.FakeLibraryOps(lambda: root)
         ops.voiceprints["Laura"] = Voiceprint("Laura", "2026-11-02", 3)
         store = FileConfigStore()
@@ -172,6 +330,7 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
             config=lambda: cfg,
             ops=ops,
             opener=lambda p: None,
+            brain=brain,
         )
         api: dict[str, object] = {
             "library": lib,
@@ -181,6 +340,7 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                 registry=reg,
                 diagnostics=fake.fake_diagnostics,
                 ops=ops,
+                brain=brain,
             ),
             "wizard": WizardApi(
                 download_models=fake.fake_download_models,
@@ -292,6 +452,134 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         )
                     )
                     img.unlink()
+                if want("secretaria"):
+                    shot(
+                        "secretaria_acta",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                    )
+                    shot(
+                        "secretaria_horas_panel",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.6,
+                        view="horas",
+                    )
+                    shot(
+                        "secretaria_horas_acta",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.2,
+                        folder=followup_folder,
+                        js="document.querySelector('.sec-props').scrollIntoView({block: 'start'})",
+                    )
+                    shot(
+                        "secretaria_horas_agenda",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.2,
+                        folder=followup_folder,
+                        # el editor de items abierto en la tarea y en el evento
+                        js="const open = (t) => [...document.querySelectorAll('.sec-p')]"
+                        ".find((li) => li.textContent.includes(t)).querySelector('.sec-pedit')"
+                        ".click();"
+                        "open('Tarea:'); setTimeout(() => {"
+                        "const i = document.querySelector('.sec-edit input');"
+                        "i.value = 'Cuaderno de ejercicios (v2)';"
+                        "i.dispatchEvent(new Event('change')); }, 60);"
+                        "setTimeout(() => { open('Evento:');"
+                        "[...document.querySelectorAll('.sec-gh')].pop()"
+                        ".scrollIntoView({block: 'start'}); }, 450);",
+                    )
+                    shot(
+                        "secretaria_settings",
+                        theme,
+                        "settings.html",
+                        "settings",
+                        800,
+                        900,
+                        1,
+                        wait=2.4,
+                        tab="secretaria",
+                    )
+                    img = shot(
+                        "secretaria_pill_raw",
+                        theme,
+                        "pill.html",
+                        "pill",
+                        420,
+                        40,
+                        2,
+                        wait=1.6,
+                        transparent=True,
+                        keep=False,
+                        elapsed=134,
+                        hover=1,
+                        title="Dental Triana · presupuesto CRM",
+                    )
+                    out = out_dir / f"secretaria_pill_{theme}.png"
+                    shots.append(_composite([(img, (30, 12), 1.0)], (480, 64), dark, out, 2))
+                    img.unlink()
+                if want("cleanup"):
+                    to_row = (
+                        "document.querySelector('.ph[data-i=\"5\"]')"
+                        ".scrollIntoView({block: 'center'})"
+                    )
+                    shot(
+                        "cleanup_transcript",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        720,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js=to_row,
+                    )
+                    shot(
+                        "cleanup_original",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        720,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.getElementById('orig-toggle').click();"
+                        f"setTimeout(() => {to_row}, 80)",
+                    )
+                    shot(
+                        "acta_completa",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.querySelector('.sec-full').click()",
+                    )
                 if want("library"):
                     shot(
                         "library",
@@ -355,6 +643,27 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         1,
                         wait=1.4,
                         tab="detection",
+                    )
+                if want("secretaria") and theme == "dark":
+                    # aplica solo las correcciones (son locales) y cambia la reunion de demo:
+                    # por eso va al final y una sola vez
+                    shot(
+                        "secretaria_applied",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.0,
+                        folder=acta_folder,
+                        js="document.querySelectorAll('.sec-props input[type=checkbox]')"
+                        ".forEach((c, i) => { if (i < 5) c.checked = false; });"
+                        "document.querySelectorAll('.sec-props input')[0]"
+                        ".dispatchEvent(new Event('change'));"
+                        "document.querySelector('.sec-apply').click();"
+                        "setTimeout(() => document.querySelectorAll('.sec-gh')[1]"
+                        ".scrollIntoView({block: 'start'}), 300)",
                     )
                 if want("wizard"):
                     shot(

@@ -340,14 +340,14 @@ def test_settings_diagnostics_provider_failure_is_contained() -> None:
 
 def test_real_startup_registry_is_blocked_from_settings_under_pytest() -> None:
     """Sin registro inyectado, guardar «Arrancar con Windows» no puede tocar el Run real."""
+    before = startup.WinRegistry().get("Micnaga")  # el PC puede tenerla (app instalada)
     store = MemStore()
     api = SettingsApi(store=store, callbacks=UiCallbacks())  # backend por defecto = real
     values = api.get_settings()["values"]
-    flip = not values["startup"]["run_at_login"]
-    values["startup"]["run_at_login"] = flip
+    values["startup"]["run_at_login"] = before is None  # lo contrario de lo que hay
     r = api.save_settings(values)
     assert r.get("saved") is True and r["error"] == "settings.err.startup_failed"
-    assert startup.WinRegistry().get("Micnaga") is None  # sigue sin existir
+    assert startup.WinRegistry().get("Micnaga") == before  # intacta
 
 
 # ----------------------------------------------------------------------------- asistente
@@ -543,3 +543,46 @@ def test_wizard_auto_finish_runs_first_run_done_after_a_successful_download() ->
             break
         time.sleep(0.02)
     assert seen == []  # un fallo no cierra el asistente: se queda para reintentar
+
+
+def test_open_settings_from_library(env: Env) -> None:
+    opened: list[bool] = []
+    api = LibraryApi(
+        db_factory=lambda: Database(env.root / "micnaga.db"),
+        meetings_root=lambda: env.root,
+        audio_url=lambda f, t: "",
+        config=lambda: env.cfg,
+        open_settings=lambda: opened.append(True),
+    )
+    assert api.open_settings()["ok"] is True
+    assert opened == [True]
+    assert lib(env).open_settings()["ok"] is False  # sin callback: no rompe
+
+
+def test_settings_call_delegates_only_public_methods(env: Env) -> None:
+    class FakeSettings:
+        def get(self) -> dict[str, object]:
+            return {"ok": True, "v": 1}
+
+        def _secret(self) -> str:
+            return "no"
+
+    made: list[int] = []
+
+    def factory() -> FakeSettings:
+        made.append(1)
+        return FakeSettings()
+
+    api = LibraryApi(
+        db_factory=lambda: Database(env.root / "micnaga.db"),
+        meetings_root=lambda: env.root,
+        audio_url=lambda f, t: "",
+        config=lambda: env.cfg,
+        settings=factory,  # type: ignore[arg-type]
+    )
+    assert api.settings_call("get", []) == {"ok": True, "v": 1}
+    assert api.settings_call("get") == {"ok": True, "v": 1}
+    assert made == [1]  # una sola instancia
+    assert api.settings_call("_secret", [])["ok"] is False
+    assert api.settings_call("nope", [])["ok"] is False
+    assert lib(env).settings_call("get", [])["ok"] is False

@@ -73,6 +73,16 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                 step=1,
                 unit="s",
             ),
+            _f("detection.end_confirm_s", "float", minimum=0.5, maximum=30, step=0.5, unit="s"),
+            _f(
+                "detection.end_popup_timeout_s",
+                "float",
+                minimum=3,
+                maximum=120,
+                step=1,
+                unit="s",
+            ),
+            _f("detection.undo_s", "float", minimum=3, maximum=60, step=1, unit="s"),
             _f(
                 "detection.end_after_s",
                 "float",
@@ -92,8 +102,17 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                 advanced=True,
             ),
             _f("gates.min_duration_s", "float", minimum=0, maximum=3600, step=10, unit="s"),
-            _f("gates.min_remote_speech_s", "float", minimum=0, maximum=600, step=5, unit="s"),
-            _f("gates.min_turns", "int", minimum=0, maximum=100, step=1),
+            _f(
+                "gates.min_remote_speech_s",
+                "float",
+                minimum=0,
+                maximum=600,
+                step=5,
+                unit="s",
+                advanced=True,
+            ),
+            _f("gates.min_turns", "int", minimum=0, maximum=100, step=1, advanced=True),
+            _f("gates.require_confirmed", "bool", advanced=True),
         ),
     ),
     (
@@ -101,10 +120,18 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             _f("processing.asr_engine", "choice", choices=("parakeet", "whisper")),
             _f("processing.whisper_model", "choice", choices=("tiny", "base", "small", "medium")),
+            _f("processing.hq_transcribe", "bool", advanced=True),
+            _f(
+                "processing.hq_model",
+                "choice",
+                choices=("large-v3", "large-v3-turbo"),
+                advanced=True,
+            ),
             _f("processing.diarization", "choice", choices=("onnx", "diarize", "pyannote")),
             _f("processing.aec", "choice", choices=("auto", "webrtc", "speex", "off")),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
             _f("processing.low_priority", "bool"),
+            _f("processing.live", "bool"),
             _f("processing.glossary", "list"),
             _f(
                 "processing.echo_similarity",
@@ -150,6 +177,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             _f("storage.root", "path"),
             _f("storage.models_dir", "path", advanced=True),
+            _f("storage.discarded_keep_days", "int", minimum=1, maximum=90, step=1, unit="d"),
             _f(
                 "capture.sample_rate",
                 "int",
@@ -182,6 +210,33 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         ),
     ),
     (
+        "secretaria",
+        (
+            _f("secretaria.enabled", "bool"),
+            _f("secretaria.auth", "choice", choices=("session", "token", "api_key")),
+            _f("secretaria.odoo_url", "text"),
+            _f("secretaria.odoo_db", "text"),
+            _f("secretaria.odoo_login", "text"),
+            _f("secretaria.clean_transcript", "bool"),
+            _f("secretaria.horas_nudge", "bool"),
+            _f("secretaria.live_title", "bool", advanced=True),
+            _f(
+                "secretaria.model_acta",
+                "choice",
+                choices=("sonnet", "opus", "haiku"),
+                advanced=True,
+            ),
+            _f("secretaria.model_title", "choice", choices=("haiku", "sonnet"), advanced=True),
+            _f("secretaria.mcp_servers", "list", advanced=True),
+            _f("secretaria.google_gmail", "bool"),
+            _f("secretaria.google_calendar", "bool"),
+            _f("secretaria.google_drive", "bool"),
+            _f("secretaria.google_email_mode", "choice", choices=("draft", "off"), advanced=True),
+            _f("secretaria.google_calendar_id", "text", advanced=True),
+            _f("secretaria.google_drive_folder_id", "text", advanced=True),
+        ),
+    ),
+    (
         "privacy",
         (
             _f("privacy.remind_notice", "bool"),
@@ -194,11 +249,17 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
 FIELDS: dict[str, FieldSpec] = {f.path: f for _g, fields in GROUPS for f in fields}
 
 
+INTERNAL_SECTIONS = frozenset({"meta"})
+"""Secciones de ``config.toml`` que no son ajustes (``[meta] version``)."""
+
+
 def config_paths() -> list[str]:
     """Todas las rutas ``seccion.clave`` de ``Config`` (la fuente de verdad)."""
     cfg = Config()
     out: list[str] = []
     for sec in dataclasses.fields(cfg):
+        if sec.name in INTERNAL_SECTIONS:
+            continue
         section = getattr(cfg, sec.name)
         out.extend(f"{sec.name}.{f.name}" for f in dataclasses.fields(section))
     return out

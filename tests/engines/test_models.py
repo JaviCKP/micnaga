@@ -36,7 +36,8 @@ HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
 def test_manifest_entries_are_pinned_and_complete() -> None:
     seen: set[str] = set()
-    for gid, group in MANIFEST.items():
+    assert not set(MANIFEST) & set(models.CANDIDATE_MANIFEST)
+    for gid, group in [*MANIFEST.items(), *models.CANDIDATE_MANIFEST.items()]:
         assert group.id == gid and group.files
         for f in group.files:
             assert f.group == gid
@@ -67,6 +68,9 @@ def test_required_groups_follow_config() -> None:
     cfg.processing.diarization = "pyannote"
     assert required_groups(cfg) == [models.SILERO_GROUP, models.WHISPER_SMALL_GROUP]
     assert models.WHISPER_SMALL_GROUP in required_groups(Config(), include_optional=True)
+    # los modelos evaluados y no adoptados nunca se piden
+    every = set(required_groups(Config(), include_optional=True))
+    assert not every & set(models.CANDIDATE_MANIFEST)
 
 
 def test_whisper_group_unknown_size() -> None:

@@ -40,8 +40,13 @@ def test_command_table_follows_convention() -> None:
         "record": ("micnaga.capture.cli", "run"),
         "process": ("micnaga.pipeline.cli", "run_process"),
         "worker": ("micnaga.pipeline.cli", "run_worker"),
+        "live": ("micnaga.pipeline.cli", "run_live"),
+        "hq": ("micnaga.pipeline.hq", "run_cli"),
         "bench": ("micnaga.bench.cli", "run"),
         "app": ("micnaga.app", "run"),
+        "tools": ("micnaga.brain.mcp", "run"),
+        "brain": ("micnaga.brain.cli", "run"),
+        "hook-guard": ("micnaga.brain.google.guard", "main"),
     }
 
 

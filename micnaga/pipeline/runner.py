@@ -9,12 +9,16 @@
 * ``jobs.stage`` se actualiza con ``Database.set_stage`` (indice 1-based de la etapa en curso) y se
   emiten eventos ``JobStarted`` / ``JobProgress`` / ``JobDone`` / ``JobFailed`` / ``JobDiscarded``.
 * **Descarte** (la etapa 1 lanza ``SessionDiscarded``): ``Database.discard_job`` (que ya anota
-  solo fecha + motivo y borra la ruta de ``jobs``), despues se borra la carpeta de la sesion. Sin
+  solo fecha + motivo y borra la ruta de ``jobs``), despues la carpeta se aparta en
+  «Descartadas» (``micnaga.holding``: recuperable ``storage.discarded_keep_days`` dias). Sin
   trabajo (modo en primer plano) se usa ``log_discard``. Ni el motivo ni el log llevan titulo o
   ruta.
 * **Fallo**: ``fail_job`` con el error; los ficheros se conservan para reintentar. Las
   excepciones que no son ``Exception`` (``KeyboardInterrupt``, cierre brusco) no se capturan: el
   trabajo queda ``processing`` y ``requeue_stale`` lo recupera al arrancar el worker.
+* **Huellas en ``work/``**: los embeddings de hablante (etapa 7) solo se guardan cifrados con
+  DPAPI. Al arrancar se borran el ``07_embeddings.json`` en claro de versiones antiguas (la etapa
+  7 se repite) y los temporales ``.tmp-*.json`` huerfanos de un cierre brusco.
 * **Cierre** (tras la etapa 11, lo ultimo que se toca del sistema de ficheros): renombra la
   carpeta a ``YYYY-MM-DD_HHMM_slug`` (``jobs.session_dir`` se actualiza *antes* del renombrado; si
   el proceso muere entremedias, ``_locate`` encuentra la carpeta antigua gracias a
@@ -26,6 +30,7 @@ Memoria: cada etapa libera su modelo antes de la siguiente (``stages.base.engine
 
 from __future__ import annotations
 
+import contextlib
 import gc
 import json
 import logging
@@ -173,11 +178,22 @@ class PipelineRunner:
             work.mkdir(parents=True, exist_ok=True)
             deps = self._deps(session)
             stages = get_stages()
+            # embeddings en claro de versiones antiguas: se borran antes de nada (la marca de la
+            # etapa 7 los lista como salida, asi que la etapa 7 se repite y los escribe cifrados)
+            from micnaga.pipeline.stages.s07_diarize import remove_legacy_embeddings
+
+            remove_legacy_embeddings(work)
+            # temporales JSON huerfanos de un cierre brusco (podian llevar esos embeddings)
+            for orphan in work.glob(".tmp-*.json"):
+                with contextlib.suppress(OSError):
+                    orphan.unlink()
             total = float(sum(STAGE_WEIGHTS))
             for stage in stages:
                 before = sum(STAGE_WEIGHTS[: stage.index - 1]) / total
                 span = STAGE_WEIGHTS[stage.index - 1] / total
                 self._set_stage(job, stage, before)
+                if stage.index == 2 and not is_stage_done(session, stages[5]):
+                    self._finish_live(session, deps, meta, stages, job_id)
                 if is_stage_done(session, stage):
                     times[stage.name] = 0.0
                     skipped.append(stage.name)
@@ -205,6 +221,47 @@ class PipelineRunner:
             return self._discard(job, session, discard.reason, times)
         except Exception as exc:
             return self._fail(job, session, exc, times)
+
+    def _finish_live(
+        self,
+        session: Path,
+        deps: Deps,
+        meta: CaptureMeta,
+        stages: tuple[Stage, ...],
+        job_id: int | None,
+    ) -> None:
+        """Si hubo procesado en vivo, completa la cola y deja hechas las etapas 2-6.
+
+        Cualquier fallo borra ``work/live/`` y el pipeline sigue por lotes (nunca se pierde una
+        reunion por el procesado en vivo)."""
+        from micnaga.pipeline import live
+
+        if not live.has_cache(session):
+            return
+        engines = live.engines_from_deps(deps)
+        if engines is None or not self.config.processing.live:
+            live.discard_cache(session)
+            return
+        total = float(sum(STAGE_WEIGHTS))
+        before = sum(STAGE_WEIGHTS[:1]) / total
+        span = sum(STAGE_WEIGHTS[1:6]) / total
+
+        def progress(frac: float) -> None:
+            self._progress(job_id, stages[1], before + span * frac)
+
+        ctx = StageContext(session, self.config, deps, meta, progress)
+        t0 = time.perf_counter()
+        try:
+            done = live.finish(ctx, stages[1:6], engines, on_progress=progress)
+        except Exception:
+            log.exception("live processing could not be completed; processing in batch")
+            done = False
+        if not done:
+            for later in stages[1:]:
+                clear_marker(session, later)
+            live.discard_cache(session)
+            return
+        log.info("live processing completed in %.1f s", time.perf_counter() - t0)
 
     @staticmethod
     def _load_meta(session: Path) -> CaptureMeta:
@@ -245,7 +302,7 @@ class PipelineRunner:
                     self.db.log_discard(reason)
             except Exception:
                 log.exception("could not record the discard")
-        delete_session(session)
+        hold_session(session, reason)
         if job is not None:
             self._emit(JobDiscarded(job.id, label, reason))
         return RunResult("discarded", session, reason, stage_times=times)
@@ -335,6 +392,19 @@ class PipelineRunner:
 
 
 # ----------------------------------------------------------------------------- ficheros
+
+
+def hold_session(session: Path, reason: str) -> None:
+    """Aparta una sesion que no se transcribe en «Descartadas» (recuperable N dias; nunca se
+    borra sin un «No» del usuario, DECISIONS §18). Si no se puede mover, se deja donde esta."""
+    from micnaga.holding import REASON_GATES, REASON_UNCONFIRMED, move_to_held
+    from micnaga.pipeline.stages.s01_gates import UNCONFIRMED
+
+    key = REASON_UNCONFIRMED if reason == UNCONFIRMED else REASON_GATES
+    try:
+        move_to_held(session, key, detail=reason)
+    except OSError:
+        log.exception("could not move a discarded session to the held area")
 
 
 def delete_session(session: Path) -> None:

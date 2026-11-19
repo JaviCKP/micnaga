@@ -38,10 +38,19 @@ log = logging.getLogger(__name__)
 
 
 def find_sessions(root: Path, states: tuple[str, ...]) -> list[Path]:
-    """Carpetas hijas de ``root`` con ``capture.json`` cuyo ``state`` esta en ``states``."""
+    """Carpetas hijas de ``root`` con ``capture.json`` cuyo ``state`` esta en ``states``.
+
+    Las marcadas como descartadas («Ahora no») no se devuelven nunca: no son para encolar
+    (``micnaga.holding``; el arranque las aparta)."""
+    from micnaga.holding import DISCARD_MARKER
+
     if not root.is_dir():
         return []
-    return sorted(d for d in root.iterdir() if d.is_dir() and read_state(d) in states)
+    return sorted(
+        d
+        for d in root.iterdir()
+        if d.is_dir() and not (d / DISCARD_MARKER).exists() and read_state(d) in states
+    )
 
 
 def _owner_alive(extra: dict[str, object]) -> bool:
@@ -121,6 +130,59 @@ def recover_sessions(root: Path | None = None) -> list[Path]:
     return recovered
 
 
+TRIM_KEY = "trim_end_samples"
+"""``capture.json -> trim_end_samples``: fin real de la reunion (el micro se solto), en muestras
+del tiempo de grabacion. ``finalize_session`` recorta ahi las dos pistas (sin la cola que se
+grabo mientras se esperaba la respuesta del popup de fin)."""
+
+
+def set_trim(session_dir: Path, end_s: float) -> bool:
+    """Anota el punto de recorte (segundos de grabacion) en una sesion ya parada."""
+    try:
+        meta = read_capture_json(session_dir)
+    except (OSError, ValueError, KeyError):
+        log.warning("cannot set the trim point: unreadable capture.json")
+        return False
+    rate = meta.mic.sample_rate or 16000
+    extra = dict(meta.extra)
+    extra[TRIM_KEY] = max(0, round(end_s * rate))
+    return write_capture_json(session_dir, replace(meta, extra=extra))
+
+
+def _apply_trim(session_dir: Path, meta: CaptureMeta) -> CaptureMeta:
+    """Recorta los WAV a ``trim_end_samples`` (idempotente; nada si ya son FLAC)."""
+    raw = meta.extra.get(TRIM_KEY)
+    if not isinstance(raw, int) or isinstance(raw, bool) or meta.extra.get("trim_applied"):
+        return meta
+    rate = meta.mic.sample_rate or 16000
+    wavs = [session_dir / t.file for t in (meta.mic, meta.system)]
+    if not all(w.suffix.lower() == ".wav" and w.exists() for w in wavs):
+        log.warning("trim requested but the tracks are not WAV any more; not trimmed")
+        return meta
+    n = min(raw, *(wavio.repair_wav(w, rate) for w in wavs))
+    for w in wavs:
+        wavio.truncate_wav(w, n)
+    t_end = n / rate
+
+    def cut(track: TrackInfo) -> TrackInfo:
+        return replace(track, samples=n, sync=[m for m in track.sync if m.samples <= n])
+
+    extra = dict(meta.extra)
+    extra["trim_applied"] = True
+    extra["duration_s"] = round(t_end, 3)
+    new = replace(
+        meta,
+        mic=cut(meta.mic),
+        system=cut(meta.system),
+        markers=[m for m in meta.markers if m.t <= t_end],
+        device_changes=[c for c in meta.device_changes if c.t <= t_end],
+        extra=extra,
+    )
+    write_capture_json(session_dir, new)
+    log.info("session trimmed to %.1f s", t_end)
+    return new
+
+
 def finalize_session(session_dir: Path, *, flac_level: int = 5) -> CaptureMeta:
     """WAV -> FLAC (nivel ``flac_level``, 5 por defecto) y borra los WAV **tras verificarlos**.
 
@@ -135,6 +197,7 @@ def finalize_session(session_dir: Path, *, flac_level: int = 5) -> CaptureMeta:
         if recovered is None:
             raise RuntimeError(f"{session_dir} is still being recorded")
         meta = recovered
+    meta = _apply_trim(session_dir, meta)
     rate = meta.mic.sample_rate or 16000
     tracks: dict[str, TrackInfo] = {}
     for key, info, flac_name in (

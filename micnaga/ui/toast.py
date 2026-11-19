@@ -10,6 +10,7 @@ Inicio con ``System.AppUserModel.ID`` y pasar ese AUMID aqui (``aumid=``).
 
 from __future__ import annotations
 
+import functools
 import logging
 import sys
 from collections.abc import Callable
@@ -59,13 +60,17 @@ class ToasterLike(Protocol):
     def show_toast(self, toast: Any) -> None: ...
 
 
-def format_ready_text(title: str, duration_s: float, speakers: int, language: str = "es") -> str:
-    """«Revision semanal · 47 min · 3 hablantes»."""
+def format_ready_text(
+    title: str, duration_s: float, speakers: int, language: str = "es", proposals: int = 0
+) -> str:
+    """«Revision semanal · 47 min · 3 hablantes» (+ «· 5 propuestas» con la Secretaria)."""
     minutes = max(1, round(duration_s / 60))
     key = "toast.speakers_one" if speakers == 1 else "toast.speakers_other"
-    return " · ".join(
-        [title, i18n.t("toast.minutes", language, n=minutes), i18n.t(key, language, n=speakers)]
-    )
+    parts = [title, i18n.t("toast.minutes", language, n=minutes), i18n.t(key, language, n=speakers)]
+    if proposals > 0:
+        pkey = "toast.proposals_one" if proposals == 1 else "toast.proposals_other"
+        parts.append(i18n.t(pkey, language, n=proposals))
+    return " · ".join(parts)
 
 
 def parse_arguments(arguments: str) -> str | None:
@@ -98,22 +103,61 @@ class ToastNotifier:
             self._toaster = InteractableWindowsToaster("Micnaga", self._aumid)
         return self._toaster
 
-    def show_ready(self, folder: str, title: str, duration_s: float, speakers: int) -> None:
+    def show_ready(
+        self, folder: str, title: str, duration_s: float, speakers: int, proposals: int = 0
+    ) -> None:
         from windows_toasts import Toast, ToastButton
 
         toast = Toast(
             text_fields=[
                 i18n.t("toast.ready", self._language),
-                format_ready_text(title, duration_s, speakers, self._language),
+                format_ready_text(title, duration_s, speakers, self._language, proposals),
             ],
-            launch_action=ARG_PREFIX + folder,
-            on_activated=self._activated,
+            # Sin ``launch_action``: windows-toasts lo marca como activacion por protocolo y
+            # Windows intenta abrir «open:...» como enlace («Obtener una aplicacion para abrir
+            # este vinculo»). El clic en el cuerpo llega a ``on_activated`` con otros argumentos:
+            # se abre igualmente la carpeta de ESTE aviso.
+            on_activated=functools.partial(self._activated, default=folder),
         )
         toast.AddAction(ToastButton(i18n.t("toast.open", self._language), ARG_PREFIX + folder))
         self._get_toaster().show_toast(toast)
 
-    def _activated(self, args: Any) -> None:
-        folder = parse_arguments(str(getattr(args, "arguments", "") or ""))
+    def show_hours(self, days: int, on_open: Callable[[], None]) -> None:
+        """Aviso semanal: «Te faltan N dias por fichar esta semana» · «Rellenar»."""
+        from windows_toasts import Toast, ToastButton
+
+        key = "toast.hours.body_one" if days == 1 else "toast.hours.body_other"
+
+        def activated(_args: Any) -> None:
+            try:
+                on_open()
+            except Exception:
+                log.exception("hours toast callback failed")
+
+        toast = Toast(
+            text_fields=[
+                i18n.t("toast.hours.title", self._language),
+                i18n.t(key, self._language, n=days),
+            ],
+            on_activated=activated,
+        )
+        toast.AddAction(ToastButton(i18n.t("toast.hours.open", self._language), "hours:"))
+        self._get_toaster().show_toast(toast)
+
+    def show_error(self, key: str) -> None:
+        """Aviso de error (p. ej. ``capture_failed``): titulo y texto de ``toast.error.<key>``."""
+        from windows_toasts import Toast
+
+        toast = Toast(
+            text_fields=[
+                i18n.t(f"toast.error.{key}.title", self._language),
+                i18n.t(f"toast.error.{key}.body", self._language),
+            ]
+        )
+        self._get_toaster().show_toast(toast)
+
+    def _activated(self, args: Any, default: str | None = None) -> None:
+        folder = parse_arguments(str(getattr(args, "arguments", "") or "")) or default
         if folder is None:
             return
         try:

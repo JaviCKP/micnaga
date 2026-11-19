@@ -9,15 +9,20 @@ sin verificar: [`DECISIONS.md`](DECISIONS.md). Licencias de terceros: [`THIRD_PA
 
 ## Principios de privacidad
 
-* **Local y privado.** Ningún audio ni texto sale del equipo. La **única** conexión de red es la descarga
-  de modelos en el primer arranque, desde URLs de Hugging Face fijadas y verificadas con SHA-256.
-  Sin telemetría, sin analítica, sin cuentas.
+* **Local y privado.** El audio nunca sale del equipo. El texto solo sale si activas la **Secretaria**
+  (desactivada por defecto), y solo hacia Claude (Anthropic, vía tu `claude -p`) y tu propio Odoo. Sin ella,
+  la **única** conexión de red es la descarga de modelos en el primer arranque, desde URLs de Hugging Face
+  fijadas y verificadas con SHA-256. Sin telemetría, sin analítica, sin cuentas.
 * **Nunca hay grabación silenciosa:** mientras se graba hay siempre una pastilla visible en pantalla.
 * **Huellas de voz** (opcionales, desactivadas por defecto): cifradas con DPAPI de Windows (ligadas a tu
   cuenta) y borrables por persona. Son datos biométricos: pide consentimiento antes de guardar la de un
   compañero.
-* Lo que no es una reunión (una nota de voz, una prueba de micro, una llamada de 20 s) se descarta solo y
-  solo queda en el registro la fecha y el motivo.
+* **Nada se borra sin un «No» tuyo, y un «No» se puede deshacer.** Cuando una app usa el micro se graba en
+  provisional y se pregunta. «No» (o «Descartar» al final) para la grabación y la aparta; lo mismo pasa con lo
+  que nunca contestaste. Lo apartado va a la carpeta **`_descartadas`** dentro de tu carpeta de reuniones, en
+  tu equipo y sin transcribir. Se borra solo a los `storage.discarded_keep_days` días (7 por defecto) y hasta
+  entonces puedes recuperarlo o borrarlo ya desde la biblioteca («Descartadas»). Ten en cuenta que ese audio
+  existe en disco durante esos días (mínimo 1; «Borrar ya» lo elimina antes).
 * La extensión de navegador opcional no usa la red (solo *native messaging* hacia la app local).
 
 ## Instalación desde el código fuente
@@ -96,6 +101,22 @@ cambios de turno; una sesión confirmada con «Grabar» solo exige la duración)
 
 «Ahora no» ignora esa reunión (por su código) hasta que cuelgues.
 
+## Secretaria (capa de IA, opcional)
+
+Al terminar una reunión, `claude -p` (tu sesión de Claude Code; o un token / una clave de API guardados en el
+Administrador de credenciales) lee la transcripción —**solo texto**— y deja `acta.json` + `acta.md` (resumen,
+decisiones, tareas con fecha, preguntas abiertas, próximos pasos; cada línea con su marca de tiempo) y una lista
+corta de **propuestas**: correcciones (quién es cada hablante, nombres mal transcritos) y, con Odoo, vincular la
+reunión a su oportunidad, crear el contacto que falta, mover etapa o importe y programar tus actividades. El
+modelo solo tiene herramientas de **lectura** (`micnaga tools`, servidor MCP propio); **nada se escribe sin tu
+toque** y todo se puede deshacer. Ajustes › Secretaria: activar, probar Claude, conectar Odoo y ver/olvidar lo que
+ha aprendido. Diseño: `docs/design/ai_brain.md`; decisiones en `DECISIONS.md` §17.
+
+```powershell
+.venv\Scripts\python.exe -m micnaga brain status            # ¿hay sesión de Claude Code?
+.venv\Scripts\python.exe -m micnaga brain analyze <carpeta>  # pasada a mano sobre una reunión
+```
+
 ## Dónde se guardan los datos
 
 | Qué | Dónde | Variable |
@@ -124,6 +145,7 @@ variables de entorno:
 | `MICNAGA_RUN_MODELS=1` | ejecuta los tests `@pytest.mark.models` (necesitan modelos; con `MICNAGA_MODELS` apunta a los tuyos, por defecto `<repo>\.models`) |
 | `MICNAGA_RUN_SLOW=1` | ejecuta los tests `@pytest.mark.slow` (los de modelos también los activan) |
 | `MICNAGA_RUN_REALDEVICE=1` | ejecuta los tests con micro y altavoces reales (en tu sesión interactiva) |
+| `MICNAGA_RUN_CLAUDE=1` | ejecuta los tests `@pytest.mark.claude`: el `claude -p` real con tu sesión (gasta uso del plan; Odoo siempre falso) |
 | `MICNAGA_HOME` / `MICNAGA_STORAGE` / `MICNAGA_MODELS` | carpetas de datos, reuniones y modelos |
 | `MICNAGA_TESTSET` | carpeta del set de prueba real para `micnaga bench` (formato en [`docs/testset_format.md`](docs/testset_format.md)) |
 
