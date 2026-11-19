@@ -171,11 +171,12 @@ def analyze_days(
 ) -> list[Day]:
     """Estado de cada dia laborable (y de los festivos) entre ``desde`` y ``min(hasta, hoy)``.
 
-    ``history`` (lineas de un periodo mas largo, opcional) solo sirve para saber cual fue el
+    ``history`` (lineas de un periodo mas largo que INCLUYE ``lines``, opcional) solo sirve
+    para saber cual fue el
     ultimo dia con horas y la jornada tipica.
     """
     off = set(off_days)
-    every = [*(history or []), *lines]
+    every = history if history is not None else lines
     totals = totals_by_day(lines)
     all_totals = totals_by_day(every)
     logged = [d for d, h in all_totals.items() if h > 0]
@@ -411,9 +412,9 @@ def propose_day(
             project = project or pattern[slot_idx]["proyecto"]
         if project is None:
             continue  # sin proyecto claro no se inventa uno
-        rng = ""
+        span_txt = ""
         if span is not None:
-            rng = f" ({_hhmm(span[0])}-{_hhmm(span[1])})"
+            span_txt = f" ({_hhmm(span[0])}-{_hhmm(span[1])})"
         out.append(
             {
                 "fecha": fecha,
@@ -422,7 +423,7 @@ def propose_day(
                 "tarea_id": None,
                 "tarea": None,
                 "horas": hours,
-                "descripcion": f"{ev.titulo}{rng}"[:200],
+                "descripcion": f"{ev.titulo}{span_txt}"[:200],
                 "origen": ev.origen,
                 "checked": True,
                 "variantes": [],

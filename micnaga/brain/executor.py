@@ -265,11 +265,15 @@ class Executor:
             return self._create_event(o, d)
         if kind == "registrar_horas":
             from micnaga.brain import horas
+            from micnaga.brain.timesheets import LineError
 
             book = self._hours_book(o)
-            line = book.validate(d, explicit=bool(d.get("explicito")))
-            if book.exists(line):
-                raise ApplyError("duplicate")
+            try:
+                line = book.validate(d, explicit=bool(d.get("explicito")))
+            except LineError as exc:
+                raise ApplyError(
+                    "duplicate" if str(exc) == "ya_existe" else f"horas_{exc}"
+                ) from exc
             new_id = o.create(horas.TIMESHEET_MODEL, horas.create_values(line))
             book.accept(line)
             return {"modelo": horas.TIMESHEET_MODEL, "creado": new_id}

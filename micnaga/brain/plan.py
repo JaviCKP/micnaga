@@ -310,7 +310,7 @@ def _business_target(d: dict[str, Any]) -> bool:
 
 def _record(ctx: _Ctx, model: str, rid: int) -> dict[str, Any] | None:
     """El registro (con ``nombre``) o ``None`` si no existe / no es legible."""
-    o = ctx.odoo
+    o: Any = ctx.odoo
     if model == "project.task":
         return o.read_task(rid)  # type: ignore[no-any-return]
     if model == "project.project":
@@ -493,8 +493,6 @@ def _expand_hours(p: dict[str, Any], d: dict[str, Any], ctx: _Ctx) -> list[dict[
             line["checked"] = False
             out.append(line)
             continue
-        if book.exists(v):
-            continue  # ya esta en Odoo
         book.accept(v)
         v["explicito"] = explicit
         v["ya_en_el_dia"] = round(book.day_total(v["fecha"]) - v["horas"], 2)

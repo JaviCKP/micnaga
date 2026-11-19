@@ -122,6 +122,9 @@ class HoursBook:
         return round(existing + self._accepted.get(day, 0.0), 2)
 
     def validate(self, raw: dict[str, Any], *, explicit: bool = False) -> dict[str, Any]:
+        """Linea normalizada o ``LineError`` (``ya_existe`` si ya esta igual en Odoo)."""
+        if self.exists(raw):
+            raise ts.LineError("ya_existe")
         day = ts.parse_day(raw.get("fecha"))
         total = self.day_total(day.isoformat()) if day is not None else 0.0
         return ts.validate_line(
@@ -134,7 +137,10 @@ class HoursBook:
         )
 
     def exists(self, line: dict[str, Any]) -> bool:
-        return any(ts.same_line(line, ln) for ln in self.day_lines(line["fecha"]))
+        day = ts.parse_day(line.get("fecha"))
+        if day is None:
+            return False
+        return any(ts.same_line(line, ln) for ln in self.day_lines(day.isoformat()))
 
     def accept(self, line: dict[str, Any]) -> None:
         self._accepted[line["fecha"]] = self._accepted.get(line["fecha"], 0.0) + line["horas"]
@@ -258,10 +264,8 @@ def apply(odoo: Any, lines: list[dict[str, Any]], *, today: date) -> dict[str, A
         try:
             line = book.validate(raw)
         except ts.LineError as exc:
-            results.append({"key": key, "ok": False, "error": str(exc)})
-            continue
-        if book.exists(line):
-            results.append({"key": key, "ok": True, "error": "ya_existe", "id": None})
+            dup = str(exc) == "ya_existe"  # reaplicar no duplica
+            results.append({"key": key, "ok": dup, "error": str(exc), "id": None})
             continue
         try:
             new_id = odoo.create(TIMESHEET_MODEL, create_values(line))
