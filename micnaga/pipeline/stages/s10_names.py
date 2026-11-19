@@ -54,7 +54,8 @@ def match_voiceprints(
     except (VoiceprintError, OSError, TypeError, ValueError) as exc:
         log.warning("speaker embeddings unreadable, skipping voiceprints: %s", exc)
         return {}, 0
-    engine = str(ctx.stage_info("diarize").get("diarizer") or "")
+    info = ctx.stage_info("diarize")
+    engine = str(info.get("embedder") or info.get("diarizer") or "")  # espacio de las huellas
     store = ctx.deps.voiceprints or VoiceprintStore()
     threshold = ctx.config.privacy.voiceprint_threshold
     best: dict[str, tuple[str, float]] = {}  # nombre -> (hablante, similitud)

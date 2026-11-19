@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pytest
@@ -30,7 +31,7 @@ from micnaga.registry import EngineUnavailableError
 from micnaga.store import voiceprints as vp
 from micnaga.store.db import Database, JobState
 from micnaga.store.voiceprints import VoiceprintStore
-from micnaga.types import PIPELINE_STAGES, CaptureMeta, Transcript
+from micnaga.types import PIPELINE_STAGES, CaptureMeta, Transcript, Turn
 from tests.pipeline.helpers import (
     SimulatedCrash,
     make_session,
@@ -458,6 +459,43 @@ def test_voiceprint_names_speakers_when_enabled(db: Database, tmp_home: Path) ->
     # renombrar y aprender la huella (MIC-11)
     output.rename_speaker(result.session_dir, "S2", "Marta", db=db, learn_voiceprint=True)
     assert store.list() == ["Laura", "Marta"]
+
+
+class GhostDiarizer(FakeDiarizer):
+    """``FakeDiarizer`` que ademas inventa un hablante con una sola palabra al final (podcast)."""
+
+    def __init__(self, script: Any) -> None:
+        super().__init__(script)
+        self.embedded: list[set[str]] = []
+
+    def diarize(self, audio, sr, n_speakers):  # type: ignore[no-untyped-def]
+        turns = super().diarize(audio, sr, n_speakers)
+        last = max(t.end for t in turns)
+        return [*turns, Turn("S3", last + 0.3, last + 0.9)]
+
+    def embed(self, audio, sr, turns):  # type: ignore[no-untyped-def]
+        self.embedded.append({t.speaker for t in turns})
+        return super().embed(audio, sr, turns)
+
+
+def test_ghost_speaker_is_absorbed_before_voiceprints(db: Database) -> None:
+    session = make_session()
+    cfg = relaxed_config()
+    cfg.privacy.voiceprints_enabled = True
+    base = fake_deps_for_session(session)
+    ghost = GhostDiarizer(load_script(session))
+    deps = Deps(**{**base.__dict__, "create_diarizer": lambda _c: ghost})
+    result = runner_for(config=cfg, deps=deps, db=db, keep_work=True, rename=False).run(session)
+    t = result.transcript
+    assert result.status == "done" and t is not None, result.reason
+    assert {s.id for s in t.speakers} == {"me", "S1", "S2"}  # sin «Hablante 3»
+    info = diarize_marker(result.session_dir)["info"]
+    assert info["n_speakers_raw"] == 3 and info["n_speakers"] == 2
+    assert info["absorbed"] == ["S3"] and info["embedder"] == "fake-diarizer"
+    turns = json.loads((result.session_dir / "work" / "07_turns.json").read_text("utf-8"))
+    assert {x["speaker"] for x in turns} == {"S1", "S2"}
+    # la huella guardada se calcula con los turnos ya filtrados: nunca la de un fantasma
+    assert ghost.embedded[-1] == {"S1", "S2"}
 
 
 def test_voiceprints_stay_off_by_default(db: Database) -> None:
