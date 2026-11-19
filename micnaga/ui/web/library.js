@@ -721,6 +721,14 @@
     const v = $("settings-view");
     const f = settingsFrame();
     const app = document.querySelector(".app");
+    if (window.micDither && mic.motion && !v.classList.contains("on")) {
+      // the dithered wipe (dither.js) covers the window, the view swaps underneath, it uncovers
+      window.micDither.wipe(() => {
+        v.hidden = false; app.inert = true; app.classList.add("behind"); v.classList.add("on");
+        try { f.contentWindow.focus(); } catch (e) { /* not loaded yet */ }
+      });
+      return;
+    }
     v.hidden = false;
     app.inert = true;
     app.classList.add("behind");
@@ -732,6 +740,13 @@
   function hideSettings() {
     const v = $("settings-view");
     const app = document.querySelector(".app");
+    if (window.micDither && mic.motion && v.classList.contains("on")) {
+      window.micDither.wipe(() => {
+        v.classList.remove("on"); v.hidden = true; app.inert = false; app.classList.remove("behind");
+        $("settings-btn").focus({ preventScroll: true, focusVisible: false });
+      });
+      return;
+    }
     v.classList.remove("on");
     app.inert = false;
     app.classList.remove("behind");
