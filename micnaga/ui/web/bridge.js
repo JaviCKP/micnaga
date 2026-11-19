@@ -178,6 +178,16 @@
     plus: '<path d="M12 5v14M5 12h14"/>',
     clock: '<circle cx="12" cy="12" r="8.5"/><path d="M12 7.5V12l3 2"/>',
     calendar: '<rect x="4" y="5.5" width="16" height="14.5" rx="2.5"/><path d="M4 10h16M8.5 3.5v4M15.5 3.5v4"/>',
+    // Secretaria: one glyph per kind of proposal, and the «tell it what to change» spark
+    spark: '<path d="M12 3.5c.5 3.9 2.6 6 6.5 6.5-3.9.5-6 2.6-6.5 6.5-.5-3.9-2.6-6-6.5-6.5 3.9-.5 6-2.6 6.5-6.5zM18.5 15.5c.2 1.6 1 2.4 2.5 2.5-1.5.2-2.3 1-2.5 2.5-.2-1.5-1-2.3-2.5-2.5 1.5-.1 2.3-.9 2.5-2.5z"/>',
+    task: '<rect x="4.5" y="4.5" width="15" height="15" rx="3.5"/><path d="m8.5 12.2 2.4 2.4 4.6-5"/>',
+    note: '<path d="M6.5 3.5h7.5l4 4v13h-11.5z"/><path d="M13.5 3.5V8h4.5M9.5 12.5h5M9.5 16h5"/>',
+    mail: '<rect x="3.5" y="5.5" width="17" height="13" rx="2.5"/><path d="m4.5 7 7.5 6 7.5-6"/>',
+    doc: '<path d="M6.5 3.5h7.5l4 4v13h-11.5z"/><path d="M13.5 3.5V8h4.5"/>',
+    receipt: '<path d="M6 3.5h12v17l-2-1.4-2 1.4-2-1.4-2 1.4-2-1.4-2 1.4z"/><path d="M9 8.5h6M9 12h6M9 15.5h3.5"/>',
+    trend: '<path d="M3.5 17 9.5 11l4 4 7-7.5"/><path d="M15.5 7.5h5v5"/>',
+    text: '<path d="M4 18.5 8.5 6l4.5 12.5M5.6 14h5.8M15.5 12.5a2.6 2.6 0 0 1 5 1v5M20.5 15.5c-3.2-.4-5 .4-5 1.6 0 1 .8 1.6 1.9 1.6 1.6 0 3.1-1.1 3.1-3.2"/>',
+    send: '<path d="M12 19V6M6.5 11.5 12 6l5.5 5.5"/>',
     dots: '<circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/>',
   };
   mic.icon = function (name, cls) {

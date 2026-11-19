@@ -247,8 +247,9 @@
   // ------------------------------------------------------------------ secretaria
   const sec = (action, args) => mic.call("secretaria", action, args || {});
 
-  /** A status line: live dot + text, an optional action on the right. */
-  function statusRow() {
+  /** A status line: live dot + text, an optional action on the right. With `card`, the same
+      state also lights a dot beside that card's title (Claude, Odoo and Google read alike). */
+  function statusRow(card) {
     const row = el("div", "frow sec-status");
     const left = el("div", "finfo");
     const dot = el("span", "sig");
@@ -257,7 +258,21 @@
     left.append(dot, text);
     const right = el("div", "ctl");
     row.append(left, right);
-    return { row, right, set(state, msg) { dot.dataset.s = state; text.textContent = msg; } };
+    let head = null;
+    const h3 = card && card.parentElement && card.parentElement.querySelector(":scope > h3");
+    if (h3) {
+      head = el("span", "sig sig-h");
+      head.dataset.s = "off";
+      h3.append(head);
+    }
+    return {
+      row, right,
+      set(state, msg) {
+        dot.dataset.s = state;
+        text.textContent = msg;
+        if (head) head.dataset.s = state;
+      },
+    };
   }
 
   /** Secrets go in and never come back: the field only says «guardada». */
@@ -293,14 +308,15 @@
 
     // Claude: detected Claude Code session + «Probar»; token / API key only in those modes
     const claude = cards.get("secretaria");
-    const st = statusRow();
+    const st = statusRow(claude);
     const test = el("button", "btn btn-sm", mic.t("secretaria.test"));
     test.type = "button";
     st.right.append(test);
     let refresh = () => {};
     const token = secretRow("token", mic.t("secretaria.token"), () => refresh());
     const key = secretRow("api_key", mic.t("secretaria.api_key"), () => refresh());
-    claude.append(st.row, token.row, key.row);
+    claude.prepend(st.row);
+    claude.append(token.row, key.row);
     const showSecret = () => {
       const auth = get("secretaria.auth");
       token.row.hidden = auth !== "token";
@@ -320,13 +336,22 @@
     // Odoo: the key (never shown back) + «Probar»: who you are and what is readable
     const odoo = cards.get("odoo");
     const okey = secretRow("odoo", mic.t("secretaria.odoo_key"), () => refresh());
-    const ost = statusRow();
+    const ost = statusRow(odoo);
     const otest = el("button", "btn btn-sm", mic.t("secretaria.test"));
     otest.type = "button";
     ost.right.append(otest);
     const caps = capsRow();
-    odoo.append(okey.row, ost.row, caps.row);
-    sec("caps").then((r) => caps.set(r && r.ok ? r.capacidades : []));
+    odoo.prepend(ost.row);
+    const nudge = odoo.querySelector('.frow[data-path="secretaria.horas_nudge"]');
+    if (nudge) odoo.querySelector('.frow[data-path="secretaria.odoo_login"]').after(okey.row);
+    else odoo.append(okey.row);
+    odoo.append(caps.row);
+    let known = null;   // the last «Probar» this Odoo answered (no network to know it)
+    sec("caps").then((r) => {
+      caps.set(r && r.ok ? r.capacidades : []);
+      if (r && r.ok && r.comprobado && (r.capacidades || []).length) known = r.comprobado;
+      refresh();
+    });
     otest.addEventListener("click", async () => {
       otest.disabled = true;
       ost.set("warn", mic.t("secretaria.testing"));
@@ -357,9 +382,10 @@
         else st.set("warn", mic.t("secretaria.secret_missing"));
       }
       okey.inp.placeholder = s.has_odoo_key ? mic.t("secretaria.stored") : "";
-      ost.set(s.has_odoo_key ? "off" : "off", s.has_odoo_key ? mic.t("secretaria.odoo_untested") : mic.t("secretaria.odoo_none"));
+      if (otest.disabled) return;   // a «Probar» is answering right now
+      if (s.has_odoo_key && known) ost.set("ok", mic.t("secretaria.odoo_known", { t: shortWhen(known) }));
+      else ost.set("off", s.has_odoo_key ? mic.t("secretaria.odoo_untested") : mic.t("secretaria.odoo_none"));
     };
-    refresh();
     if (cards.get("google")) googleCard(cards.get("google"));
     pane.append(learnedCard());
   }
@@ -391,11 +417,13 @@
       row.querySelector(".ctl").prepend(connect);
       rows[svc] = { dot, st, connect };
     }
-    const foot = statusRow();
+    const foot = statusRow(card);
     const check = el("button", "btn btn-sm", mic.t("secretaria.g.check"));
     check.type = "button";
     foot.right.append(check);
-    card.append(foot.row);
+    card.prepend(foot.row);
+    const gcaps = capsRow();
+    card.append(gcaps.row);
     let timer = 0;
     async function load() {
       const r = await sec("google_status");
@@ -409,10 +437,16 @@
         ui.connect.hidden = v.state === "connected";
       }
       check.disabled = !!r.checking;
+      const svc = r.services || {};
+      const live = Object.keys(svc).filter((k) => svc[k].enabled && svc[k].state === "connected");
+      const any = Object.keys(svc).some((k) => svc[k].enabled);
+      const when = r.checked ? shortWhen(new Date(r.checked * 1000).toISOString()) : "";
       if (r.checking) foot.set("warn", mic.t("secretaria.g.checking"));
       else if (r.auth !== "session") foot.set("warn", mic.t("secretaria.g.session_only"));
-      else if (r.checked) foot.set("off", mic.t("secretaria.g.checked", { t: new Date(r.checked * 1000).toLocaleString("es-ES", { dateStyle: "short", timeStyle: "short" }) }));
+      else if (live.length) foot.set("ok", mic.t("secretaria.g.live", { n: live.length, t: when }));
+      else if (r.checked) foot.set(any ? "warn" : "off", mic.t("secretaria.g.checked", { t: when }));
       else foot.set("off", mic.t("secretaria.g.never"));
+      gcaps.set(GOOGLE_CAPS.filter((c) => live.includes(c.svc)).map((c) => ({ clave: c.icon, etiqueta: c.label(), nivel: "escritura" })));
       clearTimeout(timer);
       if (r.checking) timer = setTimeout(load, 1000);
       return r;
@@ -422,7 +456,20 @@
   }
 
   /** What the Secretaria can do in this Odoo (from «Probar»): icon + short label per area. */
-  const CAP_ICON = { horas: "clock", tareas: "check", calendario: "calendar", actividades: "bell", gastos: "copy", contactos: "users", crm: "activity" };
+  const CAP_ICON = {
+    horas: "clock", tareas: "task", calendario: "calendar", actividades: "bell", gastos: "receipt", contactos: "users", crm: "trend",
+    mail: "mail", meet: "video", doc: "doc",
+  };
+  /** …and with Google, from what is switched on and connected. */
+  const GOOGLE_CAPS = [
+    { svc: "gmail", icon: "mail", label: () => mic.t("secretaria.g.cap.drafts") },
+    { svc: "calendar", icon: "meet", label: () => mic.t("secretaria.g.cap.events") },
+    { svc: "drive", icon: "doc", label: () => mic.t("secretaria.g.cap.acta") },
+  ];
+  function shortWhen(iso) {
+    const d = new Date(iso);
+    return isNaN(d) ? "" : d.toLocaleString("es-ES", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" });
+  }
   function capsRow() {
     const row = el("div", "frow sec-caps");
     const info = el("div", "finfo");
@@ -434,7 +481,8 @@
       row,
       set(items) {
         list.replaceChildren();
-        if (!items || !items.length) { list.append(el("span", "sec-capnone", mic.t("secretaria.caps.none"))); return; }
+        row.hidden = !items || !items.length;
+        if (!items || !items.length) return;
         for (const c of items) {
           const chip = el("span", "sec-cap" + (c.nivel === "lectura" ? " ro" : ""));
           chip.innerHTML = mic.icon(CAP_ICON[c.clave] || "check");

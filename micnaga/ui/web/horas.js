@@ -99,6 +99,15 @@
     const n = p.dias.length;
     const sub = n === 0 ? "" : n === 1 ? mic.t("secretaria.horas.sub_one") : mic.t("secretaria.horas.sub", { n });
     const { h, actions } = head(sub);
+    const all = el("button", "btn btn-ghost btn-sm hx-all", mic.t("secretaria.horas.check_all"));
+    all.type = "button";
+    all.addEventListener("click", () => {
+      const lines = p.dias.flatMap((d) => d.lineas.filter((l) => !l.hecha));
+      const on = !lines.every((l) => l.checked);
+      lines.forEach((l) => { l.checked = on; });
+      document.querySelectorAll(".hx-lcheck").forEach((c) => { if (!c.disabled) c.checked = on; });
+      refreshTotals();
+    });
     const undo = el("button", "btn btn-ghost btn-sm hx-undo", mic.t("secretaria.horas.undo"));
     undo.type = "button";
     undo.hidden = !S.batch;
@@ -109,7 +118,7 @@
     const count = el("span", "hx-count tnum");
     apply.append(mic.t("secretaria.horas.apply"), count, el("kbd", "", "↵"));
     apply.addEventListener("click", doApply);
-    actions.append(undo, apply);
+    actions.append(all, undo, apply);
     host.replaceChildren(h);
 
     if (!n) {
@@ -120,14 +129,19 @@
       apply.hidden = true;
       return;
     }
-    if (p.patron) host.append(el("p", "hx-pattern", p.patron.replace(/^[^:]+:\s*/, "")));
+    if (p.patron) {
+      const pat = el("p", "hx-pattern");
+      pat.innerHTML = mic.icon("clock", "mini");
+      pat.append(p.patron.replace(/^[^:]+:\s*/, ""));
+      host.append(pat);
+    }
     if (p.posibles_libres && p.posibles_libres.length) {
       host.append(el("p", "hx-note", mic.t("secretaria.horas.maybe_off", { days: p.posibles_libres.map((x) => dayLabel(x)).join(", ") })));
     }
     const list = el("div", "hx-days");
     list.setAttribute("role", "list");
     p.dias.forEach((d) => list.append(renderDay(d)));
-    host.append(list, el("p", "hx-keys", mic.t("secretaria.horas.keys")));
+    host.append(list);
     refreshTotals();
   }
 
@@ -156,6 +170,9 @@
     const all = el("input", "hx-dcheck");
     all.type = "checkbox";
     all.setAttribute("aria-label", mic.t("secretaria.horas.check_day") + " " + dayLabel(d.fecha));
+    const allWrap = el("span", "hx-dcw");
+    allWrap.dataset.tip = mic.t("secretaria.horas.check_day");
+    allWrap.append(all);
     all.addEventListener("change", () => {
       d.lineas.forEach((ln) => { if (!ln.hecha) ln.checked = all.checked; });
       box.querySelectorAll(".hx-lcheck").forEach((c) => { if (!c.disabled) c.checked = all.checked; });
@@ -188,6 +205,7 @@
     const off = el("button", "btn btn-ghost btn-sm hx-off", mic.t("secretaria.horas.mark_off"));
     off.type = "button";
     off.dataset.tip = mic.t("secretaria.horas.mark_off_tip");
+    off.dataset.tipPos = "left";
     off.addEventListener("click", async () => {
       const r = await call("horas_off", { fecha: d.fecha, libre: true });
       if (r && r.ok) {
@@ -195,7 +213,7 @@
         render();
       }
     });
-    top.append(all, toggle, total, off);
+    top.append(allWrap, toggle, total, off);
     box.append(top);
 
     const body = el("div", "hx-lines");
@@ -263,7 +281,8 @@
       row.append(dl);
     }
     desc.addEventListener("input", () => { ln.descripcion = desc.value; ln.checked = true; cb.checked = true; refreshTotals(); });
-    const origin = el("span", "hx-origin " + ln.origen, mic.t("secretaria.horas.o." + ln.origen));
+    const origin = el("span", "hx-origin " + ln.origen, ln.origen === "patron" ? "" : mic.t("secretaria.horas.o." + ln.origen));
+    if (ln.origen === "patron") origin.title = mic.t("secretaria.horas.o.patron");
     const lc = el("span", "hx-lc");
     lc.append(cb, mark);
     row.prepend(lc, hours, proj, desc, origin);
@@ -288,6 +307,12 @@
       box.dataset.done = String(pending.length === 0 && d.lineas.length > 0);
     }
     const n = checkedLines().length;
+    const allBtn = document.querySelector(".hx-all");
+    if (allBtn) {
+      const open = S.plan.dias.flatMap((d) => d.lineas.filter((l) => !l.hecha));
+      allBtn.hidden = open.length === 0;
+      allBtn.textContent = open.length && open.every((l) => l.checked) ? mic.t("secretaria.horas.uncheck_all") : mic.t("secretaria.horas.check_all");
+    }
     const count = document.querySelector(".hx-count");
     if (count) count.textContent = n ? String(n) : "";
     const apply = document.querySelector(".hx-apply");

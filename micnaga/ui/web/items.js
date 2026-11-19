@@ -31,12 +31,24 @@
     }
   }
 
+  /** [main line, quiet facts] for the review card (secretaria.js draws the card). */
+  function lines(p) {
+    const d = p.datos || {};
+    switch (p.tipo) {
+      case "evento_google": return [d.titulo || "", [when(d.inicio), d.duracion_min ? d.duracion_min + " min" : null, "Meet"]];
+      case "correo_google":
+        return [d.asunto || "", [d.modo === "send" ? mic.t("items.opt.send") : mic.t("items.opt.draft"), (d.para || []).join(", ")]];
+      case "acta_drive": return [d.titulo || "", [mic.t("items.k.drive")]];
+      default: return null;
+    }
+  }
+
   /** What will leave your account, said plainly (only when something will). */
   function notice(p) {
     const d = p.datos || {};
     if (p.tipo === "evento_google") {
       const on = (d.asistentes || []).filter((a) => a.on).map((a) => a.nombre || a.email);
-      return on.length ? mic.t("items.invite", { who: on.join(", ") }) : mic.t("items.no_invite");
+      return on.length ? mic.t("items.invite", { who: on.join(", ") }) : null;
     }
     if (p.tipo === "correo_google" && d.modo === "send") return mic.t("items.will_send", { who: (d.para || []).join(", ") });
     return null;
@@ -115,7 +127,7 @@
       if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) return;
       save([...list, { nombre: null, email, on: true }]);
     });
-    row.append(more, el("span", "sec-inv-n", mic.t("secretaria.invite_note")));
+    row.append(more);
     return row;
   }
 
@@ -149,11 +161,15 @@
       box.append(el("h4", "caps", mic.t("items.contrasts")));
       const ul = el("ul", "sec-list");
       cs.forEach((c) => {
-        const li = el("li", "sec-li");
+        const li = el("li", "sec-li it-contrast");
         li.append(el("span", "sec-g", "≠"));
         const x = el("span", "sec-x");
-        x.append(el("b", "", mic.t("items.said") + " "), c.dicho, el("br"), el("b", "", mic.t("items.written") + " "), c.escrito + " ");
-        if (c.url) x.append(link(c.url, c.fuente, call)); else x.append(el("span", "it-src", c.fuente));
+        const said = el("span", "it-said");
+        said.append(el("b", "", mic.t("items.said")), " " + c.dicho);
+        const wrote = el("span", "it-wrote");
+        wrote.append(el("b", "", mic.t("items.written")), " " + c.escrito + " ");
+        if (c.url) wrote.append(link(c.url, c.fuente, call)); else wrote.append(el("span", "it-src", c.fuente));
+        x.append(said, wrote);
         li.append(x);
         const s = stamp(c.t);
         if (s) li.append(s);
@@ -166,7 +182,8 @@
   }
 
   // ------------------------------------------------------------------ research
-  const MARK = { hecho: "✓", abierto: "○", desconocido: "?" };
+  const MARK = { hecho: "check", abierto: "clock", desconocido: "help" };
+  const SRC_ICON = { acta: "note", gmail: "mail", drive: "doc", calendar: "calendar", odoo: "app" };
   const SRC = { acta: "items.src.acta", gmail: "items.src.gmail", drive: "items.src.drive", calendar: "items.src.calendar", odoo: "items.src.odoo" };
   const fmtDay = (iso) => {
     const d = new Date(String(iso).slice(0, 10) + "T12:00:00");
@@ -191,17 +208,23 @@
   function since(a, call, stamp) {
     const items = a.desde_la_ultima || [];
     if (!items.length) return null;
-    const box = el("div", "sec-block it-since");
+    const box = el("div", "it-since");
     box.append(el("h4", "caps", mic.t("items.since")));
     const ul = el("ul", "sec-list");
     items.forEach((it) => {
       const li = el("li", "sec-li");
-      li.dataset.state = it.estado;
-      const g = el("span", "sec-g", MARK[it.estado] || "?");
-      g.title = mic.t("items.state." + it.estado);
-      const x = el("span", "sec-x", it.texto + " ");
-      if (it.evidencia) x.append(sourceLink(it.evidencia, call, it.evidencia.titulo));
-      li.append(g, x);
+      const state = MARK[it.estado] ? it.estado : "desconocido";
+      li.dataset.state = state;
+      const chip = el("span", "it-state " + state);
+      chip.innerHTML = mic.icon(MARK[state], "mini");
+      chip.append(mic.t("items.state." + state));
+      const x = el("span", "sec-x", it.texto);
+      if (it.evidencia) {
+        const ev = sourceLink(it.evidencia, call, it.evidencia.titulo);
+        ev.classList.add("it-ev");
+        x.append(" ", ev);
+      }
+      li.append(chip, x);
       const s = stamp(it.t);
       if (s) li.append(s);
       ul.append(li);
@@ -227,6 +250,8 @@
     all.forEach((s) => {
       const label = mic.t(SRC[s.tipo] || "items.src.odoo") + (s.tipo === "acta" ? " " + fmtDay(s.ref) : "");
       const b = sourceLink(s, call, label);
+      b.classList.add("it-srcchip");
+      b.insertAdjacentHTML("afterbegin", mic.icon(SRC_ICON[s.tipo] || "app", "mini"));
       b.title = s.titulo || "";
       row.append(b);
     });
@@ -245,5 +270,5 @@
   const errorText = (key) => (ERR[key] ? ERR[key]() : null);
 
   window.micnaga = window.micnaga || {};
-  window.micnaga.items = { text, notice, control, result, actaExtras, since, sources, errorText };
+  window.micnaga.items = { text, lines, notice, control, result, actaExtras, since, sources, errorText };
 })();

@@ -976,3 +976,56 @@ que trae de fuera. El prompt pasa a la v3.
 10. **Sin verificar**: la investigación con Gmail real sobre un cliente real (solo con el correo
     stub y una reunión sintética) y la línea de progreso con datos reales en la vista (solo los
     textos, con el `claude` falso).
+
+## 22. Corregir con un mensaje y una Secretaria más libre (rama `feat/secretaria-ux`)
+
+Petición del usuario: poder decirle a cualquier propuesta «no, mejor esto» y que lo haga, todo
+bonito, simple y sin texto de relleno.
+
+1. **Revisión de un item** (`brain/refine.py`, `Executor.revise`/`revert`): un `claude -p` corto
+   de **solo lectura** con las mismas herramientas que el análisis (servidor `micnaga` según el
+   perfil de Odoo; con Google, solo sus lecturas y la misma lista blanca, sin
+   `GoogleRun.extend`). Entrada: el mensaje, el item en la forma del modelo, sus campos, las
+   opciones ya conocidas (proyectos, destinos, etapas), «Hoy es jueves 2026-11-19», el acta y
+   ±8 frases alrededor de la prueba. `--json-schema` cerrado a los campos de ese tipo
+   (`cambiado`, `nota`, `datos` con solo lo que cambia).
+2. **Lo que vuelve se filtra otra vez en Python**: claves de ese tipo; correos nuevos solo si se
+   vieron (item, reunión, mensaje o resultado de herramienta); `explicito`, la marca y los
+   invitados ya activos se conservan del item; nadie nuevo entra invitado y un borrador nunca
+   pasa a envío. Después, la validación de siempre (`Executor.replace`): mismo `id`, `revision`
+   sube (ahora también en Odoo), versión anterior en `previa` para «Deshacer» de un paso (que
+   también sube `revision`: la clave de Google la incluye). Si el item cambió mientras se
+   pensaba, `stale`; si no cambia nada o el modelo no puede, una línea con su `nota`.
+3. **La lista entera**: `cambiar` / `quitar` (queda «descartada») / `anadir` (misma validación
+   que el análisis: `plan.build_crm`, y los constructores de Google; con Calendar, todo evento es
+   de Google). Lo nuevo sale **sin marcar**, con ids nuevos que no se reutilizan (`ultimo_id`).
+   «Deshacer» devuelve la lista anterior si no se aplicó nada desde entonces.
+4. **Una sola ejecución** (`run_once`, `max_turns` 6, 90 s): un reintento ciego duplicaría la
+   espera. Funciona sin Odoo (correcciones y Google; un item de Odoo dice «Odoo no está
+   conectado» sin llamar a Claude) y sin Google.
+5. **Medido** (real, Sonnet, Odoo falso, `tests/brain/test_real_refine.py`): «mejor para el
+   jueves y ponla en el proyecto RegulAI» → fecha 26-11 y RegulAI (que no estaba en las opciones:
+   lo buscó con `proyectos`), 3 turnos, **3,9-4,3 s** de reloj, ninguna escritura.
+6. **Interfaz**: tarjetas con glifo por tipo, una línea clara y otra discreta (el `motivo` pasa
+   a `title`), casilla propia, ✦ «Corregir con un mensaje» que abre una línea de cristal en la
+   tarjeta (Intro envía, Esc cierra), brillo violeta mientras piensa con el progreso real,
+   fundido al terminar y lo cambiado iluminado una vez; «Deshacer». Barra fija arriba:
+   «Pide un cambio…» para la lista, «Deshacer» y «Aplicar (n) ↵». Aplicado: ✓ y «Ver en Odoo»
+   (`/web#id=…&model=…`, el único prefijo de Odoo que abre `open_link`). Fallido: la causa en
+   rojo y «Reintentar» (vuelve a «Aplicar»; deshabilitado si Google no sabe si se hizo). Acta:
+   chips de estado en «Desde la última vez», «Contrastes» en dos líneas, «Fuentes» como chips y
+   la línea viva con el rastro de dónde ha mirado. Horas: «Marcar todo», casilla por día, sin
+   «como siempre» repetido, campos sin borde hasta pasar el ratón, «Libre» al pasar. Ajustes:
+   Claude, Odoo y Google con la misma fila de estado arriba, un punto junto a cada título y
+   «Qué puede hacer» también para Google. Sin `requestAnimationFrame` (WebView2 ocluido, §18.6);
+   todo respeta «Efectos de animación» y `prefers-reduced-motion`.
+7. **Quitado**: «Nadie recibe invitación salvo que lo actives» (el aviso sale solo cuando alguien
+   está invitado), «Sin invitados · con Meet», «patrón de tus últimas semanas», la línea de
+   teclas del panel de horas y «Pulsa Probar para ver qué puede hacer».
+8. **Capturas reales** (`python -m tests.ui.real_shots`): ventanas pywebview/WebView2 de una
+   instancia aislada (carpetas y secretos temporales, Odoo y `claude` falsos), `PrintWindow` del
+   HWND de Micnaga. `docs/screenshots/secretaria_ux_*.png`, claro y oscuro; antes y después de
+   una corrección: `refine_before` / `refine_thinking` / `refine_after`.
+9. **Sin verificar**: la revisión con Google real (la lista blanca y las lecturas son las del
+   análisis, ya medidas en §20) y con el `claude` real dentro de la ventana (las capturas usan el
+   falso; la latencia real es la del punto 5).

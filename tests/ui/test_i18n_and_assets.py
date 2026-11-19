@@ -126,6 +126,21 @@ def _dynamic_keys() -> set[str]:
     # investigacion: fuente y estado de «Desde la ultima vez» (items.js, por mapa)
     keys |= {f"items.src.{s}" for s in ("acta", "gmail", "drive", "calendar", "odoo")}
     keys |= {f"items.state.{s}" for s in ("hecho", "abierto", "desconocido")}
+    # «corregir con un mensaje»: errores en una linea (service._refine)
+    keys |= {
+        f"secretaria.refine.err.{e}"
+        for e in (
+            "empty",
+            "no_acta",
+            "not_editable",
+            "odoo_unavailable",
+            "declined",
+            "unchanged",
+            "stale",
+            "invalid",
+            "duplicate",
+        )
+    }
     return keys
 
 
