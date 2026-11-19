@@ -537,7 +537,10 @@ def run(out: Path, only: set[str] | None = None) -> list[Path]:
                 d.until("document.querySelector('.sec-props')")
                 d.js("document.querySelector('#tr').scrollTop = 0")
                 if want("acta"):
-                    shots.append(d.shot("acta", theme, out, 0.9))
+                    shots.append(d.shot("acta", theme, out, 0.9))  # vista «Resumen»
+                    d.js("micnaga.views && micnaga.views.set('acta')")
+                    shots.append(d.shot("actaview", theme, out, 0.6))
+                d.js("micnaga.views && micnaga.views.set('propuestas')")
                 d.js("document.querySelector('.sec-props').scrollIntoView({block: 'start'})")
                 if want("review"):
                     shots.append(d.shot("review", theme, out, 0.6))

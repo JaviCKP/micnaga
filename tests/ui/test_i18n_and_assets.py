@@ -202,6 +202,10 @@ def test_no_orphan_keys() -> None:
         "end.discard",
         "toast.error.capture_failed.title",
         "toast.error.capture_failed.body",
+        "views.resumen",
+        "views.acta",
+        "views.propuestas",
+        "views.transcripcion",
     }  # compuestos con un bucle / condicional
     orphans = sorted(k for k in ES if k not in used)
     assert not orphans, orphans

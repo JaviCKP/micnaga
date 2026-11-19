@@ -391,3 +391,53 @@ body:has(.settings-view:not([hidden])) .ambient {
 .hq-act:hover { background: var(--hover); }
 .hq-act[hidden] { display: none; }
 .hq-progress { flex: 1 0 100%; height: 2px; }
+
+/* ---- vistas de la reunion: Resumen · Acta · Propuestas · Transcripcion (views.js) --------- */
+.views { display: flex; gap: 22px; margin-top: 2px; border-bottom: 1px solid var(--line); }
+.views[hidden], .view-tab[hidden] { display: none; }
+.view-tab {
+  position: relative; display: inline-flex; align-items: center; gap: 7px; height: 36px; padding: 0 1px;
+  border: 0; background: none; color: var(--text-3); cursor: pointer;
+  font: 600 14px/1 var(--font); letter-spacing: 0.01em;
+  transition: color var(--dur-hover) var(--ease);
+}
+.view-tab:hover { color: var(--text); }
+.view-tab.on { color: var(--text); }
+.view-tab::after {
+  content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--accent);
+  transform: scaleX(0); transform-origin: left; transition: transform var(--dur) var(--ease-out);
+}
+.view-tab.on::after { transform: scaleX(1); }
+.view-tab:active { transform: scale(var(--press-sm, 0.97)); }
+.view-n {
+  display: inline-grid; place-items: center; min-width: 18px; height: 17px; padding: 0 5px; border-radius: 3px;
+  background: var(--accent); color: var(--text-inv); font: 600 11px/1 var(--mono);
+}
+.view-n[hidden] { display: none; }
+
+/* que se ve en cada vista */
+.brief { display: none; }
+#main[data-view="resumen"] .brief { display: block; }
+#main[data-view="resumen"] #tr { display: none; }
+#main[data-view="acta"] #tr .ph,
+#main[data-view="acta"] #sec .sec-props { display: none; }
+#main[data-view="propuestas"] #tr .ph,
+#main[data-view="propuestas"] #sec > :not(.sec-props) { display: none; }
+#main[data-view="transcripcion"] #sec.has-acta { display: none; }
+
+/* el resumen: aire, tipografia grande, una sola accion principal */
+.bf { max-width: 760px; padding: 8px 4px 24px; animation: bf-in var(--dur-slow, 360ms) var(--ease-out); }
+@keyframes bf-in { from { opacity: 0; transform: translateY(6px); } }
+.bf-ctx { margin: 0 0 10px; font: 500 12px/1.4 var(--mono); letter-spacing: 0.04em; color: var(--text-3); }
+.bf-sum { margin: 0; font-size: 19px; line-height: 1.6; color: var(--text); letter-spacing: -0.005em; }
+.bf-rows { display: grid; margin-top: 26px; border-top: 1px solid var(--line); }
+.bf-row { display: grid; grid-template-columns: 132px minmax(0, 1fr); gap: 16px; align-items: baseline; padding: 13px 0; border-bottom: 1px solid var(--line); }
+.bf-k { display: inline-flex; align-items: center; gap: 8px; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--text-3); }
+.bf-k .ico.mini { width: 14px; height: 14px; color: var(--accent); }
+.bf-x { font-size: 15.5px; line-height: 1.5; color: var(--text); }
+.bf-more { margin-left: 8px; font: 500 11px/1 var(--mono); color: var(--text-3); }
+.bf-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 26px; }
+.bf-go .ico.mini { width: 14px; height: 14px; margin-left: 6px; }
+@media (prefers-reduced-motion: reduce) { .bf { animation: none; } .view-tab::after { transition: none; } }
+/* con pestañas, las etiquetas «ACTA» / «PROPUESTAS» de dentro sobran: ya lo dice la pestaña */
+#sec.has-acta .sec-badge { display: none; }
