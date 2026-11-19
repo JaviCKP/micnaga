@@ -33,7 +33,13 @@ class WhisperEngine:
     name: str
 
     def __init__(
-        self, model_dir: str, model_size: str, threads: int, language: str | None = "es"
+        self,
+        model_dir: str,
+        model_size: str,
+        threads: int,
+        language: str | None = "es",
+        *,
+        guards: bool = False,
     ) -> None:
         try:
             from faster_whisper import WhisperModel
@@ -43,6 +49,7 @@ class WhisperEngine:
             ) from exc
         self.name = f"faster-whisper-{model_size}-int8"
         self.language = language
+        self.guards = guards
         try:
             self._model: Any = WhisperModel(
                 model_dir,
@@ -62,6 +69,15 @@ class WhisperEngine:
         x = to_mono_16k(audio, sr)
         if len(x) < 0.05 * MODEL_SR:
             return []
+        extra: dict[str, Any] = {}
+        if self.guards:  # «Mejorar transcripcion» (pipeline/hq.py): umbrales anti-alucinacion
+            from micnaga.pipeline import hq
+
+            extra = {
+                "no_speech_threshold": hq.NO_SPEECH_THRESHOLD,
+                "log_prob_threshold": hq.LOG_PROB_THRESHOLD,
+                "compression_ratio_threshold": hq.COMPRESSION_RATIO_THRESHOLD,
+            }
         segments, _info = self._model.transcribe(
             pad_min(x),
             language=self.language,
@@ -69,9 +85,12 @@ class WhisperEngine:
             beam_size=5,
             condition_on_previous_text=False,
             vad_filter=False,
+            **extra,
         )
         words: list[Word] = []
         for seg in segments:  # generador perezoso: aqui se hace la inferencia
+            if self.guards and _hallucinated(seg):
+                continue
             for w in seg.words or []:
                 text = str(w.word).strip()
                 if not text:
@@ -89,6 +108,19 @@ class WhisperEngine:
     def close(self) -> None:
         self._model = None
         gc.collect()
+
+
+def _hallucinated(seg: Any) -> bool:
+    """Segmento que faster-whisper deja pasar pero que huele a alucinacion (silencio con texto
+    seguro de si mismo, o texto muy repetitivo)."""
+    from micnaga.pipeline import hq
+
+    no_speech = float(getattr(seg, "no_speech_prob", 0.0))
+    logprob = float(getattr(seg, "avg_logprob", 0.0))
+    ratio = float(getattr(seg, "compression_ratio", 0.0))
+    if ratio > hq.COMPRESSION_RATIO_THRESHOLD:
+        return True
+    return no_speech > hq.NO_SPEECH_THRESHOLD and logprob < hq.LOG_PROB_THRESHOLD
 
 
 def create(config: Config) -> WhisperEngine:

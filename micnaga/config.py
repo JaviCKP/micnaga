@@ -74,6 +74,8 @@ class VadConfig:
 class ProcessingConfig:
     asr_engine: str = "parakeet"  # parakeet | whisper
     whisper_model: str = "small"
+    hq_model: str = "large-v3"  # «Mejorar transcripcion»: large-v3 | large-v3-turbo
+    hq_transcribe: bool = True  # boton «Mejorar transcripcion» en la biblioteca
     diarization: str = "onnx"  # onnx | diarize | pyannote
     aec: str = "auto"  # auto | webrtc | speex | off
     threads: int = 6

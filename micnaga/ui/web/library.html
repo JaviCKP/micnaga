@@ -52,7 +52,14 @@
             <p class="m-meta tnum" id="m-meta"></p>
           </div>
           <button class="orig-toggle" id="orig-toggle" type="button" hidden aria-pressed="false" data-i18n="library.original" data-i18n-data-tip="library.original_tip">Original</button>
+          <button class="icon-btn hq-btn" id="hq-btn" type="button" hidden data-icon="hq" data-i18n-aria-label="library.hq" data-i18n-data-tip="library.hq"></button>
           <button class="icon-btn" id="open-folder" type="button" data-icon="folder" data-i18n-aria-label="library.open_folder" data-i18n-data-tip="library.open_folder"></button>
+        </div>
+        <div class="hq-bar" id="hq-bar" hidden>
+          <span class="hq-text tnum" id="hq-text"></span>
+          <button class="hq-act" id="hq-go" type="button"></button>
+          <button class="hq-act quiet" id="hq-no" type="button"></button>
+          <div class="progress hq-progress" id="hq-progress" hidden><i></i></div>
         </div>
         <div class="speakers" id="speakers" role="list" data-i18n-aria-label="library.speakers_label"></div>
         <section class="markers" id="markers" hidden aria-labelledby="markers-h">

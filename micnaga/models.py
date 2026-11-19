@@ -58,6 +58,8 @@ PARAKEET_GROUP = "parakeet-tdt-0.6b-v3-int8"
 SILERO_GROUP = "silero-vad"
 WESPEAKER_GROUP = "wespeaker"
 WHISPER_SMALL_GROUP = "faster-whisper-small"
+WHISPER_LARGE_V3_GROUP = "faster-whisper-large-v3"
+WHISPER_TURBO_GROUP = "faster-whisper-large-v3-turbo"
 PYANNOTE_SEG_GROUP = "pyannote-segmentation-3.0"
 SHERPA_WESPEAKER_GROUP = "sherpa-wespeaker-resnet34-lm"
 SHERPA_CAMPPLUS_GROUP = "sherpa-3dspeaker-campplus-en"
@@ -69,6 +71,8 @@ _PARAKEET_REV = "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce"
 _SILERO_REV = "b3e3ee3cce4c11ceb63b1a0b229d916069c1ddf6"
 _WESPEAKER_REV = "f0c48c298fd835726c27956a5d617bad7115627e"
 _WHISPER_SMALL_REV = "536b0662742c02347bc0e980a01041f333bce120"
+_WHISPER_LARGE_V3_REV = "edaa852ec7e145841d8ffdb056a99866b5f0a478"
+_WHISPER_TURBO_REV = "0a363e9161cbc7ed1431c9597a8ceaf0c4f78fcf"
 _PYANNOTE_SEG_REV = "9403a6902bb58e3d5ae8c7e77c3422de279db2e0"
 _SHERPA_EMB_REV = "3b5eb92b942ace929e479b6987108d291438547f"
 _SHERPA_EMB_BASE = f"{_HF}/csukuangfj/speaker-embedding-models/resolve/{_SHERPA_EMB_REV}"
@@ -219,6 +223,80 @@ MANIFEST: dict[str, ModelGroup] = {
             ],
         ),
     ),
+    WHISPER_LARGE_V3_GROUP: ModelGroup(
+        id=WHISPER_LARGE_V3_GROUP,
+        title="faster-whisper large-v3 (CTranslate2, fp16 -> int8 al cargar)",
+        license="MIT (OpenAI Whisper; conversion de Systran)",
+        source=f"{_HF}/Systran/faster-whisper-large-v3",
+        files=_files(
+            WHISPER_LARGE_V3_GROUP,
+            f"{_HF}/Systran/faster-whisper-large-v3/resolve/{_WHISPER_LARGE_V3_REV}",
+            [
+                (
+                    "config.json",
+                    2394,
+                    "a9306624f5ec14270a014b647e5c316b6e03a662c369758d1b90697a7b0655b9",
+                ),
+                (
+                    "preprocessor_config.json",
+                    340,
+                    "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+                ),
+                (
+                    "tokenizer.json",
+                    2480617,
+                    "6d8cbd7cd0d8d5815e478dac67b85a26bbe77c1f5e0c6d76d1ce2abc0e5f21ca",
+                ),
+                (
+                    "vocabulary.json",
+                    1068114,
+                    "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+                ),
+                (
+                    "model.bin",
+                    3087284237,
+                    "69f74147e3334731bc3a76048724833325d2ec74642fb52620eda87352e3d4f1",
+                ),
+            ],
+        ),
+    ),
+    WHISPER_TURBO_GROUP: ModelGroup(
+        id=WHISPER_TURBO_GROUP,
+        title="faster-whisper large-v3-turbo (CTranslate2, fp16 -> int8 al cargar)",
+        license="MIT (OpenAI Whisper; conversion de mobiuslabsgmbh)",
+        source=f"{_HF}/mobiuslabsgmbh/faster-whisper-large-v3-turbo",
+        files=_files(
+            WHISPER_TURBO_GROUP,
+            f"{_HF}/mobiuslabsgmbh/faster-whisper-large-v3-turbo/resolve/{_WHISPER_TURBO_REV}",
+            [
+                (
+                    "config.json",
+                    2263,
+                    "b0253ea6c0d3bea6b1e19e91a02acfd3b53f4467362efcb5a3e6b16c9b3a9b7e",
+                ),
+                (
+                    "preprocessor_config.json",
+                    340,
+                    "7ccc62c6f2765af1f3b46c00c9b5894426835a05021c8b9c01eecb6dfb542711",
+                ),
+                (
+                    "tokenizer.json",
+                    2710337,
+                    "297b13372ac43916285644fb9687add3cc62ee2a1adb60da3dc25cc94c1871fd",
+                ),
+                (
+                    "vocabulary.json",
+                    1068114,
+                    "c69260f2ab26d659b7c398f9a2b2b48ed0df16c3b47d7326782fd9cba71690c1",
+                ),
+                (
+                    "model.bin",
+                    1617884929,
+                    "e76620f83d5f5b69efd3d87e3dc180c1bd21df9fbebacfd4335e5e1efcc018da",
+                ),
+            ],
+        ),
+    ),
 }
 
 
@@ -298,6 +376,8 @@ CANDIDATE_MANIFEST: dict[str, ModelGroup] = {
 app nunca los descarga. Solo para repetir la comparativa (``download_models(manifest=...)``)."""
 
 OPTIONAL_GROUPS: tuple[str, ...] = (WHISPER_SMALL_GROUP,)
+HQ_GROUPS: tuple[str, ...] = (WHISPER_LARGE_V3_GROUP, WHISPER_TURBO_GROUP)
+"""Modelos de «Mejorar transcripcion»: solo se descargan al primer uso, nunca en el asistente."""
 """Grupos que no se descargan en el asistente salvo que la configuracion los pida."""
 
 
