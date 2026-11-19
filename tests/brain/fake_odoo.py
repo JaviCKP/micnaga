@@ -342,6 +342,8 @@ class FakeOdoo:
                 rows.append(vals)
                 return self._next
             if method == "write":
+                if kwargs.get("context"):
+                    self.contexts.append((model, dict(kwargs["context"])))
                 for r in rows:
                     if r["id"] in args[0]:
                         r.update(args[1])

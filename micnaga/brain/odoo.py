@@ -616,8 +616,16 @@ class OdooClient:
             out = out[0] if out else 0
         return int(out)
 
-    def write(self, model: str, ids: list[int], values: dict[str, Any]) -> bool:
-        return bool(self.call(model, "write", [ids, values]))
+    def write(
+        self,
+        model: str,
+        ids: list[int],
+        values: dict[str, Any],
+        *,
+        context: dict[str, Any] | None = None,
+    ) -> bool:
+        kw = {"context": context} if context else None
+        return bool(self.call(model, "write", [ids, values], kw))
 
     def unlink(self, model: str, ids: list[int]) -> bool:
         return bool(self.call(model, "unlink", [ids]))

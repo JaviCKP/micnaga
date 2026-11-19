@@ -276,7 +276,7 @@
         const txt = g === "horas" ? hoursLine(p, cb) : el("span", "sec-pt");
         if (g !== "horas") txt.append(el("span", "sec-pmain", proposalText(p)));
         const sub = [];
-        if (p.motivo) sub.push(p.motivo);
+        if (p.motivo && g !== "horas") sub.push(p.motivo);
         if (p.aviso && WARN[p.aviso]) sub.push(mic.t(WARN[p.aviso]));
         if (p.estado === "fallida") sub.push(mic.t("secretaria.failed"));
         if (sub.length) txt.append(el("span", "sec-psub", sub.join(" · ")));

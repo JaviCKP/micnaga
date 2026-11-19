@@ -30,6 +30,30 @@ from tests.brain.fake_odoo import (
 )
 
 TODAY = date(2026, 11, 19)
+
+
+def test_calendar_piece_never_mails_attendees(fake_odoo: FakeOdoo) -> None:
+    """La pieza aislada que tambien usa la capa de Google Calendar."""
+    from micnaga.brain import odoo_calendar
+    from micnaga.brain.odoo import local_tz
+
+    c = OdooClient(OdooConfig(fake_odoo.url, DB, LOGIN, KEY), timeout_s=5)
+    tz = local_tz("Europe/Madrid")
+    vals = odoo_calendar.event_values(
+        name="Demo", day="2026-11-24", tz=tz, start="10:00", duration_h=1.5, partner_ids=[3]
+    )
+    assert (vals["start"], vals["stop"]) == ("2026-11-24 09:00:00", "2026-11-24 10:30:00")
+    eid = odoo_calendar.create_event(c, vals)
+    assert odoo_calendar.update_event(c, eid, {"name": "Demo 2"})
+    assert fake_odoo.data["calendar.event"][-1]["name"] == "Demo 2"
+    assert fake_odoo.contexts == [
+        ("calendar.event", {"no_mail_to_attendees": True}),
+        ("calendar.event", {"no_mail_to_attendees": True}),
+    ]
+    allday = odoo_calendar.event_values(name="Feria", day="2026-12-01", tz=tz)
+    assert allday["allday"] is True and allday["partner_ids"] == [(6, 0, [])]
+
+
 MISSING = [
     "2026-11-05",
     "2026-11-06",

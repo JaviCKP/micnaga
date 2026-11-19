@@ -296,28 +296,25 @@ class Executor:
         return self._book
 
     def _create_event(self, o: Any, d: dict[str, Any]) -> dict[str, Any]:
-        """Evento propio; los invitados solo si el usuario los activo y **sin correo**."""
-        from micnaga.brain.odoo import add_hours, local_tz, to_utc
+        """Evento propio; los invitados solo si el usuario los activo y **sin correo**
+        (``odoo_calendar``, la misma pieza que usa la capa de Google Calendar)."""
+        from micnaga.brain import odoo_calendar
+        from micnaga.brain.odoo import local_tz
 
         me = o.user_info()
         partners = [me["partner_id"]] if me.get("partner_id") else []
         partners += [int(i["id"]) for i in d.get("invitados") or [] if i.get("on")]
-        values: dict[str, Any] = {
-            "name": d["nombre"],
-            "user_id": o.uid,
-            "partner_ids": [(6, 0, partners)],
-        }
-        if d.get("hora_inicio"):
-            tz = local_tz(me.get("tz"))
-            start = f"{d['fecha']} {d['hora_inicio']}"
-            values["start"] = to_utc(start, tz)
-            values["stop"] = to_utc(add_hours(start, float(d.get("duracion_h") or 1.0)), tz)
-        else:
-            values.update(
-                allday=True, start=f"{d['fecha']} 08:00:00", stop=f"{d['fecha']} 18:00:00"
-            )
-        new_id = o.create("calendar.event", values, context={"no_mail_to_attendees": True})
-        return {"modelo": "calendar.event", "creado": new_id}
+        values = odoo_calendar.event_values(
+            name=d["nombre"],
+            day=d["fecha"],
+            tz=local_tz(me.get("tz")),
+            start=d.get("hora_inicio"),
+            duration_h=float(d.get("duracion_h") or 1.0),
+            partner_ids=partners,
+            user_id=o.uid,
+        )
+        new_id = odoo_calendar.create_event(o, values)
+        return {"modelo": odoo_calendar.MODEL, "creado": new_id}
 
     # ------------------------------------------------------------------ editar
 

@@ -174,6 +174,40 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
         from tests.brain.demo import write_demo_meeting
 
         acta_folder = write_demo_meeting(root)
+        # Odoo de negocio: un Odoo falso con permisos de empleado (sin CRM, contactos de solo
+        # lectura) para el panel «Partes de horas» y una reunion con propuestas agrupadas.
+        from datetime import datetime
+
+        from micnaga.brain import capabilities
+        from micnaga.brain.odoo import OdooClient, OdooConfig
+        from tests.brain.demo import write_followup_meeting
+        from tests.brain.fake_odoo import DB as FAKE_DB
+        from tests.brain.fake_odoo import KEY as FAKE_KEY
+        from tests.brain.fake_odoo import LOGIN as FAKE_LOGIN
+        from tests.brain.fake_odoo import FakeOdoo
+
+        odoo_srv = FakeOdoo().start()
+        odoo_srv.access.update(
+            {
+                "crm.lead": set(),
+                "res.partner": {"read"},
+                "project.project": {"read"},
+                "crm.stage": {"read"},
+            }
+        )
+
+        def odoo_factory(_cfg: object) -> OdooClient:
+            return OdooClient(OdooConfig(odoo_srv.url, FAKE_DB, FAKE_LOGIN, FAKE_KEY))
+
+        oc = odoo_factory(cfg)
+        oc.authenticate()
+        profile = capabilities.discover(oc)
+        s_cfg = cfg.secretaria
+        profile["key"] = capabilities.connection_key(
+            s_cfg.odoo_url, s_cfg.odoo_db, s_cfg.odoo_login
+        )
+        capabilities.save(profile)
+        followup_folder = write_followup_meeting(root, oc, profile)
         fake_claude = tmp / "claude_fake.py"
         fake_claude.write_text(
             "import sys\n"
@@ -202,7 +236,8 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                 },
             ]
         )
-        brain = BrainService(lambda: cfg)
+        brain = BrainService(lambda: cfg, odoo_factory=odoo_factory)
+        brain.now = lambda: datetime(2026, 11, 19, 12, 0)
         ops = fake.FakeLibraryOps(lambda: root)
         ops.voiceprints["Laura"] = Voiceprint("Laura", "2026-11-02", 3)
         store = FileConfigStore()
@@ -350,6 +385,42 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         1,
                         wait=2.0,
                         folder=acta_folder,
+                    )
+                    shot(
+                        "secretaria_horas_panel",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.6,
+                        view="horas",
+                    )
+                    shot(
+                        "secretaria_horas_acta",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.2,
+                        folder=followup_folder,
+                        js="document.querySelector('.sec-props').scrollIntoView({block: 'start'})",
+                    )
+                    shot(
+                        "secretaria_horas_agenda",
+                        theme,
+                        "library.html",
+                        "library",
+                        1120,
+                        900,
+                        1,
+                        wait=2.2,
+                        folder=followup_folder,
+                        js="[...document.querySelectorAll('.sec-gh')].pop()"
+                        ".scrollIntoView({block: 'center'})",
                     )
                     shot(
                         "secretaria_settings",
