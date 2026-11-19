@@ -707,3 +707,71 @@ le salía y una reunión sin respuesta se perdía). Diagrama y reglas: `docs/sta
    `logs/crash.log`. Si el bucle de la GUI termina por cualquier otra
    cosa se registra el motivo y se recrean las ventanas sin tocar la grabación (máx. 5 en 10 min).
    Toda salida deja `shutting down (reason: …)` en el log.
+
+
+## 19. Secretaria en el Odoo de negocio: capacidades, horas, tareas y agenda (rama `feat/secretaria-odoo`)
+
+Basada en `integ/all` (popup nuevo + Secretaria). Verificado contra el Odoo 19.0 real del usuario
+**solo en lectura** (cuenta de empleado) y contra el Odoo falso para todo lo que escribe.
+
+1. **Perfil de capacidades** (`brain/capabilities.py`): al pulsar «Probar» y una vez al día (tic
+   del servicio), módulos instalados (`ir.module.module`) + `check_access_rights(read|create|
+   write)` de 10 modelos conocidos (verificado: el método existe en Odoo 19 y responde sin lanzar
+   con `raise_exception=False`). Nunca se prueba escribiendo. Se guarda por conexión (url + base +
+   usuario) en `<datos>/secretaria/odoo_capacidades.json`: la cuenta del jefe tendrá el suyo. **Se
+   decide por permisos, no por módulos** (`crm` está instalado pero `crm.lead` no es legible para
+   esta cuenta). De él salen las herramientas MCP ofrecidas (`MICNAGA_TOOLS`), los tipos de
+   propuesta del esquema y el resumen de Ajustes («Partes de horas · Tareas · Calendario ·
+   Actividades · Gastos · Contactos (lectura)», el real de hoy).
+2. **Notas y actividades solo donde se puede escribir**: `message_post` y `mail.activity` exigen
+   escritura sobre el registro (`_mail_post_access` es `write` por defecto). Destinos por orden:
+   tarea > oportunidad > proyecto > contacto, filtrados por el perfil; si el contacto es de solo
+   lectura (caso real) la nota cae en la tarea/proyecto citado o no se propone.
+3. **Propuestas por defecto tras una reunión** (cambio de alcance pedido por el usuario): el acta
+   como **nota interna** (`mail.mt_note`, nunca comentario: no avisa a seguidores) en el registro
+   más relevante; `project.task` por cada acción concreta del usuario en un proyecto **existente**
+   (asignada a él, con fecha límite si se dijo; si hay una parecida abierta sale sin marcar);
+   `mail.activity` para recordatorios con fecha; `calendar.event` solo si se acordó una próxima
+   reunión. **No hay propuesta automática de fichar el tiempo de la reunión** (se quitó a
+   petición del usuario).
+4. **Eventos sin invitaciones**: `brain/odoo_calendar.py` es una pieza pequeña y aislada
+   (`event_values`, `create_event`, `update_event`, siempre con contexto `no_mail_to_attendees`)
+   que también puede llamar la capa de Google Calendar (rama `feat/secretaria-google`). Por
+   defecto el único asistente es el propio usuario; los contactos que se mencionan salen como
+   invitados **apagados** que el usuario activa uno a uno.
+5. **Horas solo a petición**: `registrar_horas` solo si en la reunión se pide («tengo que fichar…»,
+   «apúntame N horas a X») o desde «Rellenar partes de horas» (bandeja). Una propuesta del modelo
+   con varias `fechas` se expande en una línea por día; cada línea pasa la validación local
+   (`timesheets.validate_line`): fecha no futura, 0,25–12 h en cuartos, ≤ 10 h/día contando lo que
+   ya hay en Odoo (salvo petición explícita), proyecto activo con partes de horas, tarea del
+   proyecto y abierta; una línea igual ya registrada se salta (reaplicar no duplica). Solo sale
+   marcada una petición explícita de un día citada en la reunión; el relleno por patrón, nunca.
+   Se crea sin `employee_id`/`user_id`: Odoo pone los del usuario (un empleado no lee
+   `hr.employee`).
+6. **Días que faltan** (`brain/timesheets.py`): L–V menos festivos **nacionales** calculables
+   (fijos + Viernes Santo) y los días marcados «Libre» en el panel. Los autonómicos/locales no se
+   calculan: un día sin horas **entre** días con horas es «posible libre» y no se propone (el
+   lunes 2-11-2026 real). Incompleto = menos de ¾ de la jornada típica (mediana).
+7. **Patrón**: franjas que se repiten ≥ 60 % de los días de las últimas 4 semanas (proyecto +
+   tarea + tramo «(9:00-13:30)» de la descripción, o proyecto + horas). Va a `learned.md` como una
+   línea calculada por Micnaga (`learn.upsert_prefixed`, solo nombres de proyecto y franjas).
+8. **Panel «Partes de horas»** (biblioteca, `horas.js`; bandeja «Rellenar partes de horas»; botón
+   reloj en la biblioteca): días plegables con total, líneas editables (horas, proyecto,
+   descripción con las variantes habituales), solo marcadas las que tienen evidencia (reunión
+   grabada en Micnaga o evento del calendario de Odoo, que sustituyen a la franja del patrón que
+   solapan). Intro aplica; cada aplicación es un lote con «Deshacer» (`horas.json`). Aviso del
+   viernes por la tarde si la semana tiene huecos: `secretaria.horas_nudge`, **apagado por
+   defecto**.
+9. **Doble cerrojo de solo lectura**: `OdooClient(read_only=True)` rechaza `create/write/unlink/
+   message_post` antes de salir a la red; lo usan el servidor MCP, la validación del plan y las
+   pruebas reales. Las pruebas reales (`tests/brain/test_real_odoo.py`) pasan además por un proxy
+   XML-RPC local de solo lectura con la clave real **solo en memoria** (el hijo MCP usa una clave
+   ficticia), y comprueban que no hubo ni un intento de escritura.
+10. **Medido (real, 19-11-2026)**: capacidades y días que faltan correctos (11 laborables del
+    5-11 al 19-11; 2-11 «posible libre»); `claude -p` real con las herramientas reales: 11–13 s,
+    5 turnos, `mis_partes_de_horas` → `proyectos` → `tareas`; propuso 44 líneas (4 por día, 8 h/día,
+    siguiendo el patrón), el evento del martes 24 a las 10:00 y, en una de dos pasadas, las dos
+    tareas con fecha (el modelo no es determinista en eso).
+11. **Sin verificar**: ninguna escritura contra el Odoo real (por diseño); `hr.expense` (se envía
+    `total_amount_currency` + `payment_mode`, sin producto); si `project.project` admite notas de
+    un usuario sin escritura (no se ofrece); calendario real vacío (sin eventos que probar).
