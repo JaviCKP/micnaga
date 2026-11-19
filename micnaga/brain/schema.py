@@ -47,7 +47,7 @@ _ITEM = {
     "additionalProperties": False,
 }
 
-_DATOS = {
+_DATOS: dict[str, Any] = {
     "type": "object",
     "description": (
         "Datos de la propuesta. Usa SOLO ids que hayas leido con las herramientas. "
@@ -92,6 +92,10 @@ _DATOS = {
     },
     "additionalProperties": False,
 }
+
+DATOS_PROPS: dict[str, Any] = _DATOS["properties"]
+"""Campos de ``datos`` de una propuesta de Odoo (los reusa la revision con un mensaje)."""
+DATOS_DESCRIPTION: str = str(_DATOS["description"])
 
 
 def acta_schema(*, with_crm: bool, types: list[str] | None = None) -> dict[str, Any]:

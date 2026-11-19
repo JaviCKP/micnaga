@@ -337,7 +337,17 @@ class Executor:
 
     def edit(self, pid: str, changes: dict[str, Any]) -> dict[str, Any]:
         """Cambios del usuario en cualquier campo editable de un item pendiente: se revalidan con
-        la misma logica que la propuesta original y el item se sustituye (mismo ``id``)."""
+        la misma logica que la propuesta original y el item se sustituye (mismo ``id``). Una
+        edicion a mano cierra el «Deshacer» de la ultima revision de la IA."""
+        acta = self._edit(pid, changes)
+        p = next((x for x in acta.get("propuestas") or [] if x.get("id") == pid), None)
+        if p is not None and ("previa" in p or "cambiados" in p):
+            p.pop("previa", None)
+            p.pop("cambiados", None)
+            acta_io.write_acta(self.folder, acta)
+        return acta
+
+    def _edit(self, pid: str, changes: dict[str, Any]) -> dict[str, Any]:
         from micnaga.brain import plan
 
         acta = acta_io.read_acta(self.folder)
@@ -420,11 +430,104 @@ class Executor:
             for i in (new.get("datos") or {}).get("invitados") or []:
                 i["on"] = i["id"] in was_on
         keep: dict[str, Any] = {k: p[k] for k in ("id", "seg", "t") if k in p}
+        revision = int(p.get("revision") or 0) + 1
         p.clear()
         p.update(new)
-        p.update(keep, estado="pendiente", deshacer=None, error=None)
+        p.update(keep, estado="pendiente", deshacer=None, error=None, revision=revision)
         if user_edit:
             p["checked"] = True
+        acta_io.write_acta(self.folder, acta)
+        return acta
+
+    # ------------------------------------------------------------------ revisar (IA)
+
+    def revise(
+        self,
+        pid: str,
+        changes: dict[str, Any],
+        *,
+        expect_revision: int | None = None,
+        typed: str = "",
+    ) -> dict[str, Any]:
+        """Una revision de la IA («corrigelo con un mensaje») sobre un item pendiente.
+
+        ``changes``: solo los campos que cambian (ya filtrados por tipo en
+        ``micnaga.brain.refine``). Pasa por la misma validacion que una edicion (``replace``),
+        conserva ``id`` y la marca (la decide el usuario, no el modelo), sube ``revision`` y guarda
+        la version anterior en ``previa`` para un «Deshacer» de un paso. Nunca activa invitados
+        ni cambia un borrador por un envio (``plan``/``items``). ``typed``: el mensaje del usuario
+        (un correo o telefono que escribio el puede ir en un contacto aunque no se dijera).
+        ``ApplyError('stale')`` si el item cambio mientras se pensaba; ``'unchanged'`` si la
+        version nueva es igual."""
+        from micnaga.brain import plan
+
+        acta = acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        p = self._pending(acta, pid)
+        if expect_revision is not None and int(p.get("revision") or 0) != expect_revision:
+            raise ApplyError("stale")
+        before = snapshot(p)
+        kind = str(p.get("tipo"))
+        if p.get("grupo") == "correcciones":
+            to = " ".join(str(changes.get("a") or "").split())[:60]
+            if not to or re.search(r"\d", to):
+                raise ApplyError("invalid")
+            p["datos"] = {**(p.get("datos") or {}), "a": to}
+        elif p.get("grupo") == "google":
+            from micnaga.brain.google import items
+
+            try:
+                items.replace(acta, pid, {"tipo": kind, "datos": changes})
+            except items.EditError as exc:
+                raise ApplyError("invalid") from exc
+        else:
+            raw = plan.to_input(p)
+            datos = dict(raw["datos"])
+            if any(k in changes for k in plan.TARGET_KEYS):
+                for k in plan.TARGET_KEYS:
+                    datos.pop(k, None)
+            if kind == "registrar_horas" and "proyecto_id" in changes and "tarea_id" not in changes:
+                datos["tarea_id"] = None
+            datos.update(changes)
+            if kind == "registrar_horas":
+                datos["fechas"] = [datos.get("fecha")]
+                datos["explicito"] = (p.get("datos") or {}).get("explicito") is True
+            typed_contact = any(
+                isinstance(changes.get(k), str) and str(changes[k]).strip() in typed
+                for k in ("email", "telefono")
+                if changes.get(k)
+            )
+            self.replace(pid, {**raw, "datos": datos}, acta=acta, user_edit=typed_contact)
+        p = next(x for x in acta.get("propuestas") or [] if x.get("id") == pid)
+        if p.get("datos") == before.get("datos"):
+            raise ApplyError("unchanged")  # nada se escribe: la version anterior sigue
+        p["checked"] = bool(before.get("checked"))
+        p["revision"] = int(before.get("revision") or 0) + 1
+        p["previa"] = before
+        p["cambiados"] = changed_fields(before, p, acta)
+        acta_io.write_acta(self.folder, acta)
+        return acta
+
+    def revert(self, pid: str) -> dict[str, Any]:
+        """«Deshacer» de una revision: vuelve a la version anterior (un paso). La ``revision``
+        sigue subiendo (la clave de idempotencia de Google la incluye)."""
+        acta = acta_io.read_acta(self.folder)
+        if acta is None:
+            raise ApplyError("no_acta")
+        p = self._pending(acta, pid)
+        prev = p.get("previa")
+        if not isinstance(prev, dict):
+            raise ApplyError("not_editable")
+        restored = dict(prev)
+        restored.update(
+            id=pid,
+            estado="pendiente",
+            revision=int(p.get("revision") or 0) + 1,
+            cambiados=changed_fields(p, prev, acta),
+        )
+        props = acta["propuestas"]
+        props[props.index(p)] = restored
         acta_io.write_acta(self.folder, acta)
         return acta
 
@@ -493,6 +596,30 @@ class Executor:
             o.unlink(str(u["modelo"]), [int(u["creado"])])
         elif kind == "actualizar_oportunidad":
             o.write("crm.lead", [int(u["id"])], dict(u.get("antes") or {}))
+
+
+_NOT_DATA = ("previa", "cambiados", "campos", "enlace")
+
+
+def snapshot(p: dict[str, Any]) -> dict[str, Any]:
+    """Copia de un item tal como esta (sin su propia version anterior ni lo que anade la UI)."""
+    import copy
+
+    return {k: copy.deepcopy(v) for k, v in p.items() if k not in _NOT_DATA}
+
+
+def changed_fields(old: dict[str, Any], new: dict[str, Any], acta: dict[str, Any]) -> list[str]:
+    """Claves editables (``campos``) cuyo valor cambia entre dos versiones de un item."""
+    from micnaga.brain import plan
+    from micnaga.brain.google import items
+
+    kind = str(new.get("tipo"))
+    if new.get("grupo") == "google":
+        keys = [f["clave"] for f in items.SCHEMAS.get(kind, [])]
+        a, b = old.get("datos") or {}, new.get("datos") or {}
+        return [k for k in keys if a.get(k) != b.get(k)]
+    keys = [f["clave"] for f in plan.EDIT_FIELDS.get(kind, [])]
+    return [k for k in keys if plan.field_value(old, k, acta) != plan.field_value(new, k, acta)]
 
 
 def _error_key(exc: Exception) -> str:

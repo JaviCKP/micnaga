@@ -16,6 +16,9 @@
   tic; panel «Rellenar partes de horas» (``horas_plan`` / ``horas_apply`` / ``horas_undo`` /
   ``horas_off``) y el aviso del viernes por la tarde si la semana tiene huecos
   (``secretaria.horas_nudge``, apagado por defecto).
+* **«Corregir con un mensaje»** (``refine`` / ``refine_plan`` / ``refine_undo`` /
+  ``refine_status``, ``micnaga.brain.refine``): un ``claude -p`` corto de solo lectura revisa una
+  propuesta o la lista; el progreso se consulta mientras dura.
 """
 
 from __future__ import annotations
@@ -81,6 +84,9 @@ class BrainService(GoogleApiMixin):
         self._nudge: Nudge | None = None
         self.now: Callable[[], datetime] = datetime.now
         self._odoo_failed_at = 0.0
+        self._acta_lock = threading.RLock()
+        """Escrituras de ``acta.json`` desde la UI (aplicar, editar, revisar): una a la vez."""
+        self._refining: dict[str, dict[str, Any]] = {}
 
     def set_nudge(self, nudge: Nudge | None) -> None:
         """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
@@ -443,6 +449,7 @@ class BrainService(GoogleApiMixin):
                 from micnaga.brain.google.items import decorate as decorate_google
 
                 decorate_google(out["acta"])  # items de Google (su propio esquema)
+                self._decorate_links(out["acta"])
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -598,7 +605,8 @@ class BrainService(GoogleApiMixin):
         path = self._folder_path(args)
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
-        acta = self._executor(path).apply(self._ids(args))
+        with self._acta_lock:
+            acta = self._executor(path).apply(self._ids(args))
         db = self._db()
         try:
             bstore.set_proposals(db, path.name, acta_io.pending_count(acta))
@@ -617,7 +625,8 @@ class BrainService(GoogleApiMixin):
         if path is None or not isinstance(pid, str) or not isinstance(changes, dict):
             return {"ok": False, "error": "secretaria.err.invalid"}
         try:
-            acta = self._executor(path).edit(pid, changes)
+            with self._acta_lock:
+                acta = self._executor(path).edit(pid, changes)
         except LineError as exc:
             return {"ok": False, "error": f"secretaria.horas.err.{exc}"}
         except ApplyError as exc:
@@ -631,7 +640,8 @@ class BrainService(GoogleApiMixin):
         path = self._folder_path(args)
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
-        acta = self._executor(path).undo(self._ids(args))
+        with self._acta_lock:
+            acta = self._executor(path).undo(self._ids(args))
         return {"ok": True, "acta": acta}
 
     def _api_dismiss(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -639,13 +649,128 @@ class BrainService(GoogleApiMixin):
         path = self._folder_path(args)
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
-        acta = acta_io.read_acta(path) or {}
-        wanted = set(self._ids(args))
-        for p in acta.get("propuestas") or []:
-            if p.get("id") in wanted and p.get("estado") == "pendiente":
-                p["estado"] = "descartada"
-        acta_io.write_acta(path, acta)
+        with self._acta_lock:
+            acta = acta_io.read_acta(path) or {}
+            wanted = set(self._ids(args))
+            for p in acta.get("propuestas") or []:
+                if p.get("id") in wanted and p.get("estado") == "pendiente":
+                    p["estado"] = "descartada"
+            acta_io.write_acta(path, acta)
         return {"ok": True, "acta": acta}
+
+    # ---- «corregir con un mensaje»
+
+    def _refiner(self, path: Path) -> Any:
+        from micnaga.brain.refine import Refiner
+
+        return Refiner(
+            self.config,
+            self._executor(path),
+            runner=self._runner(),
+            today=self.now().date(),
+            lock=self._acta_lock,
+        )
+
+    def _refine(self, args: dict[str, Any], work: Callable[[Any, Any], Any]) -> dict[str, Any]:
+        from micnaga.brain.refine import RefineError
+
+        path = self._folder_path(args)
+        if path is None or not isinstance(args.get("texto"), str):
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        key = path.name
+        target = args.get("id") if isinstance(args.get("id"), str) else None
+
+        def on_status(s: dict[str, Any]) -> None:
+            with self._lock:
+                self._refining[key] = {**s, "id": target}
+
+        on_status({"fase": "pensando"})
+        try:
+            out = work(self._refiner(path), on_status)
+        except RefineError as exc:
+            kind = exc.kind
+            error = (
+                f"secretaria.horas.err.{kind[6:]}"
+                if kind.startswith("horas_")
+                else f"secretaria.refine.err.{kind}"
+            )
+            return {"ok": False, "error": error, "nota": exc.note}
+        finally:
+            with self._lock:
+                self._refining.pop(key, None)
+        db = self._db()
+        try:
+            bstore.set_proposals(db, key, acta_io.pending_count(out.acta))
+        finally:
+            db.close()
+        return {
+            "ok": True,
+            "acta": out.acta,
+            "cambiados": out.changed,
+            "anadidos": out.added,
+            "quitados": out.removed,
+            "nota": out.note,
+            "s": round(out.duration_s, 1),
+        }
+
+    def _api_refine(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Una propuesta revisada por la IA a partir de un mensaje del usuario."""
+        pid = args.get("id")
+        if not isinstance(pid, str):
+            return {"ok": False, "error": "secretaria.err.invalid"}
+        text = str(args.get("texto") or "")
+        return self._refine(args, lambda r, st: r.item(pid, text, on_status=st))
+
+    def _api_refine_plan(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Un mensaje sobre la lista entera (añadir, quitar, cambiar varias)."""
+        text = str(args.get("texto") or "")
+        return self._refine(args, lambda r, st: r.plan(text, on_status=st))
+
+    def _api_refine_undo(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Deshacer»: la version anterior de un item (``id``) o la lista de antes (sin ``id``)."""
+        from micnaga.brain.executor import ApplyError
+        from micnaga.brain.refine import RefineError
+
+        path = self._folder_path(args)
+        if path is None:
+            return {"ok": False, "error": "library.err.not_found"}
+        pid = args.get("id")
+        try:
+            with self._acta_lock:
+                if isinstance(pid, str):
+                    acta = self._executor(path).revert(pid)
+                else:
+                    acta = self._refiner(path).undo_plan()
+        except (ApplyError, RefineError) as exc:
+            return {"ok": False, "error": f"secretaria.err.{getattr(exc, 'kind', exc)}"}
+        db = self._db()
+        try:
+            bstore.set_proposals(db, path.name, acta_io.pending_count(acta))
+        finally:
+            db.close()
+        return {"ok": True, "acta": acta}
+
+    def _api_refine_status(self, args: dict[str, Any]) -> dict[str, Any]:
+        folder = args.get("folder")
+        with self._lock:
+            st = self._refining.get(folder) if isinstance(folder, str) else None
+            return {"ok": True, "status": dict(st) if st else None}
+
+    def _decorate_links(self, acta: dict[str, Any]) -> None:
+        """«Ver en Odoo» de lo ya aplicado: ``{odoo}/web#id=…&model=…`` (lo abre ``open_link``)."""
+        base = self.config.secretaria.odoo_url.rstrip("/")
+        for p in acta.get("propuestas") or []:
+            p.pop("enlace", None)
+            if not base.startswith("http") or p.get("estado") != "aplicada":
+                continue
+            if p.get("grupo") in ("google", "correcciones"):
+                continue
+            u = p.get("deshacer") or {}
+            model, rid = u.get("modelo"), u.get("creado") or u.get("id")
+            if model == "mail.message" and isinstance(u.get("registro"), list):
+                model, rid = u["registro"][0], u["registro"][1]
+            if isinstance(model, str) and isinstance(rid, int) and not isinstance(rid, bool):
+                p["enlace"] = f"{base}/web#id={rid}&model={model}&view_type=form"
 
     def _api_analyze(self, args: dict[str, Any]) -> dict[str, Any]:
         path = self._folder_path(args)

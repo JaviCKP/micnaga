@@ -721,7 +721,11 @@ _TARGET_KEY = {
 }
 
 
-def _field_value(p: dict[str, Any], key: str, acta: dict[str, Any]) -> Any:
+TARGET_KEYS = tuple(_TARGET_KEY.values())
+
+
+def field_value(p: dict[str, Any], key: str, acta: dict[str, Any]) -> Any:
+    """Valor actual de un campo editable de un item (el que pinta el editor)."""
     d = p.get("datos") or {}
     if key == "destino":
         return f"{d.get('modelo')}:{d.get('id')}" if d.get("modelo") else None
@@ -738,7 +742,7 @@ def decorate(acta: dict[str, Any]) -> dict[str, Any]:
     """Anade a cada item pendiente su esquema editable con los valores actuales."""
     for p in acta.get("propuestas") or []:
         specs = EDIT_FIELDS.get(str(p.get("tipo")), [])
-        p["campos"] = [{**f, "valor": _field_value(p, f["clave"], acta)} for f in specs]
+        p["campos"] = [{**f, "valor": field_value(p, f["clave"], acta)} for f in specs]
     return acta
 
 
