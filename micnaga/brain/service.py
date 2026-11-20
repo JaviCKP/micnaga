@@ -83,7 +83,7 @@ class BrainService(GoogleApiMixin):
         self._started_at = time.time()
         self._nudge: Nudge | None = None
         self.now: Callable[[], datetime] = datetime.now
-        self._odoo_failed_at = 0.0
+        self._odoo_failed_at = float("-inf")  # monotonic cuenta desde el arranque de Windows
         self._acta_lock = threading.RLock()
         """Escrituras de ``acta.json`` desde la UI (aplicar, editar, revisar): una a la vez."""
         self._refining: dict[str, dict[str, Any]] = {}
