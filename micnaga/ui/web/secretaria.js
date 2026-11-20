@@ -502,6 +502,8 @@
       if (p.enlace) sub.append(linkBtn(p.enlace, mic.t("secretaria.open_odoo")));
       const res = IT() ? IT().result(p, call) : null;
       if (res) sub.append(res);
+      const us = undoState(p);
+      if (us) sub.append(us);
     }
     if (p.estado === "pendiente" && S.undoable.has(p.id) && p.previa) {
       const u = el("button", "sec-tlink sec-runddo", mic.t("secretaria.undo"));
@@ -528,8 +530,9 @@
       const u = el("button", "icon-btn sec-pundo");
       u.type = "button";
       u.innerHTML = mic.icon("restart");
-      u.setAttribute("aria-label", mic.t("secretaria.undo_one"));
-      u.dataset.tip = mic.t("secretaria.undo_one");
+      const tip = p.deshacer_estado === "a_medias" ? mic.t("secretaria.undo_retry") : mic.t("secretaria.undo_one");
+      u.setAttribute("aria-label", tip);
+      u.dataset.tip = tip;
       u.dataset.tipPos = "left";
       u.addEventListener("click", () => act("undo", [p.id]));
       tools.append(u);
@@ -588,6 +591,43 @@
     }
     if (opt.morph) setTimeout(() => n.classList.remove("morph-in"), 700);
     refreshBar();
+  }
+
+  // «Deshacer» que no termino: conflicto en Odoo (actual / lo que puso Micnaga / antes, con
+  // «Restaurar igualmente» u «Dejarlo como está»), a medias (el boton reintenta lo que falto)
+  // o fallido.
+  function fieldName(f) {
+    if (f === "stage_id") return mic.t("secretaria.undo_field_stage");
+    if (f === "expected_revenue") return mic.t("secretaria.undo_field_amount");
+    if (f === "date_deadline") return mic.t("secretaria.undo_field_deadline");
+    return f;
+  }
+
+  function shown(v) {
+    return v === null || v === undefined || v === false || v === "" ? "—" : String(v);
+  }
+
+  function undoState(p) {
+    if (p.deshacer_estado === "conflicto") {
+      const box = el("span", "sec-undoc");
+      box.append(el("span", "sec-err", mic.t("secretaria.undo_conflict")));
+      for (const c of p.conflicto || []) {
+        box.append(el("span", "sec-facts", mic.t("secretaria.undo_conflict_line", {
+          campo: fieldName(c.campo), actual: shown(c.actual), escrito: shown(c.escrito), original: shown(c.original),
+        })));
+      }
+      const force = el("button", "sec-tlink", mic.t("secretaria.undo_force"));
+      force.type = "button";
+      force.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], "forzar"); });
+      const skip = el("button", "sec-tlink", mic.t("secretaria.undo_skip"));
+      skip.type = "button";
+      skip.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], "omitir"); });
+      box.append(force, skip);
+      return box;
+    }
+    if (p.deshacer_estado === "a_medias") return el("span", "sec-err", mic.t("secretaria.undo_partial"));
+    if (p.error) return el("span", "sec-err", mic.t("secretaria.undo_failed") + " · " + ((IT() && IT().errorText(p.error)) || errText(p.error)));
+    return null;
   }
 
   function errText(key) {
@@ -799,13 +839,15 @@
     act("undo", props.map((p) => p.id));
   }
 
-  async function act(action, ids) {
+  async function act(action, ids, resolver) {
     if (!ids.length || S.busy) return;
     S.busy = true;
     const box = document.querySelector(".sec-props");
     if (box) box.dataset.busy = "true";
     refreshBar();
-    const r = await call(action, { folder: S.folder, ids });
+    const args = { folder: S.folder, ids };
+    if (resolver) args.resolver = resolver;
+    const r = await call(action, args);
     S.busy = false;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
     S.acta = r.acta;
@@ -814,7 +856,9 @@
     render();
     if (fixes && lib()) lib().reload();
     const failed = (r.acta.propuestas || []).filter((p) => ids.includes(p.id) && p.estado === "fallida").length;
-    if (action !== "apply") snack(mic.t("secretaria.undone"));
+    // «Deshecho» solo si de verdad quedo deshecho todo lo pedido
+    const stuck = (r.acta.propuestas || []).filter((p) => ids.includes(p.id) && p.estado === "aplicada").length;
+    if (action !== "apply") snack(stuck ? mic.t("secretaria.undone_some", { n: stuck }) : mic.t("secretaria.undone"));
     else snack(failed ? mic.t("secretaria.applied_some", { n: failed }) : mic.t("secretaria.applied"));
   }
 

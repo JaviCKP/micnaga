@@ -581,7 +581,13 @@ class BrainService(GoogleApiMixin):
         lines = args.get("lineas")
         if not isinstance(lines, list) or not lines:
             return {"ok": False, "error": "secretaria.err.invalid"}
-        out = horas.apply(self._connected(), lines, today=self.now().date())
+        batch = args.get("lote")  # reintento de un lote parcial
+        out = horas.apply(
+            self._connected(),
+            lines,
+            today=self.now().date(),
+            batch=batch if isinstance(batch, str) else None,
+        )
         return {"ok": True, **out}
 
     def _api_horas_undo(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -647,7 +653,10 @@ class BrainService(GoogleApiMixin):
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
         with self._acta_lock:
-            acta = self._executor(path).undo(self._ids(args))
+            resolve = args.get("resolver")  # «forzar» / «omitir» un conflicto (un item)
+            acta = self._executor(path).undo(
+                self._ids(args), resolve=resolve if isinstance(resolve, str) else None
+            )
         return {"ok": True, "acta": acta}
 
     def _api_dismiss(self, args: dict[str, Any]) -> dict[str, Any]:

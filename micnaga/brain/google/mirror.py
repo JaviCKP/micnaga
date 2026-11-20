@@ -142,6 +142,17 @@ def remove(odoo: Any, db: Any, event_id: str) -> bool:
     existing = find(odoo, db, event_id)
     if existing is None:
         return False
-    odoo.call("calendar.event", "unlink", [[existing]], {"context": CONTEXT})
+    try:
+        odoo.call("calendar.event", "unlink", [[existing]], {"context": CONTEXT})
+    except Exception:
+        # ¿ya lo borraron? se comprueba releyendo por la marca (sin la cache local)
+        rows = odoo.search_read(
+            "calendar.event",
+            [("description", "ilike", f"google_event_id: {event_id}")],
+            ["id"],
+            limit=5,
+        )
+        if any(int(r["id"]) == existing for r in rows):
+            raise
     store.mirror_forget(db, event_id)
     return True
