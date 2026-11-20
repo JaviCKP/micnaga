@@ -202,6 +202,8 @@ def test_no_orphan_keys() -> None:
         "end.discard",
         "toast.error.capture_failed.title",
         "toast.error.capture_failed.body",
+        "toast.error.storage_failed.title",
+        "toast.error.storage_failed.body",
         "views.resumen",
         "views.acta",
         "views.propuestas",
