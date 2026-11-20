@@ -388,3 +388,69 @@ def test_run_live_exits_when_recording_ends_or_is_discarded(
             "gone": "recorder is gone",
         }[why]
     )
+
+
+# ----------------------------------------------------------------------------- revision externa
+
+
+class _DeafVad:
+    """VAD en vivo que no oye nada (como leer audio de 8 kHz como si fuera de 16 kHz)."""
+
+    def probs(self, audio: Any) -> Any:
+        return self.probs_from(audio, None)[0]
+
+    def probs_from(self, audio: Any, carry: Any) -> tuple[Any, Any]:
+        from micnaga.pipeline.vad import VadCarry
+
+        n = -(-len(audio) // 512)
+        out = carry or VadCarry(np.zeros((2, 1, 128), np.float32), np.zeros(64, np.float32))
+        return np.full(n, 0.05, dtype=np.float32), out
+
+
+def test_live_with_zero_words_falls_back_to_batch(pair: tuple[Path, Path]) -> None:
+    session, batch = pair
+    cfg = _config()
+    _as_recording(session)
+    deps = fake_live_deps(load_script(session))
+    deps.live_vad = lambda _c: _DeafVad()
+    engines = engines_from_deps(deps)
+    assert engines is not None
+    proc = LiveProcessor(session, cfg, engines)
+    proc.ensure_manifest()
+    proc.step()
+    proc.close()
+    _finalized(session)
+    runner = runner_for(config=cfg, deps=deps, rename=False)
+    runner.keep_work = True
+    result = runner.run(session)
+    assert result.status == "done" and result.transcript is not None
+    assert "live" not in _marker_info(session, "asr"), "un vivo sin palabras no da por hecha"
+    assert result.transcript.segments
+    assert _words(result.transcript) == _words(_run(batch, cfg))
+
+
+def test_live_is_disabled_for_sample_rates_other_than_16k(pair: tuple[Path, Path]) -> None:
+    from micnaga.pipeline.stages import get_stages
+    from micnaga.pipeline.stages.base import StageContext
+
+    session, _ = pair
+    cfg = _config()
+    cfg.capture.sample_rate = 8000
+    assert not live.live_supported(cfg)
+    _as_recording(session)
+    engines = engines_from_deps(fake_live_deps(load_script(session)))
+    assert engines is not None
+    reason = live.run_live(session, cfg, engines, cpu_percent=lambda: 0.0)
+    assert reason == "unsupported sample rate"
+    assert not any(live.live_dir(session).glob("slice_*"))
+    # una cache hecha a 16 kHz no se usa si la grabacion es de 8 kHz: se procesa por lotes
+    proc = _processor(session, _config())
+    proc.step()
+    proc.close()
+    meta = CaptureMeta.from_json((session / paths.CAPTURE_JSON).read_text(encoding="utf-8"))
+    meta8 = replace(meta, mic=replace(meta.mic, sample_rate=8000))
+    assert not live.live_supported(_config(), meta8)
+    deps = fake_live_deps(load_script(session))
+    ctx = StageContext(session, _config(), deps, meta8, lambda _f: None)
+    assert live.finish(ctx, get_stages()[1:6], engines) is False
+    assert not live.has_cache(session)

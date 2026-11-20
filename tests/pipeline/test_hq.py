@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -170,6 +171,75 @@ def test_cancel_leaves_transcript_untouched(tmp_path: Path, no_vad: None) -> Non
     assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
     assert not hq.has_previa(folder)
     assert not (folder / hq.CANCEL).exists()
+
+
+# ----------------------------------------------------------------------------- revision externa
+
+
+def _read(folder: Path, name: str = paths.TRANSCRIPT_JSON) -> Transcript:
+    return Transcript.from_json((folder / name).read_text(encoding="utf-8"))
+
+
+def test_empty_result_is_rejected_and_never_published(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    with pytest.raises(hq.HqRejected):
+        hq.improve(folder, Config(), lambda: FakeEngine({}))  # seis palabras -> cero
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
+    assert not hq.has_previa(folder)
+
+
+def test_drastically_shorter_result_is_rejected(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    eng = FakeEngine({2: [Word("Hola.", 0.5, 1.0)]})  # 6 -> 1 palabra (< 30 %)
+    with pytest.raises(hq.HqRejected):
+        hq.improve(folder, Config(), lambda: eng)
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
+
+
+def test_rejection_is_reported_to_the_ui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = _meeting(tmp_path)
+    monkeypatch.setattr(hq, "download_bytes", lambda _c: 0)
+    monkeypatch.setattr(hq, "_ensure_vad", lambda *_a, **_k: False)
+    monkeypatch.setattr(hq, "create_engine", lambda _c: FakeEngine({}))
+    assert hq._run_locked(folder, Config()) == 1
+    st = hq.read_status(folder)
+    assert st is not None and st["state"] == "failed" and st["error"] == "HqRejected"
+
+
+def test_an_empty_transcript_never_replaces_a_good_previa(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    good = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    hq.improve(folder, Config(), _engine)
+    assert (folder / hq.PREVIA).read_text(encoding="utf-8") == good
+    # la transcripcion actual se quedo vacia (p. ej. por una version anterior de la mejora)
+    from micnaga.pipeline import output
+
+    output.write_transcript(folder, replace(_read(folder), segments=[]))
+    hq.improve(folder, Config(), _engine)
+    assert _read(folder, hq.PREVIA).segments, "la previa buena no se pisa con una vacia"
+    assert (folder / hq.PREVIA).read_text(encoding="utf-8") == good
+    assert hq.restore(folder)
+    assert len(_read(folder).segments) == 3
+
+
+def test_rename_made_while_improving_is_kept(tmp_path: Path, no_vad: None) -> None:
+    from micnaga.pipeline import output
+
+    folder = _meeting(tmp_path)
+
+    def rename_midway(n: int) -> None:
+        if n == 2:  # el usuario renombra a S1 mientras la mejora esta en marcha
+            output.rename_speaker(folder, "S1", "Ana María", reindex=False)
+
+    eng = _engine()
+    eng.on_call = rename_midway
+    hq.improve(folder, Config(), lambda: eng)
+    new = _read(folder)
+    assert {s.id: s.name for s in new.speakers}["S1"] == "Ana María"
+    assert [s.speaker for s in new.segments] == ["me", "S1", "S2"]
+    assert {s.id: s.name for s in _read(folder, hq.PREVIA).speakers}["S1"] == "Ana María"
 
 
 def test_status_and_estimate(tmp_path: Path) -> None:
