@@ -6,9 +6,18 @@ Modelo de hilos
 * Justo despues de arrancar el bucle, pywebview lanza ``_bootstrap`` en un hilo auxiliar: ahi se
   retocan los estilos Win32, se arranca la bandeja (``pystray.Icon.run_detached``: hilo propio) y
   se llama a ``on_ready(host)`` -> el integrador arranca ahi vigilante, captura y cola.
-* Dos ventanas ocultas (popup = ventana maestra y pastilla) se crean antes del bucle y se
-  **reutilizan** (mostrar/ocultar): evita la latencia de crear un WebView2 (<3 s hasta el popup)
+* Una ventana oculta, la **superficie** (pastilla <-> tarjeta), se crea antes del bucle y se
+  **reutiliza** (mostrar/ocultar): evita la latencia de crear un WebView2 (<3 s hasta el popup)
   y mantiene vivo el bucle (pywebview sale al cerrarse la ultima ventana).
+
+Superficie unica
+----------------
+La tarjeta «¿Estás en una reu?» (y la de «Reunión terminada») nace de la pastilla: es la MISMA
+forma, que crece en CSS (ancho, alto, posicion) dentro de una ventana transparente de tamano
+fijo (``winapi.STAGE_SIZE``) y vuelve a encogerse. La ventana nunca se redimensiona durante la
+animacion: solo cambia su region (``SetWindowRgn``), que recorta lo que se ve y se pulsa, de modo
+que el hueco transparente deja pasar los clics. Fases (``surface_phase``):
+``hidden -> pill -> expanding -> card -> collapsing -> pill`` (o ``undo`` / ``hidden``).
 * Biblioteca, Ajustes y asistente se crean bajo demanda y se destruyen al cerrarse.
 * Toda la API publica es segura desde cualquier hilo. Los callbacks de ``UiCallbacks`` se
   invocan desde hilos de pywebview o de la bandeja, nunca desde el hilo del vigilante.
@@ -37,7 +46,7 @@ from micnaga import paths
 from micnaga.config import Config, load_config, save_config
 from micnaga.store.db import Database, open_database
 from micnaga.ui import i18n, sound, startup, winapi
-from micnaga.ui.bridge import LibraryApi, PillApi, PopupApi, SettingsApi, WizardApi
+from micnaga.ui.bridge import LibraryApi, SettingsApi, SurfaceApi, WizardApi
 from micnaga.ui.contracts import (
     BrainPort,
     ConfigStore,
@@ -60,11 +69,14 @@ from micnaga.ui.windows import PywebviewFactory, UiWindow, WindowFactory, Window
 
 log = logging.getLogger(__name__)
 
-FLY_SECONDS = 0.4
-PILL_FLUSH_S = 2.0
 POPUP_VERIFY_S = 1.2
 """Tras mostrar un popup se comprueba que la ventana sigue visible; si no, se reintenta."""
-UNDO_SIZE = (236, 40)
+COLLAPSE_GUARD_S = 1.4
+"""Red de seguridad: si el JS no avisa del fin del encogido, el host lo da por terminado."""
+VANISH_S = 0.2
+"""La pastilla se desvanece (160 ms) antes de ocultar la ventana: al volver a mostrarla nunca
+asoma el ultimo fotograma viejo."""
+UNDO_SIZE = (winapi.UNDO_WIDTH, 40)
 MAX_GUI_RESTARTS = 5
 """Si el bucle de la GUI termina sin «Salir» se recrean las ventanas (como mucho tantas veces
 seguidas en ``GUI_RESTART_WINDOW_S``; despues se sale, registrado)."""
@@ -98,6 +110,12 @@ class _Pill:
     monitor: winapi.MonitorInfo | None = None
     title: str | None = None
     """Titulo provisional de la Secretaria (la pastilla se ensancha mas al pasar el raton)."""
+    stage: Rect | None = None
+    """Rectangulo (fisico) de la ventana-lienzo que contiene la pastilla y la tarjeta."""
+    layout: dict[str, float] | None = None
+    """Posiciones CSS dentro del lienzo (``winapi.stage_layout``)."""
+    shown: bool = False
+    """La superficie esta en pantalla (pastilla, tarjeta o aviso «Deshacer»)."""
 
 
 class UiHost:
@@ -182,8 +200,10 @@ class UiHost:
         self._popup_state_provider: Callable[[], tuple[float, bool] | None] | None = None
         self._popup_mode = "ask"  # ask | end
         self._popup_script = ""
-        self._pill_flush_timer: threading.Timer | None = None
+        self._surface_phase = "hidden"  # hidden | pill | expanding | card | collapsing | undo
         self._undo_visible = False
+        self._undo_seconds = 0.0
+        self._vanish_gen = 0
         # salida
         self._quit_reason: str | None = None
         self._loop_end_notes: list[str] = []
@@ -192,7 +212,6 @@ class UiHost:
         self.exit_reason: str = ""
         # pastilla
         self._pill = _Pill()
-        self._pill_after_morph: tuple[float, bool] | None = None
 
     # ================================================================= ciclo de vida
 
@@ -261,6 +280,9 @@ class UiHost:
             self._windows.clear()
             if self._popup_state == "morphing":
                 self._popup_state = "idle"
+            self._pill.shown = False
+            self._pill.stage = None
+            self._surface_phase = "hidden"
         return True
 
     def _session_ending(self) -> bool:
@@ -280,7 +302,7 @@ class UiHost:
             self._tray.stop()
         with self._lock:
             wins = list(self._windows.values())
-            overlays = [w for w in (self._popup, self._pillwin) if w is not None]
+        overlays = self._overlays()
         for w in wins:
             w.destroy()
         for w in overlays:
@@ -292,8 +314,16 @@ class UiHost:
             self._tray.stop()
         self._server.stop()
 
+    def _overlays(self) -> list[UiWindow]:
+        """Las ventanas superpuestas, sin repetir (popup y pastilla son la misma superficie)."""
+        out: list[UiWindow] = []
+        for w in (self._popup, self._pillwin):
+            if w is not None and all(w is not o for o in out):
+                out.append(w)
+        return out
+
     def _bootstrap(self, on_ready: Callable[[UiHost], None] | None, *, first: bool = True) -> None:
-        for win in (self._popup, self._pillwin):
+        for win in self._overlays():
             if win is not None:
                 win.wait_loaded(15.0)
                 if win.hwnd:
@@ -325,15 +355,14 @@ class UiHost:
     def _restore_surfaces(self) -> None:
         """Tras recrear las ventanas: la pastilla de una grabacion en curso vuelve a su sitio
         (el cronometro lo corrige el controlador en <= 30 s); un popup abierto se repinta."""
-        if self._pill.visible and self._pill.monitor is not None:
+        with self._lock:
+            showing = self._popup_state == "showing"
+        if self._pill.visible and self._pill.monitor is not None and not showing:
             elapsed = max(0.0, time.monotonic() - self._pill_started)
             self._show_pill(elapsed, self._pill.provisional, self._pill.monitor)
-        win, rect = self._popup, self._popup_rect
-        if win is not None and rect is not None and self._popup_script:
-            with self._lock:
-                showing = self._popup_state == "showing"
-            if showing:
-                self._present_popup(win, rect)
+        win, mon = self._popup, self._popup_mon
+        if win is not None and mon is not None and self._popup_script and showing:
+            self._present_popup(win, mon)
 
     def _note_overlay_closed(self, key: str) -> None:
         if not self._stopping.is_set():
@@ -342,11 +371,12 @@ class UiHost:
 
     def _overlay_in_use(self, win: UiWindow) -> bool:
         with self._lock:
+            used = False
             if win is self._popup:
-                return self._popup_state != "idle"
+                used = used or self._popup_state != "idle"
             if win is self._pillwin:
-                return self._pill.visible or self._undo_visible
-        return False
+                used = used or self._pill.visible or self._undo_visible
+        return used
 
     def _want_acrylic(self) -> bool:
         if self._acrylic_pref is not None:
@@ -357,37 +387,24 @@ class UiHost:
         return winapi.acrylic_supported(self._w32)
 
     def _setup_acrylic(self) -> None:
-        """Cristal real (DWM) detras de popup y pastilla; si no, queda el cristal de la pagina."""
+        """Sin acrilico DWM en la superficie: la ventana es un lienzo mayor que la forma visible
+        (pastilla o tarjeta, pintadas opacas por la pagina, §25) y el acrilico pintaria el
+        lienzo entero. La forma la dibuja siempre el CSS y la recorta la region de la ventana."""
         self._acrylic = False
-        if not self._want_acrylic():
-            return
-        applied = []
-        for win, dark in ((self._popup, self._theme() == "dark"), (self._pillwin, True)):
-            if win is not None and win.hwnd:
-                applied.append(winapi.set_backdrop(win.hwnd, "acrylic", dark=dark, api=self._w32))
-        self._acrylic = bool(applied) and all(applied)
-        if self._acrylic:
-            for win in (self._popup, self._pillwin):
-                if win is not None:
-                    win.run_js("window.mic && mic.setBackdrop('acrylic')")
-        else:
-            log.info("acrylic backdrop unavailable; using the in-page glass")
 
     @property
     def acrylic(self) -> bool:
         return self._acrylic
 
     def _create_overlays(self) -> None:
-        popup_w, popup_h = winapi.POPUP_SIZE
-        self._popup = self._factory.create(
-            self._overlay_spec("popup", "popup.html", "Micnaga", popup_w, popup_h, PopupApi(self))
+        """Una sola ventana: la pastilla y la tarjeta que nace de ella (``pill.html``)."""
+        stage_w, stage_h = winapi.STAGE_SIZE
+        surface = self._factory.create(
+            self._overlay_spec("pill", "pill.html", "Micnaga ", stage_w, stage_h, SurfaceApi(self))
         )
-        self._pillwin = self._factory.create(
-            self._overlay_spec("pill", "pill.html", "Micnaga ", 200, 40, PillApi(self))
-        )
-        self._pillwin.on_moved(self._on_pill_moved)
-        self._popup.on_closed(lambda: self._note_overlay_closed("popup"))
-        self._pillwin.on_closed(lambda: self._note_overlay_closed("pill"))
+        self._popup = self._pillwin = surface
+        surface.on_moved(self._on_pill_moved)
+        surface.on_closed(lambda: self._note_overlay_closed("pill"))
 
     def _overlay_spec(
         self, key: str, page: str, title: str, w: int, h: int, api: object
@@ -437,10 +454,7 @@ class UiHost:
         if self._acrylic and self._popup is not None and self._popup.hwnd:
             winapi.set_backdrop(self._popup.hwnd, "acrylic", dark=theme == "dark", api=self._w32)
         with self._lock:
-            wins = [
-                *self._windows.values(),
-                *[w for w in (self._popup, self._pillwin) if w is not None],
-            ]
+            wins = [*self._windows.values(), *self._overlays()]
         for w in wins:
             w.run_js(script)
 
@@ -499,6 +513,84 @@ class UiHost:
             "authoritative": authoritative,
         }
 
+    # ================================================================= superficie (geometria)
+
+    @property
+    def surface_phase(self) -> str:
+        """``hidden`` | ``pill`` | ``expanding`` | ``card`` | ``collapsing`` | ``undo``."""
+        return self._surface_phase
+
+    def _card_busy(self) -> bool:
+        """La tarjeta esta abierta o encogiendose: la pastilla vive dentro de ella."""
+        return self._popup_state != "idle"
+
+    def _layout_stage(self, mon: winapi.MonitorInfo, pill_rect: Rect) -> dict[str, float]:
+        """Coloca el lienzo alrededor de la pastilla y le dice al JS donde va cada forma."""
+        win = self._pillwin
+        stage = winapi.stage_rect(pill_rect, mon)
+        layout = winapi.stage_layout(pill_rect, stage, mon.scale)
+        with self._lock:
+            pill = self._pill
+            moved = stage != pill.stage
+            pill.base, pill.stage, pill.layout, pill.monitor = pill_rect, stage, layout, mon
+            if moved:
+                pill.ignore_moves_until = time.monotonic() + 0.4
+        if win is not None:
+            win.run_js(f"micnaga.pill.layout({json.dumps(layout)})")
+            if moved or not pill.shown:
+                win.place(stage)
+        return layout
+
+    def _set_region(self, kind: str) -> None:
+        """Zona visible y clicable del lienzo: ``pill`` | ``hover`` | ``undo`` | ``card``."""
+        win = self._pillwin
+        pill = self._pill
+        lay, mon = pill.layout, pill.monitor
+        if win is None or lay is None:
+            return
+        scale = mon.scale if mon else 1.0
+        if kind == "card":
+            box = (lay["cardL"], 0.0, *winapi.CARD_SIZE)
+        else:
+            if kind == "hover":
+                width = float(_hover_width(pill))
+            elif kind == "undo":
+                width = float(UNDO_SIZE[0])
+            else:
+                width = float(winapi.PILL_SIZE[0])
+            box = (lay["px"] - width / 2, lay["py"], width, float(winapi.PILL_SIZE[1]))
+        win.set_region(winapi.css_region(box, scale))
+
+    def _vanish(self) -> None:
+        """La pastilla se desvanece y despues se oculta la ventana (si nadie la reclama)."""
+        win = self._pillwin
+        if win is None:
+            return
+        with self._lock:
+            self._vanish_gen += 1
+            gen = self._vanish_gen
+            self._surface_phase = "hidden"
+        win.run_js("micnaga.pill.vanish()")
+        delay = VANISH_S if winapi.animations_enabled(self._w32) else 0.0
+
+        def done() -> None:
+            with self._lock:
+                if gen != self._vanish_gen or self._surface_phase != "hidden":
+                    return
+                self._pill.shown = False
+            win.hide()
+
+        if delay <= 0:
+            done()
+        else:
+            timer = threading.Timer(delay, done)
+            timer.daemon = True
+            timer.start()
+
+    def _cancel_vanish(self) -> None:
+        with self._lock:
+            self._vanish_gen += 1
+
     # ================================================================= popup
 
     def show_popup(
@@ -511,17 +603,18 @@ class UiHost:
         on_timeout: str | None = None,
         countdown_total_s: float | None = None,
     ) -> None:
-        """Muestra «¿Estas en una reu?» en el monitor del navegador (``monitor_hint``).
+        """«¿Estas en una reu?»: la pastilla crece hasta la tarjeta (nace de ella).
 
-        ``timeout_s`` es la cuenta atras *propia* del JS; con vigilante se pasa un valor enorme y
-        la barra se dibuja con ``popup_state()`` (``countdown_total_s`` = total real del vigilante).
+        Si aun no hay pastilla (ruta rapida de Meet) aparece primero en su sitio, en el monitor
+        del navegador (``monitor_hint``), y crece. ``timeout_s`` es la cuenta atras *propia* del
+        JS; con vigilante se pasa un valor enorme y la barra se dibuja con ``popup_state()``
+        (``countdown_total_s`` = total real del vigilante).
         """
         win = self._popup
         if win is None:
             raise RuntimeError("UiHost.run() has not created the windows yet")
         cfg = self._config
-        mon = self._w32.monitor_info(monitor_hint)
-        rect = winapi.popup_rect(mon)
+        mon = self._surface_monitor(monitor_hint)
         timeout_value = timeout_s if timeout_s is not None else cfg.detection.popup_timeout_s
         payload = {
             "title": title,
@@ -532,28 +625,59 @@ class UiHost:
         }
         with self._lock:
             self._popup_state = "showing"
-            self._popup_rect, self._popup_mon = rect, mon
+            self._popup_mon = mon
             self._popup_shown_at = time.monotonic()
             self._popup_leaving = False
             self._popup_on_timeout = str(payload["onTimeout"])
             self._popup_total_s = float(
                 countdown_total_s if countdown_total_s is not None else timeout_value
             )
-            self._pill_after_morph = None
-        with self._lock:
             self._popup_mode = "ask"
             self._popup_script = f"micnaga.popup.show({json.dumps(payload)})"
-        self._present_popup(win, rect)
-        log.info("popup shown at %s (monitor work area %s)", rect, mon.work)
+        self._present_popup(win, mon)
+        log.info("popup shown from the pill at %s", self._popup_rect)
         sound.play_chime(
             enabled=cfg.ui.sound, dnd=lambda: winapi.do_not_disturb(self._w32), player=self._play
         )
 
-    def _present_popup(self, win: UiWindow, rect: Rect) -> None:
-        win.place(rect)
-        win.run_js(f"mic.setMotion({'true' if winapi.animations_enabled(self._w32) else 'false'});")
+    def _surface_monitor(self, monitor_hint: MonitorHint) -> winapi.MonitorInfo:
+        """La tarjeta nace donde esta la pastilla; sin pastilla, en el monitor del navegador."""
+        with self._lock:
+            mon = self._pill.monitor if self._pill.shown else None
+        return mon if mon is not None else self._w32.monitor_info(monitor_hint)
+
+    def _present_popup(self, win: UiWindow, mon: winapi.MonitorInfo) -> None:
+        """Pastilla (si aun no estaba) -> region de la tarjeta -> el JS la hace crecer."""
+        self._cancel_vanish()
+        with self._lock:
+            born = not self._pill.shown or self._surface_phase == "hidden"
+            paused = self._pill.paused
+            elapsed = (
+                max(0.0, time.monotonic() - self._pill_started)
+                if self._pill.visible
+                else max(0.0, time.monotonic() - self._popup_shown_at)
+            )
+            self._pill.expanded = False
+            self._surface_phase = "expanding"
+        layout = self._layout_stage(mon, self._pill_target(mon))
+        self._popup_rect = self._pill.stage
+        motion = "true" if winapi.animations_enabled(self._w32) else "false"
+        win.run_js(f"mic.setMotion({motion});")
+        if born:
+            pill_payload = {
+                "elapsed": elapsed,
+                "provisional": True,
+                "paused": paused,
+                "layout": layout,
+                "enter": True,
+            }
+            win.run_js(f"micnaga.pill.show({json.dumps(pill_payload)})")
+        self._set_region("card")
+        # la pastilla recien nacida se deja ver un instante antes de crecer (lo decide el JS)
         win.run_js(self._popup_script)
         win.show(activate=False)
+        with self._lock:
+            self._pill.shown = True
         self._arm_popup_check(self._popup_shown_at)
 
     def _arm_popup_check(self, shown_at: float) -> None:
@@ -581,6 +705,7 @@ class UiHost:
         log.warning("popup not visible %.1f s after show; re-presenting it", POPUP_VERIFY_S)
         if retry and rect is not None:
             win.place(rect)
+            self._set_region("card")
             win.run_js(self._popup_script)
             win.show(activate=False)
             self._arm_popup_check_once(shown_at)
@@ -588,6 +713,21 @@ class UiHost:
 
     def _arm_popup_check_once(self, shown_at: float) -> None:
         timer = threading.Timer(POPUP_VERIFY_S, lambda: self._verify_popup(shown_at, retry=False))
+        timer.daemon = True
+        timer.start()
+
+    def _arm_collapse_guard(self, kind: str) -> None:
+        """Si el JS no avisa del final del encogido, el host lo cierra igualmente."""
+        with self._lock:
+            shown_at = self._popup_shown_at
+
+        def guard() -> None:
+            with self._lock:
+                stale = self._popup_state == "idle" or self._popup_shown_at != shown_at
+            if not stale:
+                self.handle_popup_closed(kind)
+
+        timer = threading.Timer(COLLAPSE_GUARD_S, guard)
         timer.daemon = True
         timer.start()
 
@@ -604,12 +744,12 @@ class UiHost:
     ) -> None:
         """«Reunión terminada» (Terminar / Seguir grabando) o «¿La guardo?» (Guardar / Descartar).
 
-        Mismo cristal y ventana que el popup; la cuenta atras la lleva el vigilante."""
+        Misma superficie que el popup: la pastilla crece hasta la tarjeta; la cuenta atras la
+        lleva el vigilante."""
         win = self._popup
         if win is None:
             raise RuntimeError("UiHost.run() has not created the windows yet")
-        mon = self._w32.monitor_info(monitor_hint)
-        rect = winapi.popup_rect(mon)
+        mon = self._surface_monitor(monitor_hint)
         payload = {
             "title": title,
             "durationS": round(max(0.0, duration_s), 1),
@@ -619,13 +759,13 @@ class UiHost:
         with self._lock:
             self._popup_state = "showing"
             self._popup_mode = "end"
-            self._popup_rect, self._popup_mon = rect, mon
+            self._popup_mon = mon
             self._popup_shown_at = time.monotonic()
             self._popup_leaving = False
             self._popup_total_s = float(countdown_total_s)
             self._popup_script = f"micnaga.popup.showEnd({json.dumps(payload)})"
-        self._present_popup(win, rect)
-        log.info("end popup shown at %s", rect)
+        self._present_popup(win, mon)
+        log.info("end popup shown from the pill at %s", self._popup_rect)
 
     def hide_end_popup(self, reason: str = "answered") -> None:
         win = self._popup
@@ -634,7 +774,7 @@ class UiHost:
                 return
         self._popup_leaving = True
         win.run_js(f"micnaga.popup.endClose({json.dumps(reason)})")
-        threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
+        self._arm_collapse_guard("fading")
 
     def handle_end_decide(self, choice: str) -> None:
         self._popup_leaving = True
@@ -643,19 +783,34 @@ class UiHost:
     # ================================================================= «Descartada · Deshacer»
 
     def show_undo(self, seconds: float) -> None:
-        """Aviso compacto en el sitio de la pastilla: «Descartada · Deshacer» ``seconds``."""
+        """Aviso compacto en el sitio de la pastilla: «Descartada · Deshacer» ``seconds``.
+
+        Si la tarjeta se esta encogiendo, el aviso sale cuando termina (la pastilla se
+        ensancha hasta el aviso sin saltos)."""
+        with self._lock:
+            self._undo_visible = True
+            self._undo_seconds = seconds
+            busy = self._card_busy()
+        if not busy:
+            self._apply_undo()
+
+    def _apply_undo(self) -> None:
         win = self._pillwin
         if win is None:
             return
+        self._cancel_vanish()
         mon = self._pill.monitor or self._popup_mon or self._w32.monitor_info(None)
-        x, y, pw, h = self._pill_target(mon)
-        w = round(UNDO_SIZE[0] * mon.scale)
-        rect = winapi.clamp_to_work_area((x + (pw - w) // 2, y, w, h), mon.work)
         with self._lock:
-            self._undo_visible = True
-        win.place(rect)
+            shown = self._pill.shown
+            seconds = self._undo_seconds
+            self._surface_phase = "undo"
+        if not shown:
+            self._layout_stage(mon, self._pill_target(mon))
+        self._set_region("undo")
         win.run_js(f"micnaga.pill.undo({json.dumps({'seconds': seconds})})")
         win.show(activate=False)
+        with self._lock:
+            self._pill.shown = True
 
     def hide_undo(self) -> None:
         win = self._pillwin
@@ -663,11 +818,18 @@ class UiHost:
             was = self._undo_visible
             self._undo_visible = False
             pill_up = self._pill.visible
+            busy = self._card_busy()
         if win is None or not was:
             return
         win.run_js("micnaga.pill.undoEnd()")
-        if not pill_up:
-            win.hide()
+        if busy:
+            return
+        if pill_up:
+            with self._lock:
+                self._surface_phase = "pill"
+            self._set_region("pill")
+        else:
+            self._vanish()
 
     @property
     def undo_visible(self) -> bool:
@@ -688,21 +850,21 @@ class UiHost:
             log.exception("could not show the error toast")
 
     def hide_popup(self, reason: str = "ended") -> None:
-        """La reunion acabo antes de responder: la tarjeta se desvanece (180 ms)."""
+        """La reunion acabo antes de responder: la tarjeta se encoge de vuelta a la pastilla."""
         win = self._popup
         with self._lock:
             if win is None or self._popup_state != "showing":
                 return
         self._popup_leaving = True
         win.run_js("micnaga.popup.end()")
-        # red de seguridad: si el JS no contesta, se oculta igualmente
-        threading.Timer(0.6, lambda: self.handle_popup_closed("fading")).start()
+        # red de seguridad: si el JS no contesta, se cierra igualmente
+        self._arm_collapse_guard("fading")
 
     def expire_popup(self) -> None:
-        """El vigilante dio por agotado el tiempo: el popup se convierte en pastilla (o se va).
+        """El vigilante dio por agotado el tiempo: la tarjeta vuelve a ser pastilla (o se va).
 
         Pide al JS ``micnaga.popup.expire()`` (si existe); si en 0,8 s el popup sigue como
-        estaba, lo resuelve aqui (vuelo directo a la pastilla o desvanecido).
+        estaba, lo resuelve aqui (la pastilla sin animacion, o desvanecida).
         """
         win = self._popup
         with self._lock:
@@ -724,6 +886,7 @@ class UiHost:
                 return
         if provisional:
             self.handle_popup_morph(True)
+            self.handle_popup_closed("morphed")
         else:
             self.handle_popup_closed("leaving")
 
@@ -741,7 +904,7 @@ class UiHost:
     def popup_visible(self) -> bool:
         return self._popup_state != "idle"
 
-    # -- eventos del JS (PopupApi)
+    # -- eventos del JS (SurfaceApi)
     def handle_popup_decide(self, decision: str) -> None:
         self._popup_leaving = True
         if decision == "record":
@@ -769,54 +932,56 @@ class UiHost:
             winapi.clear_no_activate(win.hwnd, self._w32)
             self._w32.set_foreground(win.hwnd)
 
-    def handle_popup_morph(self, provisional: bool) -> None:
+    def handle_surface_phase(self, phase: str) -> None:
+        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
         with self._lock:
+            if self._popup_state == "idle":
+                return
+            if phase == "card" and self._surface_phase == "expanding":
+                self._surface_phase = "card"
+            elif phase == "collapsing":
+                self._surface_phase = "collapsing"
+                self._popup_state = "morphing"
+
+    def handle_popup_morph(self, provisional: bool) -> None:
+        """La tarjeta vuelve a ser la pastilla (tras «Sí» o sin respuesta)."""
+        with self._lock:
+            if self._popup_state == "idle":
+                return
             self._popup_state = "morphing"
+            self._surface_phase = "collapsing"
             self._pill.provisional = provisional
-            pill_up = self._pill.visible
-        if pill_up:
-            # Ruta generica: la pastilla ya estaba; no hay nada a donde volar.
-            self.set_pill_provisional(provisional)
-            self._spawn(lambda: self.handle_popup_closed("morphed"))
-            return
-        self._spawn(self._fly_to_pill)
+        if self._pillwin is not None:
+            self._pillwin.run_js(f"micnaga.pill.setProvisional({json.dumps(provisional)})")
 
     def handle_popup_closed(self, kind: str) -> None:
+        """Fin del encogido: la superficie queda en pastilla, en «Deshacer» o desaparece."""
         win = self._popup
         with self._lock:
             if self._popup_state == "idle":
                 return
             self._popup_state = "idle"
+            self._popup_leaving = True
         if win is not None:
-            win.hide()
+            win.run_js("micnaga.pill.settle()")  # idempotente: si el JS no acabo, encaja ya
             if win.hwnd:
                 winapi.apply_no_activate(win.hwnd, self._w32)  # por si se activo con un clic
+        self._resolve_surface()
         self._cb.on_popup_closed(kind)
 
-    def _fly_to_pill(self) -> None:
-        """Vuelo del popup (ventana) hasta el hueco de la pastilla, 400 ms."""
-        win = self._popup
-        start = self._popup_rect
-        mon = self._popup_mon
-        if win is None or start is None or mon is None:
-            return
-        target = self._pill_target(mon)
-        if self._acrylic:
-            # el cristal es la ventana: hay que animar tambien el TAMANO (el CSS solo funde el
-            # contenido) hasta el rectangulo exacto de la pastilla
-            end = target
-        else:
-            # la tarjeta se encoge hacia arriba-centro de la ventana (CSS): se alinea con ella
-            end = (target[0] - (start[2] - target[2]) // 2, target[1], start[2], start[3])
-        duration = FLY_SECONDS if winapi.animations_enabled(self._w32) else 0.0
-        if win.hwnd:
-            winapi.animate_rect(win.hwnd, start, end, duration, self._w32)
+    def _resolve_surface(self) -> None:
         with self._lock:
-            pending = self._pill_after_morph
-            self._pill_after_morph = None
-        elapsed = pending[0] if pending else max(0.0, time.monotonic() - self._popup_shown_at)
-        provisional = pending[1] if pending else self._pill.provisional
-        self._show_pill(elapsed, provisional, mon)
+            undo = self._undo_visible
+            pill_up = self._pill.visible
+        if undo:
+            self._apply_undo()
+        elif pill_up:
+            with self._lock:
+                self._surface_phase = "pill"
+            self._set_region("pill")
+            self._update_tray()
+        else:
+            self._vanish()
 
     # ================================================================= pastilla
 
@@ -827,20 +992,21 @@ class UiHost:
         provisional: bool = False,
         monitor_hint: MonitorHint = None,
     ) -> None:
-        """Muestra la pastilla «Grabando» (si el popup vuela hacia ella, espera al aterrizaje)."""
+        """Muestra la pastilla «Grabando». Con la tarjeta abierta la pastilla ya esta dentro
+        de ella: solo se anota (aparece al encogerse)."""
         with self._lock:
-            if self._pill.visible:
-                # ya esta (ruta generica, o aviso repetido): solo se actualiza, sin reiniciar
+            if self._pill.visible or self._card_busy():
                 update = True
+                if not self._pill.visible:
+                    self._pill.visible = True
+                    self._pill_started = time.monotonic() - elapsed_s
             else:
                 update = False
-                if self._popup_state in ("showing", "morphing"):
-                    # el popup aterrizara en la pastilla: se espera al vuelo (con red de seguridad)
-                    self._pill_after_morph = (elapsed_s, provisional)
-                    self._arm_pill_flush()
-                    return
         if update:
             self.set_pill_provisional(provisional)
+            if self._card_busy():
+                self.sync_pill(elapsed_s)
+            self._update_tray()
             return
         mon = (
             self._w32.monitor_info(monitor_hint)
@@ -848,23 +1014,6 @@ class UiHost:
             else self._pill.monitor
         )
         self._show_pill(elapsed_s, provisional, mon)
-
-    def _arm_pill_flush(self) -> None:
-        """Si el vuelo no llega (JS colgado), la pastilla sale igualmente: nunca se graba a
-        escondidas."""
-        timer = threading.Timer(PILL_FLUSH_S, self._flush_pending_pill)
-        timer.daemon = True
-        self._pill_flush_timer = timer
-        timer.start()
-
-    def _flush_pending_pill(self) -> None:
-        with self._lock:
-            pending = self._pill_after_morph
-            self._pill_after_morph = None
-            if pending is None or self._pill.visible:
-                return
-        mon = self._pill.monitor or self._popup_mon or self._w32.monitor_info(None)
-        self._show_pill(pending[0], pending[1], mon)
 
     def _pill_target(self, mon: winapi.MonitorInfo) -> Rect:
         pill = self._pill
@@ -878,32 +1027,42 @@ class UiHost:
         win = self._pillwin
         if win is None:
             return
-        rect = self._pill_target(mon)
-        payload = {"elapsed": elapsed, "provisional": provisional, "paused": self._pill.paused}
+        self._cancel_vanish()
         with self._lock:
             pill = self._pill
-            pill.visible, pill.provisional, pill.monitor = True, provisional, mon
+            pill.visible, pill.provisional = True, provisional
             self._pill_started = time.monotonic() - elapsed
-            pill.base, pill.expanded = rect, False
-            pill.ignore_moves_until = time.monotonic() + 0.4
-        with self._lock:
+            pill.expanded = False
             self._undo_visible = False
-        win.place(rect)
+            self._surface_phase = "pill"
+        layout = self._layout_stage(mon, self._pill_target(mon))
+        payload = {
+            "elapsed": elapsed,
+            "provisional": provisional,
+            "paused": self._pill.paused,
+            "layout": layout,
+        }
+        self._set_region("pill")
         win.run_js(f"micnaga.pill.show({json.dumps(payload)})")
         win.show(activate=False)
+        with self._lock:
+            self._pill.shown = True
         self._update_tray()
 
     def hide_pill(self) -> None:
+        """La grabacion acabo: la pastilla se desvanece. Con la tarjeta abierta o encogiendose
+        solo se anota; se resuelve al terminar el encogido (``handle_popup_closed``)."""
         win = self._pillwin
         with self._lock:
             self._pill.visible = False
             self._pill.paused = False
             self._pill.title = None
-            self._pill_after_morph = None
+            busy = self._card_busy()
+            undo = self._undo_visible
         if win is not None:
             win.run_js("micnaga.pill.stop()")
-            if not self._undo_visible:
-                win.hide()
+            if not busy and not undo:
+                self._vanish()
         self._update_tray()
 
     def set_pill_paused(self, paused: bool) -> None:
@@ -929,23 +1088,23 @@ class UiHost:
     def pill_visible(self) -> bool:
         return self._pill.visible
 
-    # -- eventos del JS (PillApi)
+    # -- eventos del JS (SurfaceApi)
     def handle_pill_hover(self, hovering: bool) -> None:
-        win = self._pillwin
+        """Al pasar el raton la pastilla se ensancha en CSS; aqui solo crece la region (antes de
+        ensancharse) o se recoge (cuando ya se estrecho)."""
         with self._lock:
             pill = self._pill
-            if win is None or pill.base is None or not pill.visible or pill.expanded == hovering:
+            if (
+                self._pillwin is None
+                or pill.layout is None
+                or not pill.visible
+                or self._card_busy()
+                or self._undo_visible
+                or pill.expanded == hovering
+            ):
                 return
-            x, y, w, h = pill.base
-            scale = pill.monitor.scale if pill.monitor else 1.0
-            if hovering:
-                wide = round(_hover_width(pill) * scale)
-                rect: Rect = (x - (wide - w) // 2, y, wide, h)
-            else:
-                rect = pill.base
             pill.expanded = hovering
-            pill.ignore_moves_until = time.monotonic() + 0.3
-        win.place(rect)
+        self._set_region("hover" if hovering else "pill")
 
     def handle_pill_marker(self) -> None:
         self._cb.on_marker()
@@ -964,16 +1123,25 @@ class UiHost:
         self._cb.on_stop()
 
     def _on_pill_moved(self, x: int, y: int) -> None:
+        """El usuario arrastro la superficie (``x, y`` = esquina del lienzo): se recuerda la
+        posicion de la pastilla, que esta desplazada dentro del lienzo."""
         with self._lock:
             pill = self._pill
-            if not pill.visible or pill.base is None or time.monotonic() < pill.ignore_moves_until:
+            if (
+                not pill.visible
+                or pill.base is None
+                or pill.stage is None
+                or self._card_busy()
+                or time.monotonic() < pill.ignore_moves_until
+            ):
                 return
-            scale = pill.monitor.scale if pill.monitor else 1.0
-            if pill.expanded:
-                x += (round(_hover_width(pill) * scale) - pill.base[2]) // 2
-            pill.user_pos = (x, y)
-            pill.base = (x, y, pill.base[2], pill.base[3])
-        self._cb.on_pill_moved(x, y)
+            dx = pill.base[0] - pill.stage[0]
+            dy = pill.base[1] - pill.stage[1]
+            pill.stage = (x, y, pill.stage[2], pill.stage[3])
+            px, py = x + dx, y + dy
+            pill.user_pos = (px, py)
+            pill.base = (px, py, pill.base[2], pill.base[3])
+        self._cb.on_pill_moved(px, py)
 
     # ================================================================= bandeja y avisos
 

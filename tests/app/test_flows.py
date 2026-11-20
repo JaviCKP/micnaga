@@ -52,17 +52,19 @@ def test_meet_path_popup_record_stop_enqueues_confirmed_job() -> None:
     _to_popup(rig)
     assert rig.rec.calls[0][0] == "start" and rig.rec.calls[0][1][0] is False  # provisional
     assert rig.popup.visible
-    assert not rig.pill.visible
+    # Meet: aun no hay pastilla de grabacion; la superficie nace como pastilla y crece
+    assert not _host(rig).pill_visible
+    born = next(js for js in rig.js(rig.pill) if js.startswith("micnaga.pill.show("))
+    assert json.loads(born[len("micnaga.pill.show(") : -1])["enter"] is True
 
     _answer(rig, "record")  # «Grabar»
     assert ("set_confirmed", True) in rig.rec.calls
-    # la pastilla espera al vuelo del popup (no aparece debajo de la tarjeta)
-    assert not rig.pill.visible
     _host(rig).handle_popup_morph(False)  # el JS termina el check de 300 ms y encoge la tarjeta
-    assert rig.pill.visible
+    rig.ui_tick()
+    assert rig.pill.visible and _host(rig).pill_visible and not rig.popup.visible
+    # la pastilla es la misma que nacio: no se vuelve a crear, se corrige el cronometro
     assert sum(1 for js in rig.js(rig.pill) if js.startswith("micnaga.pill.show(")) == 1
-    payload = next(js for js in rig.js(rig.pill) if js.startswith("micnaga.pill.show("))
-    assert json.loads(payload[len("micnaga.pill.show(") : -1])["elapsed"] == rig.rec.elapsed
+    assert f"micnaga.pill.sync({rig.rec.elapsed:.2f})" in rig.js(rig.pill)
     assert rig.watcher.state is WatcherState.RECORDING_CONFIRMED  # type: ignore[union-attr]
 
     rig.feed(OFF, 3)  # cuelga: el micro se suelta 2 s -> popup de fin «Reunión terminada»
@@ -254,18 +256,18 @@ def test_confirm_from_tray_while_prompting() -> None:
     assert rig.pill.visible
 
 
-def test_pill_is_flushed_even_if_the_popup_never_morphs() -> None:
-    """Red de seguridad: si el JS no contesta, la pastilla sale igualmente (no hay grabacion
-    silenciosa)."""
+def test_pill_stays_even_if_the_card_never_collapses() -> None:
+    """Red de seguridad: si el JS no contesta, la superficie (pastilla dentro de la tarjeta)
+    sigue en pantalla mientras se graba: nunca hay grabacion silenciosa."""
     import micnaga.ui.host as host_mod
 
     rig = Rig()
     _to_popup(rig)
+    rig.pill.pending.clear()  # type: ignore[attr-defined]  # el JS no responde
     _answer(rig, "record")
-    assert not rig.pill.visible
-    _host(rig)._flush_pending_pill()
-    assert rig.pill.visible
-    assert host_mod.PILL_FLUSH_S > 0
+    rig.pill.pending.clear()  # type: ignore[attr-defined]
+    assert rig.pill.visible and _host(rig).pill_visible
+    assert host_mod.COLLAPSE_GUARD_S > 0
 
 
 # ------------------------------------------------------------------------------ ruta generica

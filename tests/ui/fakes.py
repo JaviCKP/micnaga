@@ -43,6 +43,10 @@ class FakeWin32(winapi.Win32):
     def get_window_rect(self, hwnd: int) -> Rect:
         return self.rects.get(hwnd, (0, 0, 0, 0))
 
+    def set_window_region(self, hwnd: int, rect: Rect | None) -> bool:
+        self.calls.append(("set_window_region", (hwnd, rect)))
+        return True
+
     def find_window(self, title: str) -> int:
         return 0
 

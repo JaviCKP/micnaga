@@ -169,6 +169,20 @@ class PillApi:
         self._c.handle_pill_save()
 
 
+class SurfaceApi(PillApi, PopupApi):
+    """``pywebview.api`` de la superficie unica: la pastilla que crece hasta la tarjeta
+    «¿Estás en una reu?» / «Reunión terminada» y vuelve a encogerse (``pill.html``)."""
+
+    _PHASES = frozenset({"card", "collapsing"})
+
+    def surface_phase(self, phase: str) -> None:
+        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
+        if phase in self._PHASES:
+            handler = getattr(self._c, "handle_surface_phase", None)
+            if handler is not None:
+                handler(phase)
+
+
 # ============================================================================ secretaria
 
 LIBRARY_BRAIN_ACTIONS = frozenset(
