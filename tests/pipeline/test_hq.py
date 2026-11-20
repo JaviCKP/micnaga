@@ -282,3 +282,12 @@ def test_real_model_short_clip(tmp_path: Path) -> None:
         eng.close()
     assert isinstance(words, list)
     assert all(w.e >= w.s for w in words)
+
+
+def test_restore_refuses_an_empty_previa(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    good = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    empty = replace(_read(folder), segments=[])
+    (folder / hq.PREVIA).write_text(empty.to_json(), encoding="utf-8")
+    assert not hq.restore(folder)
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == good

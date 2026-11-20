@@ -296,6 +296,8 @@ def restore(folder: Path) -> bool:
     if not previa.is_file():
         return False
     transcript = Transcript.from_json(previa.read_text(encoding="utf-8"))
+    if not any(seg.text.strip() for seg in transcript.segments):
+        return False  # una previa vacia (de una version antigua) nunca sustituye a la actual
     output.write_transcript(folder, transcript)
     clean = folder / CLEAN_PREVIA
     if clean.is_file():
