@@ -286,6 +286,7 @@ class WorkerSupervisor:
         spawn: Callable[[], subprocess.Popen[bytes] | None] | None = None,
         spawn_for: Callable[[Path], subprocess.Popen[bytes] | None] | None = None,
         path_factory: PathDbFactory | None = None,
+        watch_file: Path | None = None,
         is_running: Callable[[], bool] | None = None,
         models_ready: Callable[[], bool] | None = None,
         on_busy: Callable[[bool], None] | None = None,
@@ -301,6 +302,8 @@ class WorkerSupervisor:
         self._path_factory = path_factory or open_database_at
         self._watched: dict[str, Path] = {}  # indice de otra carpeta con trabajos -> su raiz
         self._watch_lock = threading.Lock()
+        self._watch_file = watch_file  # persiste ``_watched``: sobrevive a un reinicio
+        self._load_watched()
         self._is_running = is_running or _default_is_running
         self._models_ready = models_ready or (lambda: _models_ready(config))
         self._on_busy = on_busy
@@ -330,7 +333,41 @@ class WorkerSupervisor:
         if str(db_path) != self._db_key():
             with self._watch_lock:
                 self._watched[str(db_path)] = db_path.parent
+            self._save_watched()
         self._wake.set()
+
+    def _load_watched(self) -> None:
+        if self._watch_file is None:
+            return
+        import json
+
+        try:
+            data = json.loads(self._watch_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, ValueError):
+            log.warning("unreadable list of previous meetings folders; ignored")
+            return
+        items = data.get("db_paths") if isinstance(data, dict) else None
+        for raw in items if isinstance(items, list) else []:
+            if isinstance(raw, str) and raw:
+                self._watched[raw] = Path(raw).parent
+
+    def _save_watched(self) -> None:
+        if self._watch_file is None:
+            return
+        import json
+        import os
+
+        with self._watch_lock:
+            data = {"db_paths": sorted(self._watched)}
+        try:
+            self._watch_file.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self._watch_file.with_name(self._watch_file.name + ".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, self._watch_file)
+        except OSError:
+            log.warning("could not persist the previous meetings folders", exc_info=True)
 
     def _watched_busy_root(self) -> Path | None:
         """Raiz de la primera carpeta vigilada con trabajos pendientes (las vacias se olvidan)."""
@@ -354,6 +391,7 @@ class WorkerSupervisor:
                 return root
             with self._watch_lock:
                 self._watched.pop(key, None)
+            self._save_watched()
         return None
 
     def stop(self) -> None:

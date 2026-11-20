@@ -27,6 +27,7 @@ from typing import Any, Protocol
 from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
+from micnaga.store.locate import meeting_dir
 from micnaga.types import SPEAKER_ME, Transcript
 from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
@@ -635,41 +636,12 @@ class LibraryApi:
     # ---------------------------------------------------------------- privados
 
     def _meeting_json(self, folder: object) -> Path | None:
-        if not isinstance(folder, str) or not valid_folder_name(folder):
-            return None
-        root = self._root().resolve()
-        path = (root / folder / paths.TRANSCRIPT_JSON).resolve()
-        if path.is_relative_to(root) and path.is_file():
-            return path
-        stored = self._indexed_dir(folder)
-        return None if stored is None else stored / paths.TRANSCRIPT_JSON
+        d = meeting_dir(self._root(), folder, self._db_factory, require=paths.TRANSCRIPT_JSON)
+        return None if d is None else d / paths.TRANSCRIPT_JSON
 
     def _meeting_dir(self, folder: object) -> Path | None:
-        """Carpeta de la reunion: bajo la raiz de ahora o, si no esta, la ruta que guarda el
-        indice (grabada en otra carpeta de reuniones, hallazgo P1-4)."""
-        if not isinstance(folder, str) or not valid_folder_name(folder):
-            return None
-        root = self._root().resolve()
-        target = (root / folder).resolve()
-        if target.is_relative_to(root) and target != root and target.is_dir():
-            return target
-        return self._indexed_dir(folder)
-
-    def _indexed_dir(self, folder: str) -> Path | None:
-        """Ruta guardada en el indice (``meetings.job_id`` -> ``jobs.session_dir``) si existe,
-        se llama igual y tiene transcripcion. Nunca una ruta que no salga del indice."""
-        try:
-            with self._db_factory() as db:
-                rec = db.get_meeting(folder)
-                if rec is None or rec.job_id is None:
-                    return None
-                stored = Path(db.get_job(rec.job_id).session_dir)
-        except Exception:
-            log.debug("indexed folder lookup failed", exc_info=True)
-            return None
-        if stored.name != folder or not (stored / paths.TRANSCRIPT_JSON).is_file():
-            return None
-        return stored
+        """Bajo la raiz de ahora o por la ruta del indice (``micnaga.store.locate``, P1-4)."""
+        return meeting_dir(self._root(), folder, self._db_factory)
 
     def _guard(self, folder: str, speaker_id: str) -> Result | None:
         """Comprobaciones comunes: operaciones disponibles, reunion y hablante existen."""

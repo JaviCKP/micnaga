@@ -123,3 +123,94 @@ def test_library_opens_an_indexed_meeting_outside_the_current_root(
     # nunca una carpeta que no venga del indice
     assert not api.get_meeting("otra")["ok"]
     assert not api.get_meeting("..")["ok"]
+
+
+def _meeting_in_a_indexed_in_b(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """Reunion en la carpeta A, indexada (con su trabajo) en el indice de B."""
+    a, b = tmp_path / "A", tmp_path / "B"
+    folder = a / "2026-11-19_1030_reunion"
+    folder.mkdir(parents=True)
+    transcript = business_transcript()
+    output.write_transcript(folder, transcript)
+    (folder / paths.AUDIO_ME_FLAC).write_bytes(b"fLaC")
+    b.mkdir()
+    db_file = b / "micnaga.db"
+    with Database(db_file) as db:
+        job = db.enqueue_job(folder)
+        output.index_meeting(db, folder, transcript, job.id)
+    return folder, b, db_file
+
+
+def test_audio_of_an_indexed_meeting_outside_the_root_is_served(tmp_path: Path) -> None:
+    from micnaga.ui.media import LocalServer
+
+    folder, b, db_file = _meeting_in_a_indexed_in_b(tmp_path)
+    server = LocalServer(meetings_root=lambda: b, db_factory=lambda: Database(db_file))
+    assert server.resolve_audio(folder.name, "yo") == folder / paths.AUDIO_ME_FLAC
+    assert server.resolve_audio(folder.name, "remoto") is None  # no hay FLAC remoto
+    assert server.resolve_audio("otra", "yo") is None
+    assert server.resolve_audio("..", "yo") is None
+
+
+def test_speaker_edits_reach_an_indexed_meeting_outside_the_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from micnaga.integration.library_ops import AppLibraryOps
+
+    monkeypatch.delenv(paths.ENV_STORAGE, raising=False)
+    folder, b, _db = _meeting_in_a_indexed_in_b(tmp_path)
+    ops = AppLibraryOps(lambda: _cfg(b))
+    ops.rename_speaker(folder.name, "S1", "Laura")
+    names = {s.id: s.name for s in output.read_transcript(folder).speakers}
+    assert names["S1"] == "Laura"
+    with pytest.raises(FileNotFoundError):
+        ops.rename_speaker("otra", "S1", "X")
+
+
+def test_supervisor_remembers_old_folders_with_pending_jobs_across_restarts(
+    tmp_path: Path,
+) -> None:
+    from micnaga.integration.jobs import WorkerSupervisor
+    from micnaga.store.db import JobState
+
+    a = tmp_path / "A"
+    a.mkdir()
+    db_a = a / "micnaga.db"
+    with Database(db_a) as db:
+        db.enqueue_job(a / "sesion")
+    state = tmp_path / "home" / "pending_roots.json"
+
+    class Idle:
+        def count_jobs(self) -> dict[Any, int]:
+            return dict.fromkeys(JobState, 0)
+
+        def close(self) -> None:
+            pass
+
+    def make(spawned: list[Path]) -> WorkerSupervisor:
+        return WorkerSupervisor(
+            Config(),
+            db_factory=Idle,  # type: ignore[arg-type]
+            db_key=lambda: str(tmp_path / "B" / "micnaga.db"),
+            spawn=lambda: None,
+            spawn_for=lambda root: spawned.append(root),  # type: ignore[arg-type,func-returns-value]
+            is_running=lambda: False,
+            models_ready=lambda: True,
+            watch_file=state,
+        )
+
+    first = make([])
+    first.watch(db_a)
+    assert state.is_file()
+    spawned: list[Path] = []
+    second = make(spawned)  # la app se reinicia con la config apuntando a B
+    second.tick(Idle())  # type: ignore[arg-type]
+    assert spawned == [a]
+    with Database(db_a) as db:  # el worker de A vacia su cola
+        job = db.claim_next_job()
+        assert job is not None
+        db.finish_job(job.id)
+    second.tick(Idle())  # type: ignore[arg-type]
+    third: list[Path] = []
+    make(third).tick(Idle())  # type: ignore[arg-type]
+    assert third == [], "una carpeta ya sin trabajos se olvida (tambien en disco)"
