@@ -556,9 +556,10 @@ def retitle_meeting(
     """Titulo nuevo en ``transcripcion.json`` (+ MD/SRT), carpeta ``YYYY-MM-DD_HHMM_slug`` y
     todo lo que lleva el nombre de la carpeta en la base, en una transaccion. Si la carpeta no se
     puede renombrar (un FLAC abierto en la biblioteca...) se queda solo el titulo."""
-    transcript = output.read_transcript(folder)
-    updated = replace(transcript, meeting=replace(transcript.meeting, title=title))
-    output.write_transcript(folder, updated)
+    with output.transcript_lock(folder):
+        transcript = output.read_transcript(folder)
+        updated = replace(transcript, meeting=replace(transcript.meeting, title=title))
+        output.write_transcript(folder, updated)
     try:
         start = datetime.fromisoformat(transcript.meeting.start)
         target = paths.unique_folder(folder.parent, paths.meeting_folder_name(start, title))

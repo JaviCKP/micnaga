@@ -943,24 +943,33 @@ class Cleaner:
     def _save(self, folder: Path, before: Transcript, ops: list[Op], stats: Stats) -> None:
         from micnaga.pipeline import output
 
-        current = output.read_transcript(folder)  # la biblioteca pudo cambiar algo mientras
-        same = len(current.segments) == len(before.segments)
-        fresh = [
-            op
-            for op in ops
-            if same
-            and all(
-                (current.segments[i].start, current.segments[i].speaker, current.segments[i].text)
-                == (before.segments[i].start, before.segments[i].speaker, before.segments[i].text)
-                for i in op.ids
-            )
-        ]
-        updated, changed = apply_ops(current, fresh)
-        stats.corrected = sum(len(op.ids) for op in fresh)
-        stats.merges = sum(1 for op in fresh if len(op.ids) > 1)
-        if fresh:
-            output.write_transcript(folder, updated)
-            self._reindex(folder, updated, changed)
+        with output.transcript_lock(folder):  # ni un renombrado ni la mejora se pisan
+            current = output.read_transcript(folder)  # la biblioteca pudo cambiar algo mientras
+            same = len(current.segments) == len(before.segments)
+            fresh = [
+                op
+                for op in ops
+                if same
+                and all(
+                    (
+                        current.segments[i].start,
+                        current.segments[i].speaker,
+                        current.segments[i].text,
+                    )
+                    == (
+                        before.segments[i].start,
+                        before.segments[i].speaker,
+                        before.segments[i].text,
+                    )
+                    for i in op.ids
+                )
+            ]
+            updated, changed = apply_ops(current, fresh)
+            stats.corrected = sum(len(op.ids) for op in fresh)
+            stats.merges = sum(1 for op in fresh if len(op.ids) > 1)
+            if fresh:
+                output.write_transcript(folder, updated)
+                self._reindex(folder, updated, changed)
         if stats.failed:
             # alguna ventana no llego (limite de uso, tiempo): sin marca, la proxima pasada la
             # completa (lo ya corregido conserva su ``text_original`` de la primera vez)

@@ -335,12 +335,13 @@ class Executor:
                 output.rename_speaker(self.folder, d["hablante"], d["a"], db=self._db)
                 return {"hablante": d["hablante"], "nombre": current}
             if kind == "palabra":
-                transcript = output.read_transcript(self.folder)
-                updated, n = replace_text(transcript, d["de"], d["a"])
-                if n == 0:
-                    return None  # el texto ya no esta: se descarta en silencio
-                output.write_transcript(self.folder, updated)
-                output._reindex(self.folder, updated, self._db)
+                with output.transcript_lock(self.folder):
+                    transcript = output.read_transcript(self.folder)
+                    updated, n = replace_text(transcript, d["de"], d["a"])
+                    if n == 0:
+                        return None  # el texto ya no esta: se descarta en silencio
+                    output.write_transcript(self.folder, updated)
+                    output._reindex(self.folder, updated, self._db)
                 add_to_glossary(d["a"], d["de"])
                 return {"de": d["de"], "a": d["a"], "n": n}
             return None
@@ -751,11 +752,12 @@ class Executor:
             if kind == "hablante":
                 output.rename_speaker(self.folder, u["hablante"], u["nombre"], db=self._db)
             elif kind == "palabra":
-                transcript = output.read_transcript(self.folder)
-                updated, n = replace_text(transcript, u["a"], u["de"])
-                if n:
-                    output.write_transcript(self.folder, updated)
-                    output._reindex(self.folder, updated, self._db)
+                with output.transcript_lock(self.folder):
+                    transcript = output.read_transcript(self.folder)
+                    updated, n = replace_text(transcript, u["a"], u["de"])
+                    if n:
+                        output.write_transcript(self.folder, updated)
+                        output._reindex(self.folder, updated, self._db)
             return True
         o = self.odoo()
         if "creado" in u and u.get("creado"):
