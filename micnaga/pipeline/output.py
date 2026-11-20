@@ -274,7 +274,10 @@ def _reindex(folder: Path, transcript: Transcript, db: Database | None) -> None:
         if db is not None:
             index_meeting(db, folder, transcript)
             return
-        db_file = paths.db_path()
+        # el indice de la raiz de la propia reunion (puede no ser la carpeta actual)
+        db_file = folder.parent / paths.db_path().name
+        if not db_file.is_file():
+            db_file = paths.db_path()
         if not db_file.is_file():
             return
         from micnaga.store.db import Database as Db
