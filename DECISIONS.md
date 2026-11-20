@@ -1256,3 +1256,26 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    terminar bien, la biblioteca pide `analyze` a la Secretaria (limpieza + acta) si está activa.
 7. **Medido de verdad** (copia de 3 min, `large-v3`, modelo ya descargado): 139,9 s de reloj;
    331 → 330 palabras.
+
+## 27. La tarjeta nace de la pastilla (rama `feat/pill-morph`)
+
+1. **Una sola superficie.** Ya no hay ventana de popup: la ventana de la pastilla es un lienzo
+   transparente fijo (`winapi.STAGE_SIZE` = 420 x 112 lógicos, centrado sobre la pastilla) y la
+   tarjeta «¿Estás en una reu?» / «Reunión terminada» es la misma forma CSS que crece
+   (izquierda/arriba/ancho/alto, 460 ms, `cubic-bezier(.2,.8,.2,1)`) y vuelve a encogerse
+   (300 ms). El punto y el cronómetro de la pastilla no se mueven respecto a la esquina de la
+   forma: son la cabecera de la tarjeta. El contenido entra (fundido + 6 px) cuando la forma ya
+   está abierta en un ~85 %. Con movimiento reducido, fundido cruzado.
+2. **Nunca se redimensiona la ventana al animar** (ni al pasar el ratón): solo cambia su región
+   (`SetWindowRgn`, rectángulo de lo visible), que recorta pintado y clics; el hueco transparente
+   deja pasar los clics. La región se abre a la tarjeta antes de crecer y se recoge al terminar el
+   encogido (`popup_closed`), con red de seguridad `COLLAPSE_GUARD_S`.
+3. **Fases:** `hidden → pill → expanding → card → collapsing → pill | undo | hidden`
+   (`UiHost.surface_phase`). Con la tarjeta abierta, `show_pill` / `hide_pill` / `show_undo`
+   solo se anotan y se resuelven al encogerse (nada parpadea: «No» → pastilla → «Deshacer»).
+   Ruta de Meet (sin pastilla): la pastilla aparece en su sitio y a los ~420 ms crece.
+4. **Sin acrílico DWM en la superficie** (pintaría el lienzo entero) y **la tarjeta es siempre
+   de noche**, como la pastilla: es la misma forma, y pasar de negro a papel a mitad de la
+   animación se leía como un destello.
+5. **No hecho:** abrir la tarjeta antes de tiempo con un clic en la pastilla (necesita un evento
+   nuevo del vigilante; un «Sí/No» sin él no haría nada).

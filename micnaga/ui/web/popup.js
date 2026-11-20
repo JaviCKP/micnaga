@@ -32,6 +32,8 @@
     mode: "ask", confirmed: false,   // mode "end": popup de fin (Terminar/Seguir, Guardar/Descartar)
   };
   const later = (fn, ms) => { const id = setTimeout(fn, ms); S.timers.push(id); return id; };
+  /** Inside pill.html the card is part of the pill: the pill grows into it and shrinks back. */
+  const embedded = () => (window.micnaga && window.micnaga.surface) || null;
   const clearTimers = () => { S.timers.forEach(clearTimeout); S.timers = []; };
 
   const poll = mic.pollLevels((m, s) => {
@@ -164,11 +166,21 @@
   function leave(kind) {
     setPhase(kind);
     poll.stop();
-    later(() => { setPhase("done"); mic.send("popup_closed", kind); }, mic.dur(180) + 10);
+    const surface = embedded();
+    const ms = surface ? surface.collapse() : mic.dur(180);
+    later(() => { setPhase("done"); mic.send("popup_closed", kind); }, ms + 10);
   }
   function morph(provisional) {
-    $("echo-time").textContent = mic.fmtClock((performance.now() - S.shownAt) / 1000);
     card.dataset.provisional = String(provisional);
+    const surface = embedded();
+    if (surface) {           // the card shrinks back into the (already recording) pill
+      setPhase("morphing");
+      mic.send("popup_morph", provisional);
+      const ms = surface.collapse();
+      later(() => { setPhase("done"); poll.stop(); mic.send("popup_closed", "morphed"); }, ms + 20);
+      return;
+    }
+    $("echo-time").textContent = mic.fmtClock((performance.now() - S.shownAt) / 1000);
     setPhase("morphing");
     card.dataset.morph = "true";
     mic.send("popup_morph", provisional);
@@ -226,6 +238,9 @@
     setPhase("hidden");
     void lift.offsetWidth;                 // commit the hidden pose, then animate to rest
     const seq = S.showSeq;
+    // embedded: the pill starts growing now (or after a just-born pill has shown itself)
+    const surface = embedded();
+    const wait = surface ? surface.expand() : 0;
     // Sin depender de requestAnimationFrame: con la ventana aun oculta Chromium no da
     // fotogramas y la tarjeta se quedaria transparente («popup que no aparece»).
     setTimeout(() => {
@@ -236,7 +251,7 @@
       negotiateAuthority(seq);
       bRec.focus({ preventScroll: true, focusVisible: false });
       live.textContent = announce;
-    }, 16);
+    }, 16 + wait);
   }
 
   const api = (window.micnaga = window.micnaga || {});
@@ -303,7 +318,8 @@
     return [Math.max(0, 0.12 + 0.12 * Math.sin(t * 5.3) * Math.sin(t * 1.7)), Math.max(0, 0.06 + 0.07 * Math.sin(t * 3.1 + 1.3) * Math.sin(t * 0.9))];
   };
   mic.i18nReady.then(() => {
-    if (!mic.isHost) {
+    // standalone popup.html shows the card; inside pill.html only with ?card=1 (demo / shots)
+    if (!mic.isHost && (!embedded() || mic.params.get("card") === "1")) {
       const q = mic.params;
       if (q.get("mode") === "end") {
         api.popup.showEnd({ title: q.get("title") || "Revisión semanal", durationS: Number(q.get("dur") || 2834), confirmed: q.get("confirmed") !== "0", timeoutS: 10 });

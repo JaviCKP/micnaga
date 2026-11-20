@@ -24,7 +24,7 @@ def test_popup_api_exposes_popup_state() -> None:
     assert set(api.popup_state()) == {"remaining_s", "total_s", "paused", "authoritative"}
 
 
-def test_expire_falls_back_to_a_python_morph_when_the_js_does_not_react() -> None:
+def test_expire_falls_back_to_a_python_collapse_when_the_js_does_not_react() -> None:
     rig = Rig()
     rig.ctl.start_recording(provisional=True, meeting=MeetingInfo())
     rig.ctl.show_popup(title="x", code=None, monitor_hint=None, timeout_s=15.0)
@@ -33,7 +33,8 @@ def test_expire_falls_back_to_a_python_morph_when_the_js_does_not_react() -> Non
     host.expire_popup()
     assert any("micnaga.popup.expire" in js for js in rig.js(rig.popup))
     host._force_expire(True)  # pasan 0,8 s y el popup sigue "showing"
-    assert host._popup_state in ("morphing", "idle")
+    assert host._popup_state == "idle"
+    assert "micnaga.pill.settle()" in rig.js(rig.pill)  # el JS encaja ya en pastilla
 
 
 def test_expire_with_discard_policy_just_hides() -> None:
@@ -58,23 +59,20 @@ def test_show_pill_twice_does_not_restart_the_clock() -> None:
     assert any("setProvisional(false)" in js for js in rig.js(rig.pill))
 
 
-def test_pending_pill_is_flushed_by_the_safety_timer(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(host_mod, "PILL_FLUSH_S", 0.05)
+def test_show_pill_while_the_card_is_open_is_never_hidden() -> None:
+    """Nunca se graba sin pastilla: con la tarjeta abierta la pastilla ya esta en pantalla
+    (es la propia tarjeta) y al cerrarse queda."""
     rig = Rig()
     host = rig.host
     assert host is not None
     host.show_popup("x", None, None)
     host.show_pill(elapsed_s=3.0, provisional=False)
-    assert not rig.pill.visible
-    import time
-
-    deadline = time.monotonic() + 3
-    while not rig.pill.visible and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert rig.pill.visible
+    assert rig.pill.visible and host.pill_visible
+    host.handle_popup_closed("morphed")
+    assert rig.pill.visible and host.surface_phase == "pill"
 
 
-# ------------------------------------------------------------------ cristal real y transparencia
+# ------------------------------------------------------------------ transparencia
 
 
 def _boot(rig: Rig) -> None:
@@ -84,28 +82,32 @@ def _boot(rig: Rig) -> None:
     host._factory.start(lambda: host._bootstrap(None), icon=None)  # type: ignore[arg-type]
 
 
-def test_overlays_get_real_transparency_and_acrylic_on_windows_11() -> None:
+def test_surface_gets_real_transparency_and_no_acrylic() -> None:
+    """La superficie es un lienzo mayor que la forma visible: el acrilico de DWM pintaria el
+    lienzo entero, asi que la forma la dibuja el CSS y la recorta la region."""
     rig = Rig()
-    _boot(rig)
-    host = rig.host
-    assert host is not None and host.acrylic
-    for key in ("popup", "pill"):
-        win = rig.factory.windows[key]
-        assert ("make_transparent", None) in win.log
-        assert any("mic.setBackdrop('acrylic')" in js for js in rig.js(win))
-        assert (win.hwnd, 38, 3) in rig.w32.dwm  # DWMWA_SYSTEMBACKDROP_TYPE = acrilico
-    pill_dark = [v for (h, a, v) in rig.w32.dwm if h == rig.pill.hwnd and a == 20]
-    assert pill_dark == [1]  # la pastilla siempre oscura
-
-
-def test_acrylic_falls_back_on_windows_10() -> None:
-    rig = Rig()
-    rig.w32.build = 19045
     _boot(rig)
     host = rig.host
     assert host is not None and not host.acrylic
-    assert not any("setBackdrop" in js for js in rig.js(rig.popup) + rig.js(rig.pill))
+    assert ("make_transparent", None) in rig.pill.log
+    assert not any("setBackdrop" in js for js in rig.js(rig.pill))
     assert not [c for c in rig.w32.dwm if c[1] == 38]
+
+
+def test_collapse_guard_closes_the_card_if_the_js_never_answers(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(host_mod, "COLLAPSE_GUARD_S", 0.05)
+    rig = Rig()
+    host = rig.host
+    assert host is not None
+    host.show_pill(elapsed_s=3.0)
+    host.show_popup("x", None, None)
+    host.hide_popup("ended")
+    import time
+
+    deadline = time.monotonic() + 3
+    while host.popup_visible and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not host.popup_visible and host.surface_phase == "pill"
 
 
 def test_acrylic_can_be_disabled_by_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -115,17 +117,22 @@ def test_acrylic_can_be_disabled_by_env(monkeypatch) -> None:  # type: ignore[no
     assert rig.host is not None and not rig.host.acrylic
 
 
-def test_acrylic_fly_animates_size_to_the_exact_pill_rect() -> None:
+def test_the_morph_never_moves_or_resizes_the_window() -> None:
+    """Crecer y encoger es CSS dentro de un lienzo fijo: Win32 solo cambia la region."""
     rig = Rig()
     _boot(rig)
     host = rig.host
     assert host is not None
+    host.show_pill(elapsed_s=21.0, provisional=True)
+    places = list(rig.w32.places(rig.pill.hwnd))
     host.show_popup("x")
+    host.handle_surface_phase("card")
     host.handle_popup_decide("record")
     host.handle_popup_morph(False)
-    final = rig.w32.places(rig.popup.hwnd)[-1]
-    assert final == host._pill_target(host._popup_mon)  # type: ignore[arg-type]
-    assert final[2:] != host._popup_rect[2:]  # type: ignore[index]  # cambia el tamano
+    host.handle_popup_closed("morphed")
+    assert rig.w32.places(rig.pill.hwnd) == places
+    regions = [a for k, a in rig.pill.log if k == "region"]
+    assert len(regions) >= 3 and regions[-1] == regions[0] != regions[-2]  # pill, card, pill
 
 
 def test_popup_state_is_not_authoritative_without_a_provider() -> None:
