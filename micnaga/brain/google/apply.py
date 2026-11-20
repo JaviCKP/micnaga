@@ -174,6 +174,15 @@ class GoogleApplier:
         store.ensure(db)
         return db
 
+    def _key(self, p: dict[str, Any], op: str) -> str:
+        """Clave de idempotencia por la identidad de la propuesta (``uid``), nunca por su
+        etiqueta ``pN`` (que se repite entre generaciones del acta). Las propuestas antiguas sin
+        ``uid`` siguen con la clave de siempre."""
+        rev = int(p.get("revision") or 0)
+        if p.get("uid"):
+            return store.write_key("uid", str(p["uid"]), op, rev)
+        return store.write_key(self.folder.name, str(p.get("id")), op, rev)
+
     def _put(self, key: str, p: dict[str, Any], op: str, tool: str, state: str, **res: Any) -> None:
         db = self._db()
         try:
@@ -181,7 +190,7 @@ class GoogleApplier:
                 db,
                 key,
                 folder=self.folder.name,
-                proposal=str(p.get("id")),
+                proposal=str(p.get("uid") or p.get("id")),
                 op=op,
                 tool=tool,
                 state=state,
@@ -193,7 +202,7 @@ class GoogleApplier:
     def _call(
         self, p: dict[str, Any], op: str, service: str, tool: str, tool_input: dict[str, Any]
     ) -> calls.CallOutcome:
-        key = store.write_key(self.folder.name, str(p.get("id")), op, int(p.get("revision") or 0))
+        key = self._key(p, op)
         db = self._db()
         try:
             prior = store.get(db, key)
@@ -273,9 +282,7 @@ class GoogleApplier:
         kind = p.get("tipo")
         d = p.get("datos") or {}
         if kind == "evento_google":
-            key = store.write_key(
-                self.folder.name, str(p["id"]), "create", int(p.get("revision") or 0)
-            )
+            key = self._key(p, "create")
             tool_input = event_input(d, key)
             out = self._call(p, "create", "calendar", "create_event", tool_input)
             links = out.extra.get("stored") or event_links(out.structured)

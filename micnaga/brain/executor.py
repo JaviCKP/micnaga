@@ -429,7 +429,7 @@ class Executor:
             was_on = {i["id"] for i in (p.get("datos") or {}).get("invitados") or [] if i.get("on")}
             for i in (new.get("datos") or {}).get("invitados") or []:
                 i["on"] = i["id"] in was_on
-        keep: dict[str, Any] = {k: p[k] for k in ("id", "seg", "t") if k in p}
+        keep: dict[str, Any] = {k: p[k] for k in ("id", "uid", "seg", "t") if k in p}
         revision = int(p.get("revision") or 0) + 1
         p.clear()
         p.update(new)

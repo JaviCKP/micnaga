@@ -481,7 +481,11 @@ class Secretary:
             )
         if gplan is not None:
             proposals = gplan.finish(data, result, transcript, acta, proposals)
-        plan.number(proposals)
+        # regenerar nunca reutiliza un ``pN`` ni pierde lo ya aplicado (y su «Deshacer»)
+        kept = plan.carried_over(previous)
+        plan.number(proposals, start=plan.max_number(previous))
+        top = plan.max_number({"propuestas": proposals, "ultimo_id": plan.max_number(previous)})
+        proposals = [*kept, *proposals]
         if odoo is not None and odoo_info.get("estado") == "conectado":
             acta["opciones"] = plan.options(odoo, profile, proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
@@ -498,6 +502,7 @@ class Secretary:
             num_turns=result.num_turns,
             tool_calls=len(result.tool_calls),
             propuestas=proposals,
+            ultimo_id=top,
             odoo=odoo_info,
             aprendizajes={"anadidos": len(outcome.added), "rechazados": len(outcome.rejected)},
         )
