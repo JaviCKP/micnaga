@@ -35,6 +35,11 @@ WORK_DIRNAME = "work"
 TRANSCRIPT_MD = "transcripcion.md"
 TRANSCRIPT_SRT = "transcripcion.srt"
 TRANSCRIPT_JSON = "transcripcion.json"
+ANALYSIS_PENDING = ".micnaga-analysis-pending"
+"""Marca duradera «acta pendiente»: la escribe el worker al terminar la transcripcion (con la
+Secretaria activa) en la carpeta de la reunion, asi viaja con los renombrados. El arranque de la
+Secretaria recoge todas las marcadas sin acta, sin limite de fecha ni de numero (hallazgo P2-c:
+el aviso ``JobDone`` puede perderse)."""
 AUDIO_ME_FLAC = "audio_yo.flac"
 AUDIO_REMOTE_FLAC = "audio_remoto.flac"
 CAPTURE_JSON = "capture.json"

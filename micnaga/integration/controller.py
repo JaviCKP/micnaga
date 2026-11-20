@@ -38,7 +38,12 @@ from typing import TYPE_CHECKING
 
 from micnaga import holding, paths
 from micnaga.config import Config
-from micnaga.integration.jobs import Finisher, finalize_and_enqueue, finalize_and_hold
+from micnaga.integration.jobs import (
+    Finisher,
+    finalize_and_enqueue,
+    finalize_and_hold,
+    write_trim_marker,
+)
 from micnaga.integration.live import LivePort, NoLive
 from micnaga.integration.ports import RecorderFactory, RecorderLike, UiPort
 from micnaga.watcher import (
@@ -77,8 +82,16 @@ def foreground_hwnd() -> int | None:
 
 
 class _Session:
-    def __init__(self, directory: Path, meeting: MeetingInfo, recorder: RecorderLike) -> None:
+    def __init__(
+        self,
+        directory: Path,
+        meeting: MeetingInfo,
+        recorder: RecorderLike,
+        *,
+        db_path: Path | None = None,
+    ) -> None:
         self.directory = directory
+        self.db_path = db_path  # indice de la carpeta del arranque (no el de la config de ahora)
         self.meeting = meeting
         self.recorder = recorder
         self.paused = False
@@ -99,6 +112,7 @@ class AppController:
         *,
         recorder_factory: RecorderFactory | None = None,
         on_job_queued: Callable[[], None] | None = None,
+        on_job_queued_db: Callable[[Path], None] | None = None,
         foreground: Callable[[], int | None] = foreground_hwnd,
         now: Callable[[], datetime] = lambda: datetime.now().astimezone(),
         ticker: bool = True,
@@ -110,6 +124,7 @@ class AppController:
         self._finisher = finisher
         self._factory = recorder_factory or default_recorder_factory
         self._on_job_queued = on_job_queued or (lambda: None)
+        self._on_job_queued_db = on_job_queued_db
         self._foreground = foreground
         self._live: LivePort = live if live is not None else NoLive()
         self._now = now
@@ -179,11 +194,20 @@ class AppController:
                 return
             title = (meeting.title or "").strip() or None
             when = self._now()
-            root = paths.meetings_root(self._config)
-            directory = paths.unique_folder(
-                root, paths.meeting_folder_name(when, title or paths.DEFAULT_SLUG)
-            )
+            error_key = "capture_failed"
             try:
+                # La carpeta (y su indice) se fijan aqui y la sesion los conserva hasta el final
+                # del procesado aunque se cambie la carpeta de reuniones (hallazgo P1-4). Un
+                # fallo resolviendola (permisos...) es un fallo de arranque mas (P2-d).
+                try:
+                    root = paths.meetings_root(self._config)
+                    db_path = root / paths.db_path(self._config).name
+                    directory = paths.unique_folder(
+                        root, paths.meeting_folder_name(when, title or paths.DEFAULT_SLUG)
+                    )
+                except OSError:
+                    error_key = "storage_failed"
+                    raise
                 recorder = self._factory(self._config.capture)
                 recorder.start(
                     directory,
@@ -198,19 +222,19 @@ class AppController:
             else:
                 failed = False
                 self.last_start_error = None
-                session = _Session(directory, meeting, recorder)
+                session = _Session(directory, meeting, recorder, db_path=db_path)
                 session.confirmed = not provisional
                 self._session = session
         if failed:
-            self._report_start_failure()
+            self._report_start_failure(error_key)
             return
         log.info("recording started (provisional=%s)", provisional)
         self._start_live(directory)
         self._wake_ticker()
 
-    def _report_start_failure(self) -> None:
+    def _report_start_failure(self, key: str = "capture_failed") -> None:
         try:
-            self._ui.notify_error("capture_failed")
+            self._ui.notify_error(key)
         except Exception:
             log.exception("could not show the capture error")
         w = self._watcher
@@ -351,6 +375,8 @@ class AppController:
         directory = s.directory
         holding.mark_discarded(directory, reason)  # por si la app muere antes de apartarla
         end_s = s.end_mark_s if trim else None
+        if end_s is not None:  # el corte, en disco ANTES de parar (P2-a)
+            write_trim_marker(directory, end_s)
         self._prepare_stop(s, confirmed=False, meeting=s.meeting)
 
         def stop_then_hold() -> None:
@@ -486,18 +512,26 @@ class AppController:
     ) -> None:
         self._prepare_stop(s, confirmed=confirmed, meeting=meeting)
         directory = s.directory
+        db_path = s.db_path
         end_s = s.end_mark_s if trim else None
+        if end_s is not None:  # el corte, en disco ANTES de parar el grabador y el vivo (P2-a)
+            write_trim_marker(directory, end_s)
+
+        def enqueued() -> None:
+            if db_path is not None and self._on_job_queued_db is not None:
+                self._on_job_queued_db(db_path)
+            self._on_job_queued()
 
         def stop_then_queue() -> None:
             stopped = self._safe_stop(s)
             self._stop_live(directory)
             if not stopped:
                 return
+            # el indice de la carpeta donde se grabo, aunque la config ya apunte a otra (P1-4)
             self._finisher.submit(
                 "finalize",
-                finalize_and_enqueue(
-                    self._config, directory, on_enqueued=self._on_job_queued, end_s=end_s
-                ),
+                finalize_and_enqueue(self._config, directory, on_enqueued=enqueued, end_s=end_s),
+                db_path=db_path,
             )
 
         self._spawn_stopper(stop_then_queue)

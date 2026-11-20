@@ -334,6 +334,8 @@ class PipelineRunner:
             self._rename(session, final)
             session = final
         ensure_flac(session)
+        if job is not None:
+            self._mark_analysis_pending(session)
         if self.db is not None:
             output.index_meeting(self.db, session, transcript, job.id if job is not None else None)
             if job is not None:
@@ -351,6 +353,15 @@ class PipelineRunner:
                 )
             )
         return RunResult("done", session, transcript=transcript, stage_times=times, skipped=skipped)
+
+    def _mark_analysis_pending(self, session: Path) -> None:
+        """Acta pendiente, en disco antes de dar el trabajo por hecho (el aviso puede perderse)."""
+        try:
+            if not self.config.secretaria.enabled:
+                return
+            (session / paths.ANALYSIS_PENDING).write_text("", encoding="utf-8")
+        except Exception:
+            log.warning("could not mark the meeting as pending analysis", exc_info=True)
 
     def _plan_final(self, session: Path, transcript: Transcript) -> Path:
         if not self.rename:

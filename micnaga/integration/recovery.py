@@ -26,6 +26,7 @@ from micnaga.capture.session import (
     read_capture_json,
 )
 from micnaga.config import Config
+from micnaga.integration.jobs import apply_trim_marker, drop_trim_marker
 from micnaga.store.db import Database
 
 log = logging.getLogger(__name__)
@@ -50,7 +51,9 @@ def hold_marked_sessions(config: Config, root: Path) -> list[Path]:
         if reason is None:
             continue
         try:
+            apply_trim_marker(d)  # corte persistido antes de parar (P2-a)
             finalize_session(d, flac_level=config.capture.flac_level)
+            drop_trim_marker(d)
         except RuntimeError:
             continue  # otra instancia la sigue grabando (no deberia pasar con el mutex)
         except Exception:
@@ -79,7 +82,9 @@ def recover_and_enqueue(config: Config, db: Database) -> list[Path]:
     queued: list[Path] = []
     for d in sorted(candidates):
         try:
+            apply_trim_marker(d)  # corte persistido antes de parar (P2-a)
             finalize_session(d, flac_level=config.capture.flac_level)
+            drop_trim_marker(d)
         except Exception:
             log.exception("could not finalize a recovered session")
         if not _confirmed(d):

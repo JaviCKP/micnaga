@@ -326,6 +326,8 @@
   "library.held.recovered": "Recuperada: se está transcribiendo",
   "toast.error.capture_failed.title": "No se pudo grabar",
   "toast.error.capture_failed.body": "No hay micrófono ni audio del sistema disponibles. Revisa los dispositivos y pulsa «Grabar ahora».",
+  "toast.error.storage_failed.title": "No se pudo grabar",
+  "toast.error.storage_failed.body": "No se puede escribir en la carpeta de reuniones (permisos o disco). Revisa la carpeta en Ajustes y pulsa «Grabar ahora».",
   "settings.f.detection.end_confirm_s": "Fin de la reunión tras",
   "settings.f.detection.end_confirm_s.help": "Segundos seguidos con el micrófono libre antes de mostrar el aviso «Reunión terminada».",
   "settings.f.detection.end_popup_timeout_s": "Tiempo para responder al final",

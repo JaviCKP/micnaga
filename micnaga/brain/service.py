@@ -166,6 +166,12 @@ class BrainService(GoogleApiMixin):
                     if has and not (folder / acta_io.ACTA_JSON).is_file():
                         # lo que fallo antes (sin sesion de Claude, sin red...) vuelve a probar
                         bstore.enqueue(db, rec.folder, failed_before=self._started_at)
+                # P2-c: actas pendientes marcadas por el worker, de cualquier fecha y numero
+                for mark in sorted(root.glob(f"*/{paths.ANALYSIS_PENDING}")):
+                    if (mark.parent / acta_io.ACTA_JSON).is_file():
+                        mark.unlink(missing_ok=True)
+                    elif (mark.parent / paths.TRANSCRIPT_JSON).is_file():
+                        bstore.enqueue(db, mark.parent.name, failed_before=self._started_at)
                 due = bstore.due(db)
             finally:
                 db.close()

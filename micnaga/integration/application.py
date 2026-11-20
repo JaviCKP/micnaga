@@ -246,6 +246,8 @@ class Application:
             db_factory=self._db_factory,
             db_key=self._db_key,
             spawn=spawn,
+            # con un ``spawn`` inyectado (tests) nunca se lanza un worker real para otra carpeta
+            spawn_for=(lambda _root: spawn()) if spawn is not None else None,
             is_running=is_worker_running,
             models_ready=self._models_ready_fn,
             on_busy=self._on_busy,
@@ -265,6 +267,7 @@ class Application:
             self.finisher,
             recorder_factory=recorder_factory,
             on_job_queued=self.supervisor.kick,
+            on_job_queued_db=self.supervisor.watch,
             live=live,
             **ctl_kwargs,
         )

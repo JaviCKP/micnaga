@@ -307,17 +307,20 @@ def restore_held(meetings_root: Path, name: str) -> Path:
 
 
 def _set_confirmed(session_dir: Path) -> None:
+    """Confirmada y marcada como recuperada por el usuario (salta las compuertas automaticas:
+    una sesion corta ya confirmada volvia a «Descartadas» en bucle, hallazgo P2-b)."""
+    import dataclasses
+
     from micnaga.capture.session import read_capture_json, write_capture_json
+    from micnaga.gates import USER_RESTORED_KEY
 
     try:
         meta = read_capture_json(session_dir)
     except (OSError, ValueError, KeyError):
         log.warning("recovered session has no readable capture.json")
         return
-    if not meta.confirmed:
-        import dataclasses
-
-        write_capture_json(session_dir, dataclasses.replace(meta, confirmed=True))
+    extra = {**meta.extra, USER_RESTORED_KEY: True}
+    write_capture_json(session_dir, dataclasses.replace(meta, confirmed=True, extra=extra))
 
 
 def delete_held(meetings_root: Path, name: str) -> bool:

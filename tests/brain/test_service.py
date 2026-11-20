@@ -165,6 +165,36 @@ def test_boot_picks_up_recent_meetings_without_acta(
         svc.stop()
 
 
+def test_boot_picks_up_meetings_marked_pending_regardless_of_age(
+    fake_claude: FakeClaude, secrets_file: Path
+) -> None:
+    """P2-c: el aviso JobDone se perdio; la marca del worker basta aunque sea antigua."""
+    from micnaga import paths
+
+    old = write_meeting(
+        business_transcript(start="2020-01-01T10:00:00+01:00"), "2020-01-01_1000_reunion"
+    )
+    (old / paths.ANALYSIS_PENDING).write_text("", encoding="utf-8")
+    log = fake_claude({"structured": canned.structured(with_crm=False), "calls": RESEARCH})
+    svc = BrainService(lambda: cfg())
+    svc.start()
+    try:
+        for _ in range(150):
+            if Path(str(log) + ".count").is_file() and not old.exists():
+                break
+            threading.Event().wait(0.1)
+        assert Path(str(log) + ".count").read_text() == "1"
+        assert not old.exists()  # analizada y renombrada por el titulo del acta
+    finally:
+        svc.stop()
+    # siguiente arranque: con acta, la marca se retira y no se vuelve a analizar
+    svc = BrainService(lambda: cfg())
+    svc._boot()
+    svc.stop()
+    assert not list(old.parent.glob(f"*/{paths.ANALYSIS_PENDING}"))
+    assert Path(str(log) + ".count").read_text() == "1"
+
+
 def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> None:
     fake_claude({"structured": canned.structured(with_crm=False)})
     svc = BrainService(lambda: cfg())

@@ -340,11 +340,11 @@ class Database:
                 (str(session_dir), self._clock(), job_id),
             )
 
-    def retry_job(self, job_id: int) -> Job:
-        """``failed`` -> ``pending`` (accion manual del usuario)."""
-        return self._transition(
-            job_id, JobState.PENDING, (JobState.FAILED,), "error = NULL", (), "retry"
-        )
+    def retry_job(self, job_id: int, *, reset_attempts: bool = False) -> Job:
+        """``failed`` -> ``pending`` (accion manual del usuario). ``reset_attempts`` vuelve a
+        contar los intentos desde cero (un reintento explicito no hereda el limite agotado)."""
+        extra = "error = NULL, attempts = 0" if reset_attempts else "error = NULL"
+        return self._transition(job_id, JobState.PENDING, (JobState.FAILED,), extra, (), "retry")
 
     def requeue_stale(self, max_attempts: int = DEFAULT_MAX_ATTEMPTS) -> list[Job]:
         """Recupera trabajos que quedaron ``processing`` por un cierre inesperado.
