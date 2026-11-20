@@ -159,9 +159,16 @@ def _apply_trim(session_dir: Path, meta: CaptureMeta) -> CaptureMeta:
     if not all(w.suffix.lower() == ".wav" and w.exists() for w in wavs):
         log.warning("trim requested but the tracks are not WAV any more; not trimmed")
         return meta
-    n = min(raw, *(wavio.repair_wav(w, rate) for w in wavs))
-    for w in wavs:
-        wavio.truncate_wav(w, n)
+    # Cada pista se corta en el punto de recorte, nunca antes: si una es mas corta que el corte
+    # (p. ej. el remoto se quedo mudo) se rellena con silencio hasta la mas larga, en vez de
+    # recortar la otra a su longitud (eso borraba audio valido; revision externa).
+    lengths = [wavio.repair_wav(w, rate) for w in wavs]
+    n = max(0, min(raw, max(lengths)))
+    for w, have in zip(wavs, lengths, strict=True):
+        if have > n:
+            wavio.truncate_wav(w, n)
+        elif have < n:
+            wavio.append_zeros(w, n - have)
     t_end = n / rate
 
     def cut(track: TrackInfo) -> TrackInfo:

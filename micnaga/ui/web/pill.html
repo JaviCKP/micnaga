@@ -5,36 +5,77 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Micnaga</title>
 <link rel="stylesheet" href="tokens.css">
+<link rel="stylesheet" href="popup.css">
 <link rel="stylesheet" href="pill.css">
 </head>
 <body class="transparent pill-page">
+<!-- ONE surface: the recording pill, which grows into the «¿Estás en una reu?» / «Reunión
+     terminada» card and shrinks back (same box; the window never resizes, Python clips it). -->
 <div class="pill pywebview-drag-region" id="pill" role="group" data-i18n-aria-label="pill.label"
-     data-state="recording" data-hover="false" data-provisional="false">
-  <span class="state-ico" aria-hidden="true"><span class="rec-dot"></span><span class="pause-glyph"></span></span>
-  <time class="pill-time" id="time" role="timer" aria-live="off">00:00</time>
-  <span class="pill-tag" id="tag" data-i18n="pill.provisional">provisional</span>
-  <button class="pill-save" id="b-save" type="button" data-i18n-title="pill.save_tip"><span class="save-ico" data-icon="check" aria-hidden="true"></span><span data-i18n="pill.save">¿Guardar?</span></button>
-  <span class="pill-title" id="ptitle" hidden></span>
-  <span class="pill-meters" aria-hidden="true">
-    <canvas class="wave" data-dither="2" id="m-mic"></canvas>
-    <canvas class="wave" data-dither="2" id="m-sys"></canvas>
-  </span>
-  <span class="pill-actions">
-    <button class="pb" id="b-marker" type="button" data-i18n-aria-label="pill.marker" data-i18n-title="pill.marker" data-icon="flag"></button>
-    <button class="pb" id="b-pause" type="button" aria-pressed="false" data-i18n-aria-label="pill.pause" data-i18n-title="pill.pause">
-      <span class="swap" id="pause-swap"></span>
-    </button>
-    <button class="pb stop" id="b-stop" type="button" data-i18n-aria-label="pill.stop" data-i18n-title="pill.stop"><span class="stop-sq"></span></button>
-  </span>
-  <span class="sr-only" id="live" role="status" aria-live="polite"></span>
+     data-state="recording" data-hover="false" data-provisional="false" data-surface="pill">
+  <div class="pill-row">
+    <span class="state-ico" aria-hidden="true"><span class="rec-dot"></span><span class="pause-glyph"></span></span>
+    <time class="pill-time" id="time" role="timer" aria-live="off">00:00</time>
+    <span class="pill-tag" id="tag" data-i18n="pill.provisional">provisional</span>
+    <button class="pill-save" id="b-save" type="button" data-i18n-title="pill.save_tip"><span class="save-ico" data-icon="check" aria-hidden="true"></span><span data-i18n="pill.save">¿Guardar?</span></button>
+    <span class="pill-title" id="ptitle" hidden></span>
+    <span class="pill-meters" aria-hidden="true">
+      <canvas class="wave" data-dither="2" id="pm-mic"></canvas>
+      <canvas class="wave" data-dither="2" id="pm-sys"></canvas>
+    </span>
+    <span class="pill-actions">
+      <button class="pb" id="b-marker" type="button" data-i18n-aria-label="pill.marker" data-i18n-title="pill.marker" data-icon="flag"></button>
+      <button class="pb" id="b-pause" type="button" aria-pressed="false" data-i18n-aria-label="pill.pause" data-i18n-title="pill.pause">
+        <span class="swap" id="pause-swap"></span>
+      </button>
+      <button class="pb stop" id="b-stop" type="button" data-i18n-aria-label="pill.stop" data-i18n-title="pill.stop"><span class="stop-sq"></span></button>
+    </span>
+  </div>
   <!-- «Descartada · Deshacer»: ocupa la misma capsula durante unos segundos tras un «No» -->
   <span class="undo" id="undo" aria-hidden="true">
     <span class="undo-text" data-i18n="undo.discarded">Descartada</span>
     <button class="undo-btn" id="b-undo" type="button" data-i18n="undo.undo">Deshacer</button>
     <i class="undo-bar" id="undo-bar"></i>
   </span>
+  <!-- the card the pill grows into: the dot + timer above stay put and become its header -->
+  <section class="card" id="card" role="alertdialog" aria-modal="false"
+           aria-labelledby="p-title" aria-describedby="p-meta" data-kind="meet">
+    <div class="lift" id="lift" data-phase="hidden">
+      <div class="body" id="body">
+        <div class="info">
+          <p class="src" id="p-meta">
+            <span class="src-ico" id="p-ico" aria-hidden="true"></span><span class="meet-title" id="p-meet"></span><span class="sr-only" id="p-code" hidden></span>
+            <span class="notice" id="notice">
+              <span class="notice-ico" data-icon="megaphone" aria-hidden="true"></span>
+              <span class="notice-text" data-i18n="popup.notice">Avisa de que grabas</span>
+              <button class="notice-x" id="notice-x" type="button" data-i18n-aria-label="popup.notice_dismiss" data-icon="x"></button>
+            </span>
+          </p>
+          <h1 class="question display" id="p-title" data-i18n="popup.title">¿Estás en una reu?</h1>
+          <div class="levels" role="group" data-i18n-aria-label="popup.levels">
+            <span class="lvl"><span data-icon="mic" aria-hidden="true"></span><canvas class="wave" data-dither="2" id="m-mic" role="meter" data-i18n-aria-label="popup.me" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+            <span class="lvl"><span data-icon="speaker" aria-hidden="true"></span><canvas class="wave" data-dither="2" id="m-sys" role="meter" data-i18n-aria-label="popup.them" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"></canvas></span>
+          </div>
+          <div class="end-row" id="end-row">
+            <button class="chip-btn" id="b-alt" type="button"><span class="chip-ico" id="alt-ico" aria-hidden="true"></span><span id="alt-label"></span></button>
+          </div>
+        </div>
+        <div class="actions">
+          <button class="btn-round no" id="b-no" type="button" aria-keyshortcuts="Escape" data-i18n-aria-label="popup.no" data-i18n-title="popup.no_tip" data-icon="x"></button>
+          <span class="rec-wrap">
+            <span class="countdown" id="countdown" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100" data-i18n-aria-label="popup.countdown"><i></i></span>
+            <button class="btn-round rec" id="b-rec" type="button" aria-keyshortcuts="Enter" data-i18n-aria-label="popup.record" data-i18n-title="popup.record_tip">
+              <span class="swap" aria-hidden="true"><span class="swap-a"></span><span class="swap-b"></span></span>
+            </button>
+          </span>
+        </div>
+      </div>
+    </div>
+  </section>
 </div>
+<span class="sr-only" id="live" role="status" aria-live="polite"></span>
 <script src="bridge.js"></script>
 <script src="pill.js"></script>
+<script src="popup.js"></script>
 </body>
 </html>

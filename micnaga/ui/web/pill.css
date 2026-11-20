@@ -1,29 +1,75 @@
 /*
- * Recording pill (MIC-10/12/13) — 200 x 40 bar, 296 wide on hover; also the popup's morph
- * target. Always night (color-scheme: dark): it floats over arbitrary content (Meet light or
- * dark) and must stay legible — yet quiet — at the 60 % resting opacity.
+ * Recording pill (MIC-10/12/13) — 200 x 40 bar, 296 wide on hover — and the card it grows into.
+ * Always night (color-scheme: dark): it floats over arbitrary content (Meet light or dark) and
+ * must stay legible — yet quiet — at the 60 % resting opacity.
  * The promo's flat card, small: near-black, a hairline, radius 6. Warm only for recording.
- * Nothing paints outside the bar (the window is cut to it).
+ *
+ * ONE surface. The window is a fixed transparent stage (420 x 112, winapi.STAGE_SIZE) and Python
+ * clips it (SetWindowRgn) to whatever is visible. Inside it `.pill` is the shape: at rest a bar
+ * centred on --px; when the question is due it becomes the 372 x 112 card (left/top/width/height
+ * interpolate, ease .2,.8,.2,1, 460 ms) and shrinks back (300 ms). The dot + timer never move
+ * relative to the shape's corner: they ride it and become the card's header. Nothing reflows:
+ * the card content is a fixed 372 x 112 layer that fades and rises in once the shape is open.
  */
 .pill {
   --w: 200px;
+  --px: 50vw;            /* pill centre x inside the stage (Python: micnaga.pill.layout) */
+  --py: 0px;             /* pill top inside the stage */
+  --card-l: 0px;         /* card left inside the stage */
+  --g-dur: var(--dur);
+  --g-ease: var(--ease-out);
+  --g-delay: 0ms;
   --pill-text: #f4f4f7;
   --pill-dim: #9a9aa6;
   --pill-ring: rgb(244 244 247 / 0.16);
   color-scheme: dark;
-  position: relative;
-  display: flex; align-items: center; gap: 10px;
-  width: var(--w); height: 40px; margin: 0 auto; padding: 0 6px 0 15px;
+  position: absolute; top: var(--py); left: calc(var(--px) - var(--w) / 2);
+  width: var(--w); height: 40px; margin: 0; padding: 0;
   border-radius: 6px;
   color: var(--pill-text);
   background: #0a090f;
   box-shadow: inset 0 0 0 1px var(--pill-ring);
   opacity: 0.6;
   overflow: hidden;
-  transition: width var(--dur) var(--ease-out), opacity var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  transition:
+    left var(--g-dur) var(--g-ease) var(--g-delay), top var(--g-dur) var(--g-ease) var(--g-delay),
+    width var(--g-dur) var(--g-ease) var(--g-delay), height var(--g-dur) var(--g-ease) var(--g-delay),
+    opacity var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
   user-select: none; -webkit-user-select: none;
 }
+.pill-row { position: relative; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 15px; }
 .pill[data-hover="true"], .pill:focus-within { --w: 296px; opacity: 1; }
+
+/* ---- the morph: pill -> card -> pill -------------------------------------------------- */
+.pill[data-surface="expanding"], .pill[data-surface="card"] {
+  --g-dur: 460ms; --g-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  left: var(--card-l); top: 0; width: 372px; height: 112px; opacity: 1 !important;
+  transition:
+    left var(--g-dur) var(--g-ease), top var(--g-dur) var(--g-ease),
+    width var(--g-dur) var(--g-ease), height var(--g-dur) var(--g-ease),
+    opacity 200ms var(--ease);
+}
+.pill[data-surface="collapsing"] {
+  --g-dur: 280ms; --g-ease: cubic-bezier(0.2, 0.8, 0.2, 1); --g-delay: 20ms;
+  transition:
+    left var(--g-dur) var(--g-ease) var(--g-delay), top var(--g-dur) var(--g-ease) var(--g-delay),
+    width var(--g-dur) var(--g-ease) var(--g-delay), height var(--g-dur) var(--g-ease) var(--g-delay),
+    opacity 300ms var(--ease);
+}
+/* while it is a card the bar's extras step aside (the dot + timer stay: the card's header) */
+.pill:is([data-surface="expanding"], [data-surface="card"]) :is(.pill-tag, .pill-save, .pill-title, .pill-meters, .pill-actions),
+.pill[data-surface="collapsing"] :is(.pill-title, .pill-actions) {
+  opacity: 0 !important; visibility: hidden; pointer-events: none;
+  transition: opacity 90ms var(--ease), visibility 0s linear 90ms;
+}
+/* ...and come back in the last third of the shrink. An animation, not a transition: the
+   «Sí» swaps «¿Guardar?» for the meters while shrinking, and an element that was
+   display:none has nothing to transition from (it would pop in at full opacity). */
+.pill[data-surface="collapsing"] :is(.pill-tag, .pill-save, .pill-meters) {
+  pointer-events: none;
+  animation: extras-in 140ms var(--ease) 160ms both;
+}
+@keyframes extras-in { from { opacity: 0; } }
 
 /* state glyph: warm square (recording), hollow square (provisional), two ink bars (private pause) */
 .state-ico { position: relative; width: 10px; height: 10px; flex: none; display: grid; place-items: center; }
@@ -48,7 +94,7 @@
 /* two stacked live levels as dithered cells: me (top), them (bottom) */
 .pill-meters { display: grid; gap: 2px; width: 52px; margin-left: auto; margin-right: 9px; flex: none; }
 .pill-meters .wave { height: 8px; color: #d6d6de; }
-.pill-meters #m-sys { color: #8c8c99; }
+.pill-meters #pm-sys { color: #8c8c99; }
 
 .pill-actions {
   display: flex; gap: 2px; align-items: center; margin-left: 0;
@@ -124,15 +170,8 @@
 .pill[data-has-title="true"][data-hover="true"] .pill-actions,
 .pill[data-has-title="true"]:focus-within .pill-actions { margin-left: auto; }
 
-/* ---- real Acrylic behind the window (Python: DWM transient backdrop + 8 px window corners).
-   The bar stays opaque so nothing of the blurred desktop shows; the «60 % at rest» quieting
-   moves to the content (the window itself cannot be faded from the page). */
-:root[data-backdrop="acrylic"] .pill { width: 100vw; height: 100vh; border-radius: 8px; opacity: 1; }
-:root[data-backdrop="acrylic"] .pill > :not(.pill-actions) { opacity: 0.65; transition: opacity var(--dur) var(--ease); }
-:root[data-backdrop="acrylic"] .pill[data-hover="true"] > *, :root[data-backdrop="acrylic"] .pill:focus-within > * { opacity: 1; }
-
 /* standalone page */
-body.pill-page { background: transparent; }
+body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; background: transparent; }
 
 /* ---- «¿Guardar?» en la pastilla provisional: la decision siempre a mano ------------------ */
 .pill-save {
@@ -154,7 +193,7 @@ body.pill-page { background: transparent; }
 
 /* ---- «Descartada · Deshacer» ---------------------------------------------------------- */
 .undo {
-  position: absolute; inset: 0; display: none; align-items: center; gap: 10px; padding: 0 6px 0 15px;
+  position: absolute; top: 0; left: 0; right: 0; height: 40px; display: none; align-items: center; gap: 10px; padding: 0 6px 0 15px;
   color: var(--pill-text);
 }
 .pill[data-mode="undo"] { --w: 236px; opacity: 1; }
@@ -171,4 +210,46 @@ body.pill-page { background: transparent; }
 .undo-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .undo-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
   background: rgb(244 244 247 / 0.4); transform-origin: left center; transform: scaleX(var(--p, 1)); }
-:root[data-backdrop="acrylic"] .pill[data-mode="undo"] > .undo { opacity: 1; }
+
+/* ---- the card inside the pill (popup.css draws its parts; this places them) ------------
+ *
+ *   ┌───────────────────────────────────────────┐
+ *   │ ■ 00:21   REVISIÓN SEMANAL  (aviso)     ✕ │   dot + timer = the pill's own, unmoved
+ *   │ ¿ESTÁS EN UNA REU?                    [●] │
+ *   │ mic ░▒▓▒░   sys ░░▒░                       │
+ *   └───────────────────────────────────────────┘
+ */
+.pill .card {
+  --cw: 372px; --ch: 112px;
+  position: absolute; top: 0; left: 0; width: 372px; height: 112px;
+  border-radius: 0; background: none; box-shadow: none; overflow: visible; isolation: auto;
+  color-scheme: dark; color: var(--text);
+  transition: none; pointer-events: none;
+}
+.pill[data-surface="card"] .card { pointer-events: auto; }
+.pill .card::after { display: none; }
+.pill .body { padding: 12px 12px 14px 15px; transition: none; }
+.pill .info { gap: 9px; }
+.pill .src { padding-left: 74px; }      /* after the pill's dot (10) + gap (10) + timer (44) + gap (10) */
+.pill .src::before { display: none; }
+.pill .actions { margin-top: -4px; }
+
+.pill .lift { position: absolute; inset: 0; transform: none; transition: opacity 80ms var(--ease-in); }
+.pill .lift[data-phase="hidden"], .pill .lift[data-phase="done"] { opacity: 0; transform: none; transition: none; visibility: hidden; }
+.pill .lift[data-phase="shown"], .pill .lift[data-phase="confirming"] { opacity: 1; transform: none; transition: none; }
+.pill .lift[data-phase="leaving"], .pill .lift[data-phase="fading"], .pill .lift[data-phase="morphing"] { opacity: 0; transform: none; }
+/* the content waits for the shape (open ~85 % at 110 ms), then fades + rises 6 px, in reading order */
+.pill .lift[data-phase="shown"] :is(.src, .question, .levels, .end-row, .actions) { animation: card-in 300ms var(--ease-out) both; }
+.pill .lift[data-phase="shown"] .src { animation-delay: 110ms; }
+.pill .lift[data-phase="shown"] .actions { animation-delay: 130ms; }
+.pill .lift[data-phase="shown"] .question { animation-delay: 150ms; }
+.pill .lift[data-phase="shown"] :is(.levels, .end-row) { animation-delay: 190ms; }
+@keyframes card-in { from { opacity: 0; transform: translateY(6px); } }
+
+/* reduced motion: no travelling shape; JS cross-fades the surface instead */
+:root[data-motion="off"] .pill, :root[data-motion="off"] .pill .lift { transition: none !important; }
+:root[data-motion="off"] .pill .lift * { animation-delay: 0ms !important; }
+@media (prefers-reduced-motion: reduce) {
+  .pill, .pill .lift { transition: none !important; }
+  .pill .lift * { animation-delay: 0ms !important; }
+}

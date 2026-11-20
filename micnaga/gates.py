@@ -75,6 +75,16 @@ class GateMetrics:
         }
 
 
+USER_RESTORED_KEY = "user_restored"
+"""``capture.json -> extra.user_restored``: el usuario la saco de «Descartadas» con «Recuperar y
+transcribir». Es una decision explicita: las compuertas automaticas ya no se aplican (si no, una
+grabacion corta volvia a «Descartadas» en bucle, hallazgo P2-b)."""
+
+
+def user_restored(extra: Any) -> bool:
+    return isinstance(extra, dict) and extra.get(USER_RESTORED_KEY) is True
+
+
 def evaluate_gates(
     duration_s_effective: float,
     remote_speech_s: float,

@@ -368,7 +368,7 @@ class Secretary:
         req = ClaudeRequest(
             prompt=build_input(
                 transcript,
-                context=learn.load_context(),
+                context=learn.load_context(odoo_context_key(self.config)),
                 glossary=glossary_lines(self.config),
                 odoo=odoo_text,
                 user_name=(str(profile.get("user") or "") or None) if profile else None,
@@ -481,7 +481,11 @@ class Secretary:
             )
         if gplan is not None:
             proposals = gplan.finish(data, result, transcript, acta, proposals)
-        plan.number(proposals)
+        # regenerar nunca reutiliza un ``pN`` ni pierde lo ya aplicado (y su «Deshacer»)
+        kept = plan.carried_over(previous)
+        plan.number(proposals, start=plan.max_number(previous))
+        top = plan.max_number({"propuestas": proposals, "ultimo_id": plan.max_number(previous)})
+        proposals = [*kept, *proposals]
         if odoo is not None and odoo_info.get("estado") == "conectado":
             acta["opciones"] = plan.options(odoo, profile, proposals)
         outcome = learn.add_learnings(data.get("aprendizajes") or [], today=today)
@@ -498,6 +502,7 @@ class Secretary:
             num_turns=result.num_turns,
             tool_calls=len(result.tool_calls),
             propuestas=proposals,
+            ultimo_id=top,
             odoo=odoo_info,
             aprendizajes={"anadidos": len(outcome.added), "rechazados": len(outcome.rejected)},
         )
@@ -551,9 +556,10 @@ def retitle_meeting(
     """Titulo nuevo en ``transcripcion.json`` (+ MD/SRT), carpeta ``YYYY-MM-DD_HHMM_slug`` y
     todo lo que lleva el nombre de la carpeta en la base, en una transaccion. Si la carpeta no se
     puede renombrar (un FLAC abierto en la biblioteca...) se queda solo el titulo."""
-    transcript = output.read_transcript(folder)
-    updated = replace(transcript, meeting=replace(transcript.meeting, title=title))
-    output.write_transcript(folder, updated)
+    with output.transcript_lock(folder):
+        transcript = output.read_transcript(folder)
+        updated = replace(transcript, meeting=replace(transcript.meeting, title=title))
+        output.write_transcript(folder, updated)
     try:
         start = datetime.fromisoformat(transcript.meeting.start)
         target = paths.unique_folder(folder.parent, paths.meeting_folder_name(start, title))
@@ -614,3 +620,10 @@ def _first_arg(args: dict[str, Any]) -> str | None:
         if isinstance(v, str | int) and not isinstance(v, bool):
             return str(v)[:60]
     return None
+
+
+def odoo_context_key(cfg: Any) -> str | None:
+    """Clave de la conexion de Odoo configurada (para su ``contexto.md``)."""
+    from micnaga.brain.odoo_learn import connection_key_for
+
+    return connection_key_for(cfg.secretaria)

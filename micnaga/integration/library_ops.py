@@ -28,9 +28,14 @@ class AppLibraryOps:
         self._config = config or load_config
 
     def _folder(self, folder: str) -> Path:
-        root = paths.meetings_root(self._config()).resolve()
-        path = (root / folder).resolve()
-        if not path.is_relative_to(root) or path == root or not path.is_dir():
+        """Bajo la raiz de ahora o por la ruta del indice (``micnaga.store.locate``, P1-4)."""
+        from micnaga.store.locate import existing_db_factory, meeting_dir
+
+        cfg = self._config()
+        path = meeting_dir(
+            paths.meetings_root(cfg), folder, existing_db_factory(paths.db_path(cfg))
+        )
+        if path is None:
             raise FileNotFoundError(folder)
         return path
 

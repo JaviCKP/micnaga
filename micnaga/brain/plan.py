@@ -19,8 +19,11 @@ Nada de lo que devuelve el modelo se usa sin pasar por aqui:
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import re
+import uuid
 from datetime import date
 from typing import Any
 
@@ -883,8 +886,77 @@ def options(
     return out
 
 
-def number(proposals: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    for i, p in enumerate(proposals, 1):
+# ============================================================================== identidad
+#
+# ``id`` (``p1``, ``p2``...) es solo la etiqueta corta de la revision; la identidad de una
+# propuesta es ``uid`` (unico, se asigna al crearla y sobrevive a ediciones, revisiones de la IA y
+# a regenerar el acta). Las claves de idempotencia y lo que se deshace van por ``uid``: dos
+# generaciones del acta pueden tener un ``p1`` cada una y nunca comparten resultado.
+
+# lo ya ejecutado (o que pudo ejecutarse) se conserva al regenerar el acta
+KEEP_ON_REGENERATE = ("aplicada",)
+
+
+def new_uid() -> str:
+    return "u" + uuid.uuid4().hex
+
+
+def ensure_uids(proposals: list[dict[str, Any]]) -> bool:
+    """Da ``uid`` a las propuestas que no lo tienen (actas antiguas). ``True`` si cambio algo."""
+    changed = False
+    for p in proposals:
+        if isinstance(p, dict) and not p.get("uid"):
+            p["uid"] = new_uid()
+            changed = True
+    return changed
+
+
+def fingerprint(p: dict[str, Any]) -> str:
+    """Huella de la version concreta que el usuario revisa: aprobar en la UI vale solo para
+    esta version (``uid`` + tipo + datos + revision). Sin estado ni lo que anade la UI."""
+    core = {
+        "uid": p.get("uid"),
+        "tipo": p.get("tipo"),
+        "grupo": p.get("grupo"),
+        "datos": p.get("datos"),
+        "revision": int(p.get("revision") or 0),
+    }
+    raw = json.dumps(core, sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
+
+
+def max_number(acta: dict[str, Any] | None) -> int:
+    """El mayor ``pN`` usado en esta reunion (actual, lista anterior y ``ultimo_id``)."""
+    if not acta:
+        return 0
+    top = int(acta.get("ultimo_id") or 0)
+    groups = [acta.get("propuestas") or [], (acta.get("plan_previo") or {}).get("propuestas") or []]
+    for props in groups:
+        for p in props:
+            m = re.fullmatch(r"p(\d+)", str((p or {}).get("id") or ""))
+            if m:
+                top = max(top, int(m.group(1)))
+    return top
+
+
+def carried_over(previous: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Propuestas de un acta anterior que se conservan al regenerarla: las aplicadas (con su
+    ``uid`` y lo necesario para deshacer) y las de resultado incierto o a medias."""
+    out = []
+    for p in (previous or {}).get("propuestas") or []:
+        if isinstance(p, dict) and (
+            p.get("estado") in KEEP_ON_REGENERATE or p.get("en_curso") or p.get("incierta")
+        ):
+            out.append(p)
+    ensure_uids(out)
+    return out
+
+
+def number(proposals: list[dict[str, Any]], start: int = 0) -> list[dict[str, Any]]:
+    """Etiquetas ``p{start+1}``... y un ``uid`` nuevo para cada propuesta que no lo tenga."""
+    for i, p in enumerate(proposals, start + 1):
         p["id"] = f"p{i}"
         p.setdefault("estado", "pendiente")
+        if not p.get("uid"):
+            p["uid"] = new_uid()
     return proposals

@@ -15,7 +15,14 @@ import pytest
 from micnaga.config import Config
 from micnaga.store.db import Database
 from micnaga.ui import fake, startup
-from micnaga.ui.bridge import LibraryApi, PillApi, PopupApi, SettingsApi, WizardApi
+from micnaga.ui.bridge import (
+    LibraryApi,
+    PillApi,
+    PopupApi,
+    SettingsApi,
+    SurfaceApi,
+    WizardApi,
+)
 from micnaga.ui.contracts import UiCallbacks
 from micnaga.ui.media import LocalServer
 from tests.ui.cdp import Browser, Page, find_browser
@@ -78,6 +85,7 @@ def world(tmp_path_factory: pytest.TempPathFactory) -> Iterator[dict[str, Any]]:
         "popup": PopupApi(spy),
         "popup_auth": PopupApi(auth),
         "pill": PillApi(spy),
+        "surface": SurfaceApi(spy),
         "library": LibraryApi(
             db_factory=lambda: Database(root / "micnaga.db"),
             meetings_root=lambda: root,
@@ -343,10 +351,12 @@ def test_pill_pause_freezes_timer_and_turns_amber(world: dict[str, Any]) -> None
 
 
 def test_pill_provisional_variant_shows_label(world: dict[str, Any]) -> None:
+    # provisional: the «¿Guardar?» decision replaces the plain label (§18)
     p = page(world, "pill.html", "pill", 320, 48, provisional=1)
-    assert p.eval("getComputedStyle(document.getElementById('tag')).display") != "none"
+    assert p.eval("getComputedStyle(document.getElementById('b-save')).display") != "none"
     assert p.eval("document.getElementById('tag').textContent") == "provisional"
     p2 = page(world, "pill.html", "pill", 320, 48)
+    assert p2.eval("getComputedStyle(document.getElementById('b-save')).display") == "none"
     assert p2.eval("getComputedStyle(document.getElementById('tag')).display") == "none"
 
 
@@ -457,3 +467,47 @@ def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any
     while time.time() < deadline and not finished:
         time.sleep(0.05)
     assert finished == [True]
+
+
+def _rect(p: Page) -> list[float]:
+    return p.eval(  # type: ignore[no-any-return]
+        "(() => { const r = document.getElementById('pill').getBoundingClientRect();"
+        " return [r.left, r.top, r.width, r.height].map(Math.round); })()"
+    )
+
+
+def test_pill_grows_into_the_card_and_shrinks_back(world: dict[str, Any]) -> None:
+    """La tarjeta nace de la pastilla: pill -> expanding -> card -> collapsing -> pill, con el
+    punto y el cronometro anclados a la esquina de la forma (son la cabecera de la tarjeta)."""
+    spy = world["spy"]
+    spy.calls.clear()
+    p = page(world, "pill.html", "surface", 420, 112, levels="0.3,0.1")
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    assert _rect(p) == [110, 0, 200, 40] and p.eval("micnaga.surface.phase") == "pill"
+    dot0 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
+    p.eval("micnaga.popup.show({title: 'Revisión semanal', code: 'abc-defg-hij', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'expanding'", 1)
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
+    assert _rect(p) == [24, 0, 372, 112]
+    # the dot rode the left edge: same offset from the shape's corner as in the pill
+    dot1 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
+    assert dot0 - 110 == dot1 - 24
+    assert p.eval("getComputedStyle(document.getElementById('lift')).opacity") == "1"
+    assert ("handle_surface_phase", ("card",)) in spy.calls
+    assert not p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
+    p.eval("micnaga.popup.dismiss()")
+    assert p.wait_for("micnaga.surface.phase === 'collapsing'", 1)
+    assert p.wait_for("micnaga.surface.phase === 'pill' && micnaga.popup.phase === 'done'", 2)
+    assert _rect(p) == [110, 0, 200, 40]
+    assert ("handle_surface_phase", ("collapsing",)) in spy.calls
+    assert ("handle_popup_closed", ("leaving",)) in spy.calls
+    assert p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
+
+
+def test_reduced_motion_cross_fades_instead_of_morphing(world: dict[str, Any]) -> None:
+    p = page(world, "pill.html", "surface", 420, 112, motion="off")
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'card'", 1)
+    duration = p.eval("getComputedStyle(document.getElementById('pill')).transitionDuration")
+    assert str(duration).startswith("0s")

@@ -68,6 +68,10 @@ class UiWindow(Protocol):
 
     def rect(self) -> Rect: ...
 
+    def set_region(self, rect: Rect | None) -> None:
+        """Zona visible y clicable (coordenadas de la ventana, px fisicos); ``None`` = toda."""
+        ...
+
     def destroy(self) -> None: ...
 
     def on_closed(self, callback: Callable[[], None]) -> None: ...
@@ -140,6 +144,10 @@ class PywebviewWindow:
 
     def rect(self) -> Rect:
         return self._w32.get_window_rect(self.hwnd)
+
+    def set_region(self, rect: Rect | None) -> None:
+        if self.hwnd:
+            winapi.set_region(self.hwnd, rect, self._w32)
 
     def destroy(self) -> None:
         try:
@@ -252,6 +260,7 @@ class FakeWindow:
         self.visible = False
         self.alive = True
         self.current_rect: Rect = (0, 0, spec.width, spec.height)
+        self.region: Rect | None = None
         self._closed: list[Callable[[], None]] = []
         self._moved: list[Callable[[int, int], None]] = []
 
@@ -283,6 +292,10 @@ class FakeWindow:
     def rect(self) -> Rect:
         x, y, w, h = self.current_rect
         return (x, y, x + w, y + h)
+
+    def set_region(self, rect: Rect | None) -> None:
+        self.region = rect
+        self.log.append(("region", rect))
 
     def destroy(self) -> None:
         self.alive = False

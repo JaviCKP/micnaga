@@ -27,6 +27,7 @@ from typing import Any, Protocol
 from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
+from micnaga.store.locate import meeting_dir
 from micnaga.types import SPEAKER_ME, Transcript
 from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
@@ -168,6 +169,20 @@ class PillApi:
         self._c.handle_pill_save()
 
 
+class SurfaceApi(PillApi, PopupApi):
+    """``pywebview.api`` de la superficie unica: la pastilla que crece hasta la tarjeta
+    «¿Estás en una reu?» / «Reunión terminada» y vuelve a encogerse (``pill.html``)."""
+
+    _PHASES = frozenset({"card", "collapsing"})
+
+    def surface_phase(self, phase: str) -> None:
+        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
+        if phase in self._PHASES:
+            handler = getattr(self._c, "handle_surface_phase", None)
+            if handler is not None:
+                handler(phase)
+
+
 # ============================================================================ secretaria
 
 LIBRARY_BRAIN_ACTIONS = frozenset(
@@ -201,6 +216,9 @@ SETTINGS_BRAIN_ACTIONS = frozenset(
         "set_secret",
         "odoo_test",
         "caps",
+        "odoo_learn",
+        "odoo_learn_refresh",
+        "odoo_learn_open",
         "learned",
         "forget",
         "restore",
@@ -623,10 +641,8 @@ class LibraryApi:
                 log.exception("secretaria re-run after hq failed")
 
     def open_folder(self, folder: str) -> Result:
-        if not valid_folder_name(folder):
-            return fail("library.err.not_found")
-        target = self._root() / folder
-        if not target.is_dir():
+        target = self._meeting_dir(folder)
+        if target is None:
             return fail("library.err.not_found")
         self._opener(target)
         return ok()
@@ -634,13 +650,12 @@ class LibraryApi:
     # ---------------------------------------------------------------- privados
 
     def _meeting_json(self, folder: object) -> Path | None:
-        if not isinstance(folder, str) or not valid_folder_name(folder):
-            return None
-        root = self._root().resolve()
-        path = (root / folder / paths.TRANSCRIPT_JSON).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
-            return None
-        return path
+        d = meeting_dir(self._root(), folder, self._db_factory, require=paths.TRANSCRIPT_JSON)
+        return None if d is None else d / paths.TRANSCRIPT_JSON
+
+    def _meeting_dir(self, folder: object) -> Path | None:
+        """Bajo la raiz de ahora o por la ruta del indice (``micnaga.store.locate``, P1-4)."""
+        return meeting_dir(self._root(), folder, self._db_factory)
 
     def _guard(self, folder: str, speaker_id: str) -> Result | None:
         """Comprobaciones comunes: operaciones disponibles, reunion y hablante existen."""

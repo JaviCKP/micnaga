@@ -57,10 +57,10 @@ mimetypes.add_type("image/x-icon", ".ico")
 
 
 def valid_folder_name(name: str) -> bool:
-    """Nombre de carpeta de reunion seguro (un solo componente, sin ``..`` ni separadores)."""
-    if not name or name in {".", ".."} or name.startswith("."):
-        return False
-    return not any(c in name for c in '/\\:*?"<>|\x00')
+    """Nombre de carpeta de reunion seguro (la regla vive en ``micnaga.store.locate``)."""
+    from micnaga.store.locate import valid_folder_name as valid
+
+    return valid(name)
 
 
 def parse_range(header: str | None, size: int) -> tuple[int, int] | None:
@@ -98,11 +98,13 @@ class LocalServer:
         *,
         web_root: Path = WEB_ROOT,
         meetings_root: Callable[[], Path] | None = None,
+        db_factory: Callable[[], Any] | None = None,
         token: str | None = None,
         dev_api: dict[str, object] | None = None,
     ) -> None:
         self.web_root = web_root.resolve()
         self._meetings_root = meetings_root
+        self._db_factory = db_factory  # indice: reuniones de otra carpeta de reuniones (P1-4)
         #: SOLO desarrollo/pruebas/capturas: expone objetos ``js_api`` por HTTP (``bridge=http``).
         #: La app real nunca lo activa (``None``): ahi el puente es el de pywebview.
         self.dev_api = dev_api
@@ -182,14 +184,11 @@ class LocalServer:
     def resolve_audio(self, folder: str, track: str) -> Path | None:
         if self._meetings_root is None or track not in AUDIO_TRACKS:
             return None
-        folder = unquote(folder)
-        if not valid_folder_name(folder):
-            return None
-        root = self._meetings_root().resolve()
-        target = (root / folder / AUDIO_TRACKS[track]).resolve()
-        if not target.is_relative_to(root) or not target.is_file():
-            return None
-        return target
+        from micnaga.store.locate import meeting_dir
+
+        name = AUDIO_TRACKS[track]
+        d = meeting_dir(self._meetings_root(), unquote(folder), self._db_factory, require=name)
+        return None if d is None else d / name
 
 
 class _QuietServer(ThreadingHTTPServer):

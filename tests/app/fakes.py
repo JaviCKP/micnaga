@@ -18,6 +18,73 @@ from tests.ui.fakes import FakeWin32
 from tests.watcher.helpers import CODE_A, MONITOR
 
 
+class CardView:
+    """La tarjeta «¿Estás en una reu?» dentro de la ventana de la pastilla: delega en ella y
+    esta «visible» mientras la ventana se ve CON la tarjeta abierta."""
+
+    def __init__(self, win: FakeWindow, host: UiHost | None) -> None:
+        self._win = win
+        self._host = host
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._win, name)
+
+    @property
+    def visible(self) -> bool:
+        return self._win.visible and self._host is not None and self._host.popup_visible
+
+
+class SurfaceSim(FakeWindow):
+    """La ventana de la pastilla con un JS minimo: cuando Python le pide cerrar la tarjeta
+    (respondida, caducada, retirada) el JS real la encoge y ~0,3 s despues avisa con
+    ``popup_closed``. Aqui ese aviso se encola y llega en el siguiente ``Rig.feed``/``settle``
+    (como en la app: despues de las acciones que el vigilante emite en el mismo paso)."""
+
+    host: UiHost | None = None
+
+    def __init__(self, *a: Any, **kw: Any) -> None:
+        super().__init__(*a, **kw)
+        self.pending: list[Callable[[], None]] = []
+
+    def run_js(self, script: str) -> None:
+        super().run_js(script)
+        h = self.host
+        if h is None:
+            return
+        if script in ("micnaga.popup.end()", "micnaga.popup.dismiss()") or script.startswith(
+            "micnaga.popup.endClose("
+        ):
+            kind = "fading" if "end" in script else "leaving"
+            self.pending.append(lambda: h.handle_popup_closed(kind))
+        elif script == "micnaga.popup.accept()":
+            self.pending.append(
+                lambda: (h.handle_popup_morph(False), h.handle_popup_closed("morphed"))
+            )
+        elif "micnaga.popup.expire()" in script:
+            if h._popup_on_timeout == "discard":
+                self.pending.append(lambda: h.handle_popup_closed("leaving"))
+            else:
+                self.pending.append(
+                    lambda: (h.handle_popup_morph(True), h.handle_popup_closed("morphed"))
+                )
+
+    def flush(self) -> None:
+        while self.pending:
+            self.pending.pop(0)()
+
+
+class SimFactory(FakeFactory):
+    def create(self, spec: Any) -> Any:
+        if spec.key != "pill":
+            return super().create(spec)
+        with self._lock:
+            self._next += 1
+            win = SurfaceSim(spec, self._next)
+            self.windows[spec.key] = win
+            self.created.append(spec)
+        return win
+
+
 class FakeRecorder:
     """Grabador falso: apunta las llamadas (con su orden) y crea la carpeta."""
 
@@ -184,7 +251,7 @@ class Rig:
         self.clock = Clock()
         self.w32 = FakeWin32()
         self.w32.animation = False
-        self.factory = FakeFactory()
+        self.factory = SimFactory()
         self.toaster = FakeToaster()
         self.recorders = RecorderBox()
         self.spawned: list[FakeProc] = []
@@ -209,6 +276,8 @@ class Rig:
                 play=lambda _b: None,
             )
             host._create_overlays()
+            SurfaceSim.host = None
+            self.factory.windows["pill"].host = host  # type: ignore[attr-defined]
             self.host = host
             return host
 
@@ -262,8 +331,9 @@ class Rig:
     # ------------------------------------------------------------------ atajos
 
     @property
-    def popup(self) -> FakeWindow:
-        return self.factory.windows["popup"]
+    def popup(self) -> Any:
+        """La tarjeta: vive en la ventana de la pastilla (superficie unica)."""
+        return CardView(self.factory.windows["pill"], self.host)
 
     @property
     def pill(self) -> FakeWindow:
@@ -282,9 +352,16 @@ class Rig:
         for _ in range(seconds):
             self.clock.t += 1.0
             self.watcher.feed(snap)
+            self.ui_tick()
+
+    def ui_tick(self) -> None:
+        """El JS de la superficie termina lo que tenia en marcha (encoger la tarjeta)."""
+        self.factory.windows["pill"].flush()  # type: ignore[attr-defined]
 
     def settle(self) -> None:
+        self.ui_tick()
         assert self.ctl.wait_idle(30)
+        self.ui_tick()
 
     def jobs(self) -> list[Any]:
         from micnaga.store.db import open_database

@@ -87,6 +87,7 @@ def _dynamic_keys() -> set[str]:
             "odoo_offline",
             "odoo_access",
             "odoo_failed",
+            "stale",  # «Aplicar» con una version que ya no es la actual (lo devuelve Python)
         )
     }
     keys |= {"toast.proposals_one", "toast.proposals_other", "toast.hours.body_one"}
@@ -202,6 +203,8 @@ def test_no_orphan_keys() -> None:
         "end.discard",
         "toast.error.capture_failed.title",
         "toast.error.capture_failed.body",
+        "toast.error.storage_failed.title",
+        "toast.error.storage_failed.body",
         "views.resumen",
         "views.acta",
         "views.propuestas",

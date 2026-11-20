@@ -353,7 +353,9 @@
     }
     hqHide();
     if (st && st.state === "done") { snack(mic.t("library.hq_done")); await openMeeting(folder); return; }
-    if (st && st.state === "failed") snack(mic.t("library.hq_failed"));
+    if (st && st.state === "failed") {
+      snack(st.error === "HqRejected" ? mic.t("library.hq_rejected") : mic.t("library.hq_failed"));
+    }
     if (st && st.state === "cancelled") snack(mic.t("library.hq_cancelled"));
     if (r && r.previa) hqOffer();
   }

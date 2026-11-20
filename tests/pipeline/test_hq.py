@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -172,6 +173,155 @@ def test_cancel_leaves_transcript_untouched(tmp_path: Path, no_vad: None) -> Non
     assert not (folder / hq.CANCEL).exists()
 
 
+# ----------------------------------------------------------------------------- revision externa
+
+
+def _read(folder: Path, name: str = paths.TRANSCRIPT_JSON) -> Transcript:
+    return Transcript.from_json((folder / name).read_text(encoding="utf-8"))
+
+
+def test_empty_result_is_rejected_and_never_published(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    with pytest.raises(hq.HqRejected):
+        hq.improve(folder, Config(), lambda: FakeEngine({}))  # seis palabras -> cero
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
+    assert not hq.has_previa(folder)
+
+
+def test_drastically_shorter_result_is_rejected(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    eng = FakeEngine({2: [Word("Hola.", 0.5, 1.0)]})  # 6 -> 1 palabra (< 30 %)
+    with pytest.raises(hq.HqRejected):
+        hq.improve(folder, Config(), lambda: eng)
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
+
+
+def test_rejection_is_reported_to_the_ui(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    folder = _meeting(tmp_path)
+    monkeypatch.setattr(hq, "download_bytes", lambda _c: 0)
+    monkeypatch.setattr(hq, "_ensure_vad", lambda *_a, **_k: False)
+    monkeypatch.setattr(hq, "create_engine", lambda _c: FakeEngine({}))
+    assert hq._run_locked(folder, Config()) == 1
+    st = hq.read_status(folder)
+    assert st is not None and st["state"] == "failed" and st["error"] == "HqRejected"
+
+
+def test_an_empty_transcript_never_replaces_a_good_previa(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    good = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    hq.improve(folder, Config(), _engine)
+    assert (folder / hq.PREVIA).read_text(encoding="utf-8") == good
+    # la transcripcion actual se quedo vacia (p. ej. por una version anterior de la mejora)
+    from micnaga.pipeline import output
+
+    output.write_transcript(folder, replace(_read(folder), segments=[]))
+    hq.improve(folder, Config(), _engine)
+    assert _read(folder, hq.PREVIA).segments, "la previa buena no se pisa con una vacia"
+    assert (folder / hq.PREVIA).read_text(encoding="utf-8") == good
+    assert hq.restore(folder)
+    assert len(_read(folder).segments) == 3
+
+
+def test_rename_made_while_improving_is_kept(tmp_path: Path, no_vad: None) -> None:
+    from micnaga.pipeline import output
+
+    folder = _meeting(tmp_path)
+
+    def rename_midway(n: int) -> None:
+        if n == 2:  # el usuario renombra a S1 mientras la mejora esta en marcha
+            output.rename_speaker(folder, "S1", "Ana María", reindex=False)
+
+    eng = _engine()
+    eng.on_call = rename_midway
+    hq.improve(folder, Config(), lambda: eng)
+    new = _read(folder)
+    assert {s.id: s.name for s in new.speakers}["S1"] == "Ana María"
+    assert [s.speaker for s in new.segments] == ["me", "S1", "S2"]
+    assert {s.id: s.name for s in _read(folder, hq.PREVIA).speakers}["S1"] == "Ana María"
+
+
+def test_rename_racing_the_publish_never_overwrites_the_improved_transcript(
+    tmp_path: Path, no_vad: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Renombrado que lee antes de que la mejora publique y escribe despues (la carrera)."""
+    import threading
+
+    from micnaga.pipeline import output
+
+    folder = _meeting(tmp_path)
+    did_read, go = threading.Event(), threading.Event()
+    real_read = output.read_transcript
+
+    def slow_read(f: Path) -> Transcript:
+        t = real_read(f)
+        if threading.current_thread().name == "rename":
+            did_read.set()
+            go.wait(5)  # el renombrado se queda con la copia vieja mientras la mejora publica
+        return t
+
+    monkeypatch.setattr(output, "read_transcript", slow_read)
+    errors: list[BaseException] = []
+
+    def run(fn: Any) -> None:
+        try:
+            fn()
+        except BaseException as exc:  # pragma: no cover - se comprueba abajo
+            errors.append(exc)
+
+    rename = threading.Thread(
+        target=run,
+        args=(lambda: output.rename_speaker(folder, "S1", "Ana María", reindex=False),),
+        name="rename",
+    )
+    improve = threading.Thread(
+        target=run, args=(lambda: hq.improve(folder, Config(), _engine),), name="hq"
+    )
+    rename.start()
+    assert did_read.wait(5)
+    improve.start()
+    improve.join(1.0)  # sin cerrojo la mejora publica aqui; con cerrojo espera al renombrado
+    go.set()
+    rename.join(10)
+    improve.join(10)
+    assert not errors
+    final = _read(folder)
+    assert final.engines.asr == "fake-large", "el renombrado piso la transcripcion mejorada"
+    assert final.segments[2].text == "Yo también."
+    assert {s.id: s.name for s in final.speakers}["S1"] == "Ana María"
+
+
+def test_transcript_lock_excludes_other_processes(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import time
+
+    from micnaga.pipeline import output
+
+    folder = tmp_path / "reunion"
+    folder.mkdir()
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from micnaga.pipeline import output\n"
+        "with output.transcript_lock(Path(sys.argv[1])):\n"
+        "    print('held', flush=True)\n"
+        "    time.sleep(1.5)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(folder)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+        t0 = time.monotonic()
+        with output.transcript_lock(folder):
+            waited = time.monotonic() - t0
+    finally:
+        proc.wait(10)
+    assert waited > 0.5, "el cerrojo no bloquea entre procesos"
+
+
 def test_status_and_estimate(tmp_path: Path) -> None:
     folder = _meeting(tmp_path)
     assert hq.read_status(folder) is None
@@ -212,3 +362,12 @@ def test_real_model_short_clip(tmp_path: Path) -> None:
         eng.close()
     assert isinstance(words, list)
     assert all(w.e >= w.s for w in words)
+
+
+def test_restore_refuses_an_empty_previa(tmp_path: Path, no_vad: None) -> None:
+    folder = _meeting(tmp_path)
+    good = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+    empty = replace(_read(folder), segments=[])
+    (folder / hq.PREVIA).write_text(empty.to_json(), encoding="utf-8")
+    assert not hq.restore(folder)
+    assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == good

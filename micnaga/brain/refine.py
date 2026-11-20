@@ -741,6 +741,7 @@ class Refiner:
         for p in out:
             counter += 1
             p["id"] = f"p{counter}"
+            p["uid"] = plan.new_uid()
             p["estado"] = "pendiente"
             p["checked"] = False
             p["nueva"] = True
@@ -863,13 +864,4 @@ class Refiner:
 
 
 def _max_id(acta: dict[str, Any]) -> int:
-    top = int(acta.get("ultimo_id") or 0)
-    for p in acta.get("propuestas") or []:
-        m = re.fullmatch(r"p(\d+)", str(p.get("id") or ""))
-        if m:
-            top = max(top, int(m.group(1)))
-    for p in (acta.get("plan_previo") or {}).get("propuestas") or []:
-        m = re.fullmatch(r"p(\d+)", str(p.get("id") or ""))
-        if m:
-            top = max(top, int(m.group(1)))
-    return top
+    return plan.max_number(acta)

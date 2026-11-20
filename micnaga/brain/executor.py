@@ -16,6 +16,13 @@
   y ``crear_gasto`` (``hr.expense`` en borrador). Todo con «Deshacer» (``unlink`` de lo creado).
 * Cada propuesta guarda en ``acta.json`` su estado y lo necesario para deshacer (id creado o
   valores anteriores). Reaplicar no duplica: lo ya ``aplicada`` se salta.
+* Aprobacion ligada a una version: ``apply(..., expect={id: huella})`` rechaza todo
+  (``StaleError``) si alguna propuesta ya no es la que el usuario vio (``plan.fingerprint``).
+* Diario de escrituras de Odoo: justo ANTES de la llamada que escribe se guarda en
+  ``acta.json`` ``en_curso`` (clave de idempotencia = uid + version). Si la respuesta se pierde
+  (tiempo agotado, conexion cortada tras enviar), la propuesta queda «resultado incierto»; al
+  reintentar se busca primero lo escrito (las notas llevan la marca ``ref`` de la clave) y solo
+  se repite si se comprueba que no esta, o si el usuario lo confirma explicitamente.
 * ``edit``: cambios del usuario en una propuesta pendiente (horas, proyecto y descripcion de una
   linea de horas; nombre y fecha de una tarea; invitados de un evento), validados en Python.
 """
@@ -23,10 +30,13 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import html
 import logging
 import re
-from collections.abc import Callable
+import socket
+import xmlrpc.client
+from collections.abc import Callable, Iterable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -40,6 +50,51 @@ log = logging.getLogger(__name__)
 
 class ApplyError(RuntimeError):
     pass
+
+
+UNCERTAIN = "resultado_incierto"
+
+
+class StaleError(ApplyError):
+    """Lo que el usuario aprobo ya no es la version actual de esas propuestas."""
+
+    def __init__(self, ids: list[str]) -> None:
+        super().__init__("stale")
+        self.ids = ids
+
+
+class UncertainError(ApplyError):
+    """Una ejecucion anterior quedo a medias y no se puede comprobar si se hizo."""
+
+    def __init__(self) -> None:
+        super().__init__(UNCERTAIN)
+
+
+def op_key(p: dict[str, Any]) -> str:
+    """Clave de idempotencia de una escritura: la identidad (``uid``) y la version exacta."""
+    from micnaga.brain.plan import fingerprint
+
+    raw = f"{p.get('uid') or p.get('id')}|{int(p.get('revision') or 0)}|{fingerprint(p)}"
+    return "o" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+
+
+def ref_of(key: str) -> str:
+    """Marca de Micnaga que se deja en lo escrito para poder encontrarlo despues."""
+    return "micnaga-" + key[1:13]
+
+
+def uncertain(exc: BaseException) -> bool:
+    """¿Pudo llegar a ejecutarse la escritura que lanzo ``exc``? Un error de validacion de
+    Micnaga o una respuesta de error de Odoo son definitivos; un tiempo agotado o una conexion
+    cortada despues de enviar, no."""
+    if isinstance(exc, ApplyError):
+        return False
+    cause = exc.__cause__
+    if cause is None:
+        return not hasattr(exc, "kind")  # OdooError propio (sin llamada): definitivo
+    if isinstance(cause, xmlrpc.client.Fault):
+        return False
+    return not isinstance(cause, ConnectionRefusedError | socket.gaierror)
 
 
 # ============================================================================== texto
@@ -133,6 +188,8 @@ class Executor:
         self._db = db
         self.today = today or date.today()
         self._book: Any = None
+        self._current: tuple[dict[str, Any], dict[str, Any]] | None = None
+        self._confirm = False
 
     def odoo(self) -> Any:
         if self._odoo is None:
@@ -145,28 +202,110 @@ class Executor:
 
     # ------------------------------------------------------------------ aplicar
 
-    def apply(self, ids: list[str]) -> dict[str, Any]:
+    def apply(
+        self,
+        ids: list[str],
+        *,
+        expect: dict[str, str] | None = None,
+        confirm: Iterable[str] = (),
+    ) -> dict[str, Any]:
+        """Aplica ``ids``. ``expect``: ``{id: huella}`` que vio el usuario; si alguna no coincide
+        con la version actual no se ejecuta nada (``StaleError``). ``confirm``: ids de resultado
+        incierto que el usuario ya comprobo y quiere repetir."""
+        from micnaga.brain import plan
+
         acta = acta_io.read_acta(self.folder)
         if acta is None:
             raise ApplyError("no_acta")
+        props = acta.get("propuestas") or []
+        if plan.ensure_uids(props):
+            acta_io.write_acta(self.folder, acta)
         wanted = set(ids)
-        for p in acta.get("propuestas") or []:
+        if expect is not None:
+            by_id = {p.get("id"): p for p in props}
+            stale = [
+                i
+                for i in ids
+                if i not in by_id or not expect.get(i) or expect[i] != plan.fingerprint(by_id[i])
+            ]
+            if stale:
+                raise StaleError(stale)
+        confirmed = set(confirm)
+        for p in props:
             if p.get("id") not in wanted or p.get("estado") == "aplicada":
                 continue
+            self._current = (p, acta)
+            self._confirm = p.get("id") in confirmed
             try:
                 undo = self._apply_one(p, acta)
             except Exception as exc:
                 p["estado"] = "fallida"
                 p["error"] = _error_key(exc)
+                if isinstance(exc, UncertainError) or (p.get("en_curso") and uncertain(exc)):
+                    p["error"] = UNCERTAIN  # puede que se hiciera: nunca se repite a ciegas
+                    p["incierta"] = True
+                elif p["error"] == "google_unknown_outcome":
+                    p["incierta"] = True
+                else:
+                    p.pop("en_curso", None)  # comprobado: no se escribio nada
+                    p.pop("incierta", None)
                 log.warning("proposal %s (%s) failed: %s", p.get("id"), p.get("tipo"), p["error"])
             else:
                 p["estado"] = "aplicada" if undo is not None else "descartada"
                 p["deshacer"] = undo
                 p["error"] = None
+                p.pop("en_curso", None)
+                p.pop("incierta", None)
                 if p.get("tipo") == "hablante":
                     self._relabel(acta)  # la nota de Odoo que venga despues ya lleva el nombre
+            finally:
+                self._current = None
+                self._confirm = False
             acta_io.write_acta(self.folder, acta)  # cada linea queda registrada al momento
         return acta
+
+    def _launch(self, fn: Callable[[], Any]) -> Any:
+        """La llamada que escribe en Odoo, con su entrada «en curso» ya guardada en disco."""
+        if self._current is not None:
+            from datetime import datetime
+
+            p, acta = self._current
+            p["en_curso"] = {
+                "clave": op_key(p),
+                "desde": datetime.now().astimezone().isoformat(timespec="seconds"),
+            }
+            acta_io.write_acta(self.folder, acta)
+        return fn()
+
+    def _settle(self, p: dict[str, Any], o: Any) -> dict[str, Any] | None:
+        """Una ejecucion anterior quedo a medias: lo que dejo (si se encuentra), ``None`` si se
+        comprueba que no esta (o el usuario confirmo repetir); ``UncertainError`` si no se sabe."""
+        inflight = p.get("en_curso")
+        if not isinstance(inflight, dict) or not inflight.get("clave"):
+            return None
+        d = p.get("datos") or {}
+        if p.get("tipo") in ("vincular_a_oportunidad", "nota_en_historial"):
+            rows = o.search_read(
+                "mail.message",
+                [
+                    ("model", "=", d["modelo"]),
+                    ("res_id", "=", d["id"]),
+                    ("body", "ilike", ref_of(str(inflight["clave"]))),
+                ],
+                ["id"],
+                limit=1,
+            )
+            if rows:
+                found = int(rows[0]["id"])
+                return {
+                    "modelo": "mail.message",
+                    "creado": found,
+                    "registro": [d["modelo"], d["id"]],
+                }
+            return None  # buscada por su marca: no esta
+        if self._confirm:
+            return None
+        raise UncertainError()
 
     def _relabel(self, acta: dict[str, Any]) -> None:
         from micnaga.brain.plan import relabel
@@ -181,7 +320,11 @@ class Executor:
     def _apply_one(self, p: dict[str, Any], acta: dict[str, Any]) -> dict[str, Any] | None:
         kind, d = p.get("tipo"), p.get("datos") or {}
         if p.get("grupo") == "google":
-            result: dict[str, Any] = self.google().apply(p, acta)
+            applier = self.google()
+            if self._confirm:
+                result: dict[str, Any] = applier.apply(p, acta, confirm=True)
+            else:
+                result = applier.apply(p, acta)
             return result
         if p.get("grupo") == "correcciones":
             if kind == "hablante":
@@ -192,16 +335,20 @@ class Executor:
                 output.rename_speaker(self.folder, d["hablante"], d["a"], db=self._db)
                 return {"hablante": d["hablante"], "nombre": current}
             if kind == "palabra":
-                transcript = output.read_transcript(self.folder)
-                updated, n = replace_text(transcript, d["de"], d["a"])
-                if n == 0:
-                    return None  # el texto ya no esta: se descarta en silencio
-                output.write_transcript(self.folder, updated)
-                output._reindex(self.folder, updated, self._db)
+                with output.transcript_lock(self.folder):
+                    transcript = output.read_transcript(self.folder)
+                    updated, n = replace_text(transcript, d["de"], d["a"])
+                    if n == 0:
+                        return None  # el texto ya no esta: se descarta en silencio
+                    output.write_transcript(self.folder, updated)
+                    output._reindex(self.folder, updated, self._db)
                 add_to_glossary(d["a"], d["de"])
                 return {"de": d["de"], "a": d["a"], "n": n}
             return None
         o = self.odoo()
+        prior = self._settle(p, o)
+        if prior is not None:
+            return prior  # ya estaba hecho: no se repite
         if kind == "crear_contacto":
             dup = [
                 r
@@ -216,7 +363,7 @@ class Executor:
                     values[dst] = d[src]
             if d.get("empresa_id"):
                 values["parent_id"] = d["empresa_id"]
-            new_id = o.create("res.partner", values)
+            new_id = self._launch(lambda: o.create("res.partner", values))
             return {"modelo": "res.partner", "creado": new_id}
         if kind in ("vincular_a_oportunidad", "nota_en_historial"):
             body = (
@@ -224,7 +371,8 @@ class Executor:
                 if d.get("cuerpo")
                 else acta_io.render_note_html(acta)
             )
-            msg_id = o.message_post(d["modelo"], d["id"], body)
+            body += f"<p>Micnaga · ref {ref_of(op_key(p))}</p>"  # para encontrarla si se pierde
+            msg_id = self._launch(lambda: o.message_post(d["modelo"], d["id"], body))
             return {"modelo": "mail.message", "creado": msg_id, "registro": [d["modelo"], d["id"]]}
         if kind == "actualizar_oportunidad":
             lead = o.read_lead(d["id"])
@@ -249,7 +397,8 @@ class Executor:
                 values["date_deadline"] = d["fecha_cierre"]
                 prev["date_deadline"] = lead.get("fecha_cierre") or False
             o.write("crm.lead", [d["id"]], values)
-            return {"modelo": "crm.lead", "id": d["id"], "antes": prev}
+            # ``escrito``: lo que pone Micnaga; el «Deshacer» solo restaura si sigue asi
+            return {"modelo": "crm.lead", "id": d["id"], "antes": prev, "escrito": values}
         if kind == "programar_actividad":
             values = {
                 "res_id": d["id"],
@@ -264,7 +413,7 @@ class Executor:
                 values["res_model_id"] = model_id
             else:  # sin acceso a ir.model (sin verificar en Odoo 19)
                 values["res_model"] = d["modelo"]
-            new_id = o.create("mail.activity", values)
+            new_id = self._launch(lambda: o.create("mail.activity", values))
             return {"modelo": "mail.activity", "creado": new_id}
         if kind == "crear_tarea":
             values = {
@@ -276,7 +425,7 @@ class Executor:
                 values["date_deadline"] = f"{d['fecha']} 12:00:00"  # datetime en Odoo 19
             if d.get("descripcion"):
                 values["description"] = f"<p>{html.escape(str(d['descripcion']))}</p>"
-            new_id = o.create("project.task", values)
+            new_id = self._launch(lambda: o.create("project.task", values))
             return {"modelo": "project.task", "creado": new_id}
         if kind == "crear_evento":
             return self._create_event(o, d)
@@ -291,7 +440,8 @@ class Executor:
                 raise ApplyError(
                     "duplicate" if str(exc) == "ya_existe" else f"horas_{exc}"
                 ) from exc
-            new_id = o.create(horas.TIMESHEET_MODEL, horas.create_values(line))
+            values = horas.create_values(line)
+            new_id = self._launch(lambda: o.create(horas.TIMESHEET_MODEL, values))
             book.accept(line)
             return {"modelo": horas.TIMESHEET_MODEL, "creado": new_id}
         if kind == "crear_gasto":
@@ -301,7 +451,8 @@ class Executor:
                 "total_amount_currency": d["importe"],
                 "payment_mode": "own_account",
             }
-            new_id = o.create("hr.expense", values)  # borrador; sin verificar en un 19 real
+            # borrador; sin verificar en un 19 real
+            new_id = self._launch(lambda: o.create("hr.expense", values))
             return {"modelo": "hr.expense", "creado": new_id}
         return None
 
@@ -330,7 +481,7 @@ class Executor:
             partner_ids=partners,
             user_id=o.uid,
         )
-        new_id = odoo_calendar.create_event(o, values)
+        new_id = self._launch(lambda: odoo_calendar.create_event(o, values))
         return {"modelo": odoo_calendar.MODEL, "creado": new_id}
 
     # ------------------------------------------------------------------ editar
@@ -429,7 +580,7 @@ class Executor:
             was_on = {i["id"] for i in (p.get("datos") or {}).get("invitados") or [] if i.get("on")}
             for i in (new.get("datos") or {}).get("invitados") or []:
                 i["on"] = i["id"] in was_on
-        keep: dict[str, Any] = {k: p[k] for k in ("id", "seg", "t") if k in p}
+        keep: dict[str, Any] = {k: p[k] for k in ("id", "uid", "seg", "t") if k in p}
         revision = int(p.get("revision") or 0) + 1
         p.clear()
         p.update(new)
@@ -554,48 +705,149 @@ class Executor:
 
     # ------------------------------------------------------------------ deshacer
 
-    def undo(self, ids: list[str]) -> dict[str, Any]:
+    def undo(self, ids: list[str], *, resolve: str | None = None) -> dict[str, Any]:
+        """Deshace lo aplicado. Un campo que cambio en Odoo despues de aplicar no se pisa: el
+        item queda en ``deshacer_estado = "conflicto"`` (con ``conflicto``: actual / escrito /
+        original) hasta que el usuario elija ``resolve`` (``"forzar"`` u ``"omitir"``, solo para
+        un item a la vez). Si un paso falla tras otros hechos queda ``"a_medias"`` y el
+        reintento solo repite lo que falto."""
         acta = acta_io.read_acta(self.folder)
         if acta is None:
             raise ApplyError("no_acta")
         wanted = set(ids)
+        if len(wanted) != 1 or resolve not in ("forzar", "omitir"):
+            resolve = None  # «Deshacer todo» nunca fuerza
         for p in reversed(acta.get("propuestas") or []):
             if p.get("id") not in wanted or p.get("estado") != "aplicada":
                 continue
             try:
-                self._undo_one(p)
+                done = self._undo_one(p, resolve)
             except Exception as exc:
                 p["error"] = _error_key(exc)
+                steps = (p.get("deshacer") or {}).get("pasos") or {}
+                p["deshacer_estado"] = "a_medias" if "hecho" in steps.values() else None
                 log.warning("undo of %s failed: %s", p.get("id"), p["error"])
             else:
-                p["estado"] = "deshecha"
-                p["error"] = None
-                if p.get("tipo") == "hablante":
-                    self._relabel(acta)
+                if done:
+                    p["estado"] = "deshecha"
+                    p["error"] = None
+                    p.pop("deshacer_estado", None)
+                    p.pop("conflicto", None)
+                    if p.get("tipo") == "hablante":
+                        self._relabel(acta)
+                else:
+                    p["error"] = "undo_conflict"
+                    p["deshacer_estado"] = "conflicto"
             acta_io.write_acta(self.folder, acta)
         return acta
 
-    def _undo_one(self, p: dict[str, Any]) -> None:
+    def _undo_one(self, p: dict[str, Any], resolve: str | None = None) -> bool:
+        """``True`` si quedo deshecho; ``False`` si hay conflicto (no se escribio nada)."""
         u = p.get("deshacer") or {}
         kind = p.get("tipo")
         if p.get("grupo") == "google":
             self.google().undo(p)
-            return
+            return True
         if p.get("grupo") == "correcciones":
             if kind == "hablante":
                 output.rename_speaker(self.folder, u["hablante"], u["nombre"], db=self._db)
             elif kind == "palabra":
-                transcript = output.read_transcript(self.folder)
-                updated, n = replace_text(transcript, u["a"], u["de"])
-                if n:
-                    output.write_transcript(self.folder, updated)
-                    output._reindex(self.folder, updated, self._db)
-            return
+                with output.transcript_lock(self.folder):
+                    transcript = output.read_transcript(self.folder)
+                    updated, n = replace_text(transcript, u["a"], u["de"])
+                    if n:
+                        output.write_transcript(self.folder, updated)
+                        output._reindex(self.folder, updated, self._db)
+            return True
         o = self.odoo()
         if "creado" in u and u.get("creado"):
-            o.unlink(str(u["modelo"]), [int(u["creado"])])
+            unlink_gone_ok(o, str(u["modelo"]), int(u["creado"]))
         elif kind == "actualizar_oportunidad":
-            o.write("crm.lead", [int(u["id"])], dict(u.get("antes") or {}))
+            return self._revert_fields(o, p, resolve)
+        return True
+
+    @staticmethod
+    def _revert_fields(o: Any, p: dict[str, Any], resolve: str | None) -> bool:
+        """Restaura los valores anteriores **solo** donde Odoo sigue con lo que escribio
+        Micnaga (se relee antes). Lo que ya esta como antes no se toca; lo demas es conflicto."""
+        u = p.get("deshacer") or {}
+        model, rid = str(u.get("modelo") or "crm.lead"), int(u["id"])
+        before: dict[str, Any] = dict(u.get("antes") or {})
+        written: dict[str, Any] = dict(u.get("escrito") or _written_from(p.get("datos") or {}))
+        if not before:
+            return True
+        rows = o.read(model, [rid], list(before))
+        if not rows:
+            raise ApplyError("gone")
+        now = rows[0]
+        restore: dict[str, Any] = {}
+        conflicts: list[dict[str, Any]] = []
+        for field, orig in before.items():
+            cur = _norm_value(now.get(field))
+            if _same(cur, orig):
+                continue  # ya esta como antes
+            if (field in written and _same(cur, written[field])) or resolve == "forzar":
+                restore[field] = orig
+            else:
+                conflicts.append(
+                    {
+                        "campo": field,
+                        "actual": cur,
+                        "escrito": written.get(field),
+                        "original": _norm_value(orig),
+                    }
+                )
+        if conflicts and resolve != "omitir":
+            p["conflicto"] = conflicts
+            return False
+        if restore:
+            o.write(model, [rid], restore)
+        return True
+
+
+def _written_from(d: dict[str, Any]) -> dict[str, Any]:
+    """Lo que escribio una aplicacion anterior a ``escrito`` (actas ya aplicadas)."""
+    out: dict[str, Any] = {}
+    if d.get("etapa_id") is not None:
+        out["stage_id"] = d["etapa_id"]
+    if d.get("importe") is not None:
+        out["expected_revenue"] = d["importe"]
+    if d.get("fecha_cierre"):
+        out["date_deadline"] = d["fecha_cierre"]
+    return out
+
+
+def _norm_value(v: Any) -> Any:
+    """Valor de Odoo comparable: many2one ``[id, nombre]`` -> id; vacio (False/""/None) -> None."""
+    if isinstance(v, list | tuple) and len(v) == 2 and isinstance(v[0], int):
+        return v[0]
+    if v is False or v == "" or v is None:
+        return None
+    return v
+
+
+def _same(a: Any, b: Any) -> bool:
+    a, b = _norm_value(a), _norm_value(b)
+    if isinstance(a, int | float) and isinstance(b, int | float) and not isinstance(a, bool):
+        return abs(float(a) - float(b)) < 1e-6
+    return bool(a == b)
+
+
+def unlink_gone_ok(o: Any, model: str, rid: int) -> None:
+    """``unlink`` en el que borrar algo que ya no existe cuenta como hecho (se comprueba
+    releyendo, incluso archivados; un fallo con el registro aun presente se relanza)."""
+    try:
+        o.unlink(model, [rid])
+    except Exception:
+        try:
+            n = o.call(
+                model, "search_count", [[("id", "=", rid)]], {"context": {"active_test": False}}
+            )
+        except Exception:
+            n = None
+        if n == 0:
+            return
+        raise
 
 
 _NOT_DATA = ("previa", "cambiados", "campos", "enlace")

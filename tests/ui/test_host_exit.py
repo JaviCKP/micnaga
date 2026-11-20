@@ -66,7 +66,7 @@ def test_loop_ending_without_quit_recreates_the_windows_and_logs_why(
         r.host.run(ready.append)
     assert fac.loops == 2
     assert ready == [r.host], "on_ready (arrancar la app) solo una vez"
-    assert [s.key for s in fac.created].count("popup") == 2
+    assert [s.key for s in fac.created].count("pill") == 2
     assert r.host.exit_reason == "tray_quit"
     assert "recreating the windows" in caplog.text
     assert "GUI loop ended: tray_quit" in caplog.text
@@ -144,8 +144,8 @@ def test_recording_pill_and_open_popup_survive_a_restart(monkeypatch: pytest.Mon
     def spy() -> None:
         real_restore()
         seen["pill"] = r.fac.windows["pill"].visible
-        seen["popup"] = r.fac.windows["popup"].visible
-        seen["popup_js"] = r.fac.windows["popup"].js_calls()
+        seen["popup"] = r.host.popup_visible
+        seen["popup_js"] = r.fac.windows["pill"].js_calls()
 
     monkeypatch.setattr(r.host, "_restore_surfaces", spy)
     r.host.run()

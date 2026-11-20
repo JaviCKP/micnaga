@@ -41,6 +41,7 @@
     show(true);
     S.results = {};
     S.batch = null;
+    S.partial = false;
     renderLoading();
     const r = await call("horas_plan");
     if (!S.open) return;
@@ -338,7 +339,9 @@
       key: l.key, fecha: l.fecha, proyecto_id: l.proyecto_id, tarea_id: l.tarea_id || null,
       horas: +l.horas, descripcion: l.descripcion,
     }));
-    const r = await call("horas_apply", { lineas: payload });
+    const args = { lineas: payload };
+    if (S.batch && S.partial) args.lote = S.batch;  // reintento: completa el mismo lote
+    const r = await call("horas_apply", args);
     S.busy = false;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); refreshTotals(); return; }
     let bad = 0;
@@ -349,8 +352,10 @@
       if (res.ok) { ln.hecha = true; ln.checked = false; } else bad++;
     }
     if (r.lote) S.batch = r.lote;
+    S.partial = !!(r.parcial && r.lote);  // sin lote (nada creado) no hay lote que completar
     render();
-    snack(bad ? mic.t("secretaria.horas.applied_some", { n: r.creadas, bad }) : mic.t("secretaria.horas.applied", { n: r.creadas }));
+    if (r.parcial) snack(mic.t("secretaria.horas.applied_partial", { n: r.aplicadas, total: r.total }));
+    else snack(bad ? mic.t("secretaria.horas.applied_some", { n: r.creadas, bad }) : mic.t("secretaria.horas.applied", { n: r.creadas }));
   }
 
   async function doUndo() {
@@ -360,6 +365,7 @@
     S.busy = false;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); return; }
     S.batch = null;
+    S.partial = false;
     snack(mic.t("secretaria.horas.undone"));
     open();
   }

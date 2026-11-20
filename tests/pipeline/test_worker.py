@@ -265,6 +265,33 @@ def test_process_enqueue_only_adds_a_pending_job(
     assert session.is_dir()
 
 
+def test_process_enqueue_requeues_a_failed_job(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """P2-d: ``--enqueue`` sobre un trabajo ``failed`` no devuelve exito dejandolo fallido."""
+    session = make_session("tmp-qf")
+    job_id = enqueue(db, session)
+    assert db.claim_next_job() is not None
+    db.fail_job(job_id, "boom")
+    assert db.get_job(job_id).state is JobState.FAILED
+    assert cli.main(["process", "--enqueue", str(session)]) == 0
+    job = db.get_job(job_id)
+    assert job.state is JobState.PENDING and job.attempts == 0 and job.error is None
+    claimed = db.claim_next_job()
+    assert claimed is not None and claimed.id == job_id  # el worker lo coge
+
+
+def test_process_enqueue_of_a_done_job_is_not_a_silent_success(
+    db: Database, capsys: pytest.CaptureFixture[str]
+) -> None:
+    session = make_session("tmp-qd")
+    job_id = enqueue(db, session)
+    assert db.claim_next_job() is not None
+    db.finish_job(job_id)
+    assert cli.main(["process", "--enqueue", str(session)]) != 0
+    assert "done" in capsys.readouterr().err
+
+
 def run_worker_subprocess(*args: str) -> subprocess.CompletedProcess[str]:
     env = {**os.environ, ENV_FAKE_ENGINES: "1"}
     return subprocess.run(

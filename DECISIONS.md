@@ -1256,3 +1256,54 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    terminar bien, la biblioteca pide `analyze` a la Secretaria (limpieza + acta) si está activa.
 7. **Medido de verdad** (copia de 3 min, `large-v3`, modelo ya descargado): 139,9 s de reloj;
    331 → 330 palabras.
+
+## 27. «Conocer tu Odoo»: la Secretaria explora el Odoo sola (rama `feat/odoo-learn`)
+
+1. **Cuándo:** al conectar Odoo (o cuando «Probar» funciona con una conexión sin escaneo previo),
+   después una vez por semana desde el tic del servicio (solo con la cola vacía, sin fallo en la
+   última hora y **nunca grabando**: la app pasa `set_busy(controller.recording)` y el escaneo se
+   para entre lecturas si empieza una grabación, sin escribir nada) y con «Escanear ahora» en
+   Ajustes → Secretaria → «Lo que ha aprendido».
+2. **Qué lee** (`micnaga/brain/odoo_learn.py`, Python determinista por XML-RPC, cliente forzado a
+   `read_only`): etapas del CRM, equipos de venta, motivos de pérdida, una muestra de títulos de
+   oportunidad (patrón deducido, p. ej. «cliente · asunto»), clientes con más actividad en 90 días
+   (oportunidades y pedidos; si no hay CRM, los clientes de los proyectos), proyectos activos con
+   cliente, etapas de tareas, categorías de producto, el patrón de partes de horas y nombre y cargo
+   del usuario. Modelos del perfil de capacidades: según el perfil; el resto (`crm.team`,
+   `crm.lost.reason`, `project.task.type`, `product.category`, `sale.order`, `hr.employee`):
+   `check_access_rights` antes de leer. Solo campos de nombre y many2one; nada de `read_group`.
+3. **Qué escribe:** `<datos>/secretaria/odoo/<clave>/contexto.md` (≤ 60 líneas, lo añade
+   `learn.load_context(odoo_key)` a cada pasada y al acta completa) y `estado.json` (última
+   instantánea + todo lo visto alguna vez). Cada nombre pasa los filtros de `learned.md` (correos,
+   teléfonos, importes, secretos); límites por sección (12 clientes, 20 proyectos...).
+4. **Aprender:** la primera vez es la base: solo líneas resumen que se mantienen al día con
+   `upsert_prefixed` («Conoce tu Odoo: …», «Etapas del CRM en Odoo: …», «Nombres de oportunidad
+   en Odoo: …»). Después, etapas, proyectos y clientes **nunca vistos** entran con fuente `odoo`
+   (historial y «Olvidar» como siempre; máx. 12 por escaneo). Se compara con «lo visto alguna
+   vez», no con la última lista, para que un cliente que entra y sale del top no se reaprenda.
+   `add_learnings(source=…, exact=True)`: con el parecido difuso, «Web A …» y «Web B …» serían
+   duplicados. Lo que desaparece sale del contexto; una sección que falla cuenta como
+   desconocida, no como vacía.
+
+## 28. La tarjeta nace de la pastilla (rama `feat/pill-morph`)
+
+1. **Una sola superficie.** Ya no hay ventana de popup: la ventana de la pastilla es un lienzo
+   transparente fijo (`winapi.STAGE_SIZE` = 420 x 112 lógicos, centrado sobre la pastilla) y la
+   tarjeta «¿Estás en una reu?» / «Reunión terminada» es la misma forma CSS que crece
+   (izquierda/arriba/ancho/alto, 460 ms, `cubic-bezier(.2,.8,.2,1)`) y vuelve a encogerse
+   (300 ms). El punto y el cronómetro de la pastilla no se mueven respecto a la esquina de la
+   forma: son la cabecera de la tarjeta. El contenido entra (fundido + 6 px) cuando la forma ya
+   está abierta en un ~85 %. Con movimiento reducido, fundido cruzado.
+2. **Nunca se redimensiona la ventana al animar** (ni al pasar el ratón): solo cambia su región
+   (`SetWindowRgn`, rectángulo de lo visible), que recorta pintado y clics; el hueco transparente
+   deja pasar los clics. La región se abre a la tarjeta antes de crecer y se recoge al terminar el
+   encogido (`popup_closed`), con red de seguridad `COLLAPSE_GUARD_S`.
+3. **Fases:** `hidden → pill → expanding → card → collapsing → pill | undo | hidden`
+   (`UiHost.surface_phase`). Con la tarjeta abierta, `show_pill` / `hide_pill` / `show_undo`
+   solo se anotan y se resuelven al encogerse (nada parpadea: «No» → pastilla → «Deshacer»).
+   Ruta de Meet (sin pastilla): la pastilla aparece en su sitio y a los ~420 ms crece.
+4. **Sin acrílico DWM en la superficie** (pintaría el lienzo entero) y **la tarjeta es siempre
+   de noche**, como la pastilla: es la misma forma, y pasar de negro a papel a mitad de la
+   animación se leía como un destello.
+5. **No hecho:** abrir la tarjeta antes de tiempo con un clic en la pastilla (necesita un evento
+   nuevo del vigilante; un «Sí/No» sin él no haría nada).

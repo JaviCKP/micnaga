@@ -16,6 +16,9 @@
   tic; panel «Rellenar partes de horas» (``horas_plan`` / ``horas_apply`` / ``horas_undo`` /
   ``horas_off``) y el aviso del viernes por la tarde si la semana tiene huecos
   (``secretaria.horas_nudge``, apagado por defecto).
+* **«Conocer tu Odoo»** (``micnaga.brain.odoo_learn``): un escaneo de solo lectura al conectar
+  (o al «Probar» una conexion nueva), una vez por semana en segundo plano (solo con la cola vacia
+  y nunca grabando: se para si empieza una grabacion) y con «Actualizar» (``odoo_learn*``).
 * **«Corregir con un mensaje»** (``refine`` / ``refine_plan`` / ``refine_undo`` /
   ``refine_status``, ``micnaga.brain.refine``): un ``claude -p`` corto de solo lectura revisa una
   propuesta o la lista; el progreso se consulta mientras dura.
@@ -41,6 +44,23 @@ from micnaga.brain.google.service_api import GoogleApiMixin
 from micnaga.config import Config
 
 log = logging.getLogger(__name__)
+
+# respuestas asincronas de la revision: llevan la reunion a la que pertenecen (la vista ignora
+# la respuesta de una reunion que ya no es la que se mira)
+_ECHO_FOLDER = frozenset(
+    {
+        "acta",
+        "apply",
+        "undo",
+        "edit",
+        "dismiss",
+        "refine",
+        "refine_plan",
+        "refine_undo",
+        "refine_status",
+        "analyze",
+    }
+)
 
 TOAST_WAIT_S = 120.0
 TICK_S = 60.0
@@ -83,17 +103,34 @@ class BrainService(GoogleApiMixin):
         self._started_at = time.time()
         self._nudge: Nudge | None = None
         self.now: Callable[[], datetime] = datetime.now
-        self._odoo_failed_at = 0.0
+        self._odoo_failed_at = float("-inf")  # monotonic cuenta desde el arranque de Windows
         self._acta_lock = threading.RLock()
         """Escrituras de ``acta.json`` desde la UI (aplicar, editar, revisar): una a la vez."""
         self._refining: dict[str, dict[str, Any]] = {}
         self._full: dict[str, dict[str, Any]] = {}
         """«Acta completa» en curso por carpeta (texto en streaming) o su ultimo resultado."""
         self._open_file: Callable[[Path], None] = _startfile
+        self._busy: Callable[[], bool] = lambda: False
+        """¿Se esta grabando? (lo pone la app con ``set_busy``)."""
+        self._learn_thread: threading.Thread | None = None
+        self._learn_lock = threading.Lock()
+        self._learn_failed_at = 0.0
+        self._learn_error: str | None = None
+        self._spawn: Callable[[Callable[[], None]], Any] = _spawn
 
     def set_nudge(self, nudge: Nudge | None) -> None:
         """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
         self._nudge = nudge
+
+    def set_busy(self, busy: Callable[[], bool] | None) -> None:
+        """La app dice aqui si esta grabando: entonces no se explora Odoo en segundo plano."""
+        self._busy = busy or (lambda: False)
+
+    def _recording(self) -> bool:
+        try:
+            return bool(self._busy())
+        except Exception:
+            return True  # ante la duda, no molestar
 
     # ------------------------------------------------------------------ ciclo de vida
 
@@ -146,6 +183,12 @@ class BrainService(GoogleApiMixin):
                     if has and not (folder / acta_io.ACTA_JSON).is_file():
                         # lo que fallo antes (sin sesion de Claude, sin red...) vuelve a probar
                         bstore.enqueue(db, rec.folder, failed_before=self._started_at)
+                # P2-c: actas pendientes marcadas por el worker, de cualquier fecha y numero
+                for mark in sorted(root.glob(f"*/{paths.ANALYSIS_PENDING}")):
+                    if (mark.parent / acta_io.ACTA_JSON).is_file():
+                        mark.unlink(missing_ok=True)
+                    elif (mark.parent / paths.TRANSCRIPT_JSON).is_file():
+                        bstore.enqueue(db, mark.parent.name, failed_before=self._started_at)
                 due = bstore.due(db)
             finally:
                 db.close()
@@ -258,6 +301,7 @@ class BrainService(GoogleApiMixin):
         except Exception:
             log.debug("secretaria tick failed", exc_info=True)
         self._odoo_daily()
+        self._odoo_learn_weekly()
 
     def _odoo_daily(self) -> None:
         """Perfil de capacidades una vez al dia y, el viernes por la tarde, el aviso de horas."""
@@ -288,6 +332,91 @@ class BrainService(GoogleApiMixin):
         except Exception as exc:
             self._odoo_failed_at = time.monotonic()
             log.info("odoo daily check skipped: %s", getattr(exc, "kind", type(exc).__name__))
+
+    # ------------------------------------------------------------------ «Conocer tu Odoo»
+
+    def _odoo_learn_weekly(self) -> None:
+        """Al conectar y luego cada semana: con la cola vacia, sin grabar y sin fallo reciente."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        if key is None or self._learning() or self._recording() or not self._queue.empty():
+            return
+        if time.monotonic() - self._learn_failed_at < ODOO_RETRY_S and self._learn_failed_at:
+            return
+        if not odoo_learn.is_stale(odoo_learn.load_state(key), now=self.now()):
+            return
+        self._start_learn(self._odoo_client, background=True)
+
+    def _learning(self) -> bool:
+        t = self._learn_thread
+        return t is not None and t.is_alive()
+
+    def _start_learn(self, make_client: Callable[[], Any], *, background: bool) -> bool:
+        """Lanza el escaneo en su hilo (uno a la vez). ``background``: se para si se graba."""
+        with self._learn_lock:
+            if self._learning():
+                return False
+            self._learn_error = None
+
+            def work() -> None:
+                self._learn_run(make_client, background=background)
+
+            self._learn_thread = self._spawn(work)
+        return True
+
+    def _learn_run(self, make_client: Callable[[], Any], *, background: bool) -> None:
+        from micnaga.brain import odoo_learn
+
+        def stop() -> bool:
+            return self._stop.is_set() or (background and self._recording())
+
+        try:
+            client = make_client()
+            if client is None:
+                return
+            odoo_learn.refresh(client, now=self.now(), stop=stop)
+            self._learn_failed_at = 0.0
+        except odoo_learn.ScanStopped:
+            log.info("odoo scan paused (recording)")
+        except Exception as exc:
+            self._learn_failed_at = time.monotonic()
+            self._learn_error = str(getattr(exc, "kind", "failed"))
+            log.info("odoo scan failed: %s", self._learn_error)
+
+    def _api_odoo_learn(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Lo que sabe de tu Odoo»: ultima actualizacion y cuantas cosas (sin red)."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        return {
+            "ok": True,
+            **odoo_learn.status(key),
+            "escaneando": self._learning(),
+            "error": self._learn_error,
+            "hay": bool(key and odoo_learn.context_text(key)),
+            "conectado": key is not None,
+        }
+
+    def _api_odoo_learn_refresh(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Actualizar»: escanea ya (aunque no toque)."""
+        from micnaga.brain import odoo_learn
+
+        if odoo_learn.connection_key_for(self.config.secretaria) is None:
+            return {"ok": False, "error": "secretaria.err.odoo_incomplete"}
+        self._start_learn(self._odoo_client, background=False)
+        return self._api_odoo_learn({})
+
+    def _api_odoo_learn_open(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Ver»: abre el ``contexto.md`` de la conexion configurada."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        target = odoo_learn.context_path(key) if key else None
+        if target is None or not target.is_file():
+            return {"ok": False, "error": "library.err.not_found"}
+        self._open_file(target)
+        return {"ok": True}
 
     def _secretary(self) -> Any:
         cfg = self.config
@@ -448,14 +577,25 @@ class BrainService(GoogleApiMixin):
             return {"ok": False, "error": "secretaria.err.unknown"}
         try:
             out: dict[str, Any] = handler(args)
+            if (
+                action in _ECHO_FOLDER
+                and isinstance(out.get("acta"), dict)
+                and isinstance(args.get("folder"), str)
+            ):
+                # cada respuesta dice de que reunion es: la vista ignora la de otra reunion
+                out.setdefault("folder", args["folder"])
             if isinstance(out.get("acta"), dict):  # items con su esquema editable
-                from micnaga.brain.plan import decorate
+                from micnaga.brain.plan import decorate, fingerprint
 
                 decorate(out["acta"])
                 from micnaga.brain.google.items import decorate as decorate_google
 
                 decorate_google(out["acta"])  # items de Google (su propio esquema)
                 self._decorate_links(out["acta"])
+                for p in out["acta"].get("propuestas") or []:
+                    # la version exacta que ve el usuario: «Aplicar» solo vale para ella
+                    if isinstance(p, dict) and p.get("uid"):
+                        p["huella"] = fingerprint(p)
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -482,6 +622,13 @@ class BrainService(GoogleApiMixin):
                 moved = self._renames.get(str(args.get("folder")))
             return {"ok": False, "error": "library.err.not_found", "moved": moved}
         acta = acta_io.read_acta(path)
+        if acta is not None and any(not p.get("uid") for p in acta.get("propuestas") or []):
+            from micnaga.brain.plan import ensure_uids
+
+            with self._acta_lock:  # actas antiguas: cada propuesta recibe su identidad
+                acta = acta_io.read_acta(path) or acta
+                if ensure_uids(acta.get("propuestas") or []):
+                    acta_io.write_acta(path, acta)
         if acta is not None:
             from micnaga.brain.plan import relabel
             from micnaga.pipeline import output
@@ -581,7 +728,13 @@ class BrainService(GoogleApiMixin):
         lines = args.get("lineas")
         if not isinstance(lines, list) or not lines:
             return {"ok": False, "error": "secretaria.err.invalid"}
-        out = horas.apply(self._connected(), lines, today=self.now().date())
+        batch = args.get("lote")  # reintento de un lote parcial
+        out = horas.apply(
+            self._connected(),
+            lines,
+            today=self.now().date(),
+            batch=batch if isinstance(batch, str) else None,
+        )
         return {"ok": True, **out}
 
     def _api_horas_undo(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -608,11 +761,32 @@ class BrainService(GoogleApiMixin):
         return [str(i) for i in ids if isinstance(i, str)][:200] if isinstance(ids, list) else []
 
     def _api_apply(self, args: dict[str, Any]) -> dict[str, Any]:
+        """``items``: ``[{id, huella, confirmar?}]``. La aprobacion vale para la version que vio el
+        usuario en ESTA reunion; si alguna cambio (otra generacion del acta, una revision...), no
+        se aplica nada. ``confirmar``: repetir un «resultado incierto» ya comprobado a mano."""
+        from micnaga.brain.executor import StaleError
+
         path = self._folder_path(args)
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
-        with self._acta_lock:
-            acta = self._executor(path).apply(self._ids(args))
+        items = args.get("items")
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "error": "secretaria.err.stale"}
+        expect: dict[str, str] = {}
+        confirm: list[str] = []
+        for it in items[:200]:
+            if not isinstance(it, dict) or not isinstance(it.get("id"), str):
+                continue
+            expect[it["id"]] = str(it.get("huella") or "")
+            if it.get("confirmar") is True:
+                confirm.append(it["id"])
+        if not expect:
+            return {"ok": False, "error": "secretaria.err.stale"}
+        try:
+            with self._acta_lock:
+                acta = self._executor(path).apply(list(expect), expect=expect, confirm=confirm)
+        except StaleError as exc:
+            return {"ok": False, "error": "secretaria.err.stale", "stale": exc.ids}
         db = self._db()
         try:
             bstore.set_proposals(db, path.name, acta_io.pending_count(acta))
@@ -647,7 +821,10 @@ class BrainService(GoogleApiMixin):
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
         with self._acta_lock:
-            acta = self._executor(path).undo(self._ids(args))
+            resolve = args.get("resolver")  # «forzar» / «omitir» un conflicto (un item)
+            acta = self._executor(path).undo(
+                self._ids(args), resolve=resolve if isinstance(resolve, str) else None
+            )
         return {"ok": True, "acta": acta}
 
     def _api_dismiss(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -946,6 +1123,10 @@ class BrainService(GoogleApiMixin):
             profile = capabilities.ensure(client, refresh=True)
         except OdooError as exc:
             return {"ok": False, "error": f"secretaria.err.odoo_{exc.kind}"}
+        from micnaga.brain import odoo_learn
+
+        if odoo_learn.load_state(str(profile["key"])) is None:  # conexion nueva: conocerla
+            self._start_learn(lambda: client, background=False)
         return {
             "ok": True,
             **info,
@@ -988,6 +1169,12 @@ class BrainService(GoogleApiMixin):
         if not isinstance(version, str):
             return {"ok": False, "error": "secretaria.err.invalid"}
         return {"ok": learn.restore(version), **self._api_learned({})}
+
+
+def _spawn(fn: Callable[[], None]) -> threading.Thread:
+    t = threading.Thread(target=fn, name="micnaga-odoo-learn", daemon=True)
+    t.start()
+    return t
 
 
 def _startfile(path: Path) -> None:  # pragma: no cover - abre el editor de Markdown real

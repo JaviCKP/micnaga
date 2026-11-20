@@ -17,7 +17,7 @@ from micnaga.config import Config
 from micnaga.pipeline import output
 from micnaga.store.db import open_database
 from tests.brain import canned
-from tests.brain.conftest import FakeClaude, business_transcript, write_meeting
+from tests.brain.conftest import FakeClaude, approve, business_transcript, write_meeting
 
 RESEARCH = [{"tool": "reuniones_con", "args": {"texto": "Dental Triana"}}]
 """El modelo falso investiga (sin investigar, la Secretaria repite la pasada una vez)."""
@@ -165,6 +165,36 @@ def test_boot_picks_up_recent_meetings_without_acta(
         svc.stop()
 
 
+def test_boot_picks_up_meetings_marked_pending_regardless_of_age(
+    fake_claude: FakeClaude, secrets_file: Path
+) -> None:
+    """P2-c: el aviso JobDone se perdio; la marca del worker basta aunque sea antigua."""
+    from micnaga import paths
+
+    old = write_meeting(
+        business_transcript(start="2020-01-01T10:00:00+01:00"), "2020-01-01_1000_reunion"
+    )
+    (old / paths.ANALYSIS_PENDING).write_text("", encoding="utf-8")
+    log = fake_claude({"structured": canned.structured(with_crm=False), "calls": RESEARCH})
+    svc = BrainService(lambda: cfg())
+    svc.start()
+    try:
+        for _ in range(150):
+            if Path(str(log) + ".count").is_file() and not old.exists():
+                break
+            threading.Event().wait(0.1)
+        assert Path(str(log) + ".count").read_text() == "1"
+        assert not old.exists()  # analizada y renombrada por el titulo del acta
+    finally:
+        svc.stop()
+    # siguiente arranque: con acta, la marca se retira y no se vuelve a analizar
+    svc = BrainService(lambda: cfg())
+    svc._boot()
+    svc.stop()
+    assert not list(old.parent.glob(f"*/{paths.ANALYSIS_PENDING}"))
+    assert Path(str(log) + ".count").read_text() == "1"
+
+
 def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> None:
     fake_claude({"structured": canned.structured(with_crm=False)})
     svc = BrainService(lambda: cfg())
@@ -176,7 +206,7 @@ def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> N
     assert got["ok"] and got["acta"]["titulo"] == "Dental Triana: alcance ampliado"
     assert svc.api("acta", {"folder": "../.."})["ok"] is False
     ids = [p["id"] for p in got["acta"]["propuestas"] if p["tipo"] == "hablante"]
-    applied = svc.api("apply", {"folder": name, "ids": ids})
+    applied = approve(svc, name, ids)
     assert all(p["estado"] == "aplicada" for p in applied["acta"]["propuestas"] if p["id"] in ids)
     names = {s.id: s.name for s in output.read_transcript(res.folder).speakers}
     assert names["S2"] == "Marta Gil"

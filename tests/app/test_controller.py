@@ -75,6 +75,66 @@ def test_failed_start_tells_the_user_and_the_watcher(rig: Rig) -> None:
     assert rig.watcher.phase.value == "recording_confirmed"
 
 
+def _denied(root: Path, name: str) -> Path:
+    raise PermissionError(13, "Acceso denegado", str(root))
+
+
+def test_folder_permission_error_resets_the_watcher_and_record_now_retries(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """P2-d: un error de permisos al resolver la carpeta no deja al vigilante «grabando»."""
+    real = paths.unique_folder
+    monkeypatch.setattr(paths, "unique_folder", _denied)
+    assert rig.watcher is not None
+    rig.watcher.record_now()
+    assert not rig.ctl.recording
+    assert rig.toaster.toasts, "no error toast"
+    assert rig.watcher.phase.value == "idle"
+    assert not rig.pill.visible
+    monkeypatch.setattr(paths, "unique_folder", real)
+    rig.watcher.record_now()  # «Grabar ahora» reintenta
+    assert rig.ctl.recording and rig.pill.visible
+    assert rig.watcher.phase.value == "recording_confirmed"
+
+
+def test_folder_permission_error_uses_the_storage_toast(
+    rig: Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    keys: list[str] = []
+    monkeypatch.setattr(rig.app.ui, "notify_error", keys.append)
+    monkeypatch.setattr(paths, "unique_folder", _denied)
+    rig.ctl.start_recording(provisional=False, meeting=MEETING)
+    assert keys == ["storage_failed"]
+
+
+@pytest.mark.parametrize("hold", [False, True])
+def test_trim_point_is_on_disk_before_the_recorder_stops(rig: Rig, hold: bool) -> None:
+    """P2-a: el corte se persiste ANTES de parar el grabador/esperar al vivo; un cierre brusco
+    en ese intervalo ya no encola la cola grabada tras el fin de la reunion."""
+    from micnaga.integration.jobs import read_trim_marker
+
+    rig.ctl.start_recording(provisional=False, meeting=MEETING)
+    rec = rig.rec
+    rec.elapsed = 3.0
+    rig.ctl.mark_end()
+    rec.elapsed = 5.0
+    seen: list[float | None] = []
+    real_stop = rec.stop
+
+    def stop() -> Path:
+        assert rec.dir is not None
+        seen.append(read_trim_marker(rec.dir))
+        return real_stop()
+
+    rec.stop = stop  # type: ignore[method-assign]
+    if hold:
+        rig.ctl.hold_recording(reason="unanswered", trim=True)
+    else:
+        rig.ctl.stop_and_finalize(confirmed=True, meeting=MEETING, trim=True)
+    rig.settle()
+    assert seen == [3.0]
+
+
 def test_show_popup_uses_watcher_rect_long_timeout_and_real_total(rig: Rig) -> None:
     rig.ctl.start_recording(provisional=True, meeting=MEETING)
     rig.ctl.show_popup(title="Revisión semanal", code=CODE_A, monitor_hint=MONITOR, timeout_s=15.0)
