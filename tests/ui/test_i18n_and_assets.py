@@ -87,6 +87,7 @@ def _dynamic_keys() -> set[str]:
             "odoo_offline",
             "odoo_access",
             "odoo_failed",
+            "stale",  # «Aplicar» con una version que ya no es la actual (lo devuelve Python)
         )
     }
     keys |= {"toast.proposals_one", "toast.proposals_other", "toast.hours.body_one"}

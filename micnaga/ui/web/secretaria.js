@@ -531,7 +531,7 @@
       // an uncertain result (it may already be done) is never retried blindly: the user checks
       // Odoo/Google first and confirms explicitly
       const unsure = !!p.incierta;
-      const retry = el("button", "btn btn-ghost btn-sm sec-retry", mic.t(unsure ? "secretaria.confirm_retry" : "secretaria.retry"));
+      const retry = el("button", "btn btn-ghost btn-sm sec-retry", unsure ? mic.t("secretaria.confirm_retry") : mic.t("secretaria.retry"));
       retry.type = "button";
       if (unsure) { retry.dataset.tip = mic.t("secretaria.err.resultado_incierto"); retry.dataset.tipPos = "left"; }
       retry.addEventListener("click", () => act("apply", [p.id], unsure ? { confirm: true } : undefined));
