@@ -127,6 +127,20 @@ class LiveEngines:
     create_embedder: Callable[[Config], WindowEmbedder | None] = lambda _c: None
 
 
+LIVE_SR = 16000
+"""El vivo pasa el audio tal cual a Silero y al ASR, que esperan 16 kHz (el lote remuestrea en
+``vad._to_16k``). Con otra frecuencia el VAD leia mal el audio y no encontraba voz, asi que el
+vivo solo se usa a 16 kHz y lo demas va por lotes (revision externa)."""
+
+
+def live_supported(config: Config, meta: CaptureMeta | None = None) -> bool:
+    """``True`` si la configuracion (y la grabacion, si se da) son de 16 kHz."""
+    rates = [config.capture.sample_rate]
+    if meta is not None:
+        rates += [t.sample_rate or LIVE_SR for t in (meta.mic, meta.system)]
+    return all(r == LIVE_SR for r in rates)
+
+
 def engines_from_deps(deps: Deps) -> LiveEngines | None:
     """Motores del vivo a partir de las del runner (``None``: no hay VAD con estado)."""
     if deps.live_vad is None:
@@ -831,6 +845,10 @@ def finish(
     ``05_vad.json``, ``05_probs.npz`` y ``06_words_*.json`` y las marcas 2-6 (las ultimas).
     """
     progress = on_progress or (lambda _f: None)
+    if not live_supported(ctx.config, ctx.meta):
+        log.info("live cache ignored: sample rate is not %d Hz; processing in batch", LIVE_SR)
+        discard_cache(ctx.session)
+        return False
     proc = LiveProcessor(ctx.session, ctx.config, engines)
     if not proc.ensure_manifest():
         discard_cache(ctx.session)
@@ -854,6 +872,11 @@ def finish(
         t0 = time.perf_counter()
         words = proc.commit_asr(probs, length, final=True)
         proc.stats.add_time("asr_wall", time.perf_counter() - t0)
+        if not any(words[t][1] for t in TRACKS):
+            # nunca se da por hecha una reunion sin palabras desde el vivo: el lote lo rehace
+            # (si de verdad no hay voz solo cuesta repetir las etapas 2-6)
+            log.info("live processing produced no words; processing in batch")
+            return False
         progress(0.8)
         regions = proc.commit_diar(probs["system"], length, final=True)
         progress(0.9)
@@ -1140,6 +1163,9 @@ def run_live(
         reason = should_keep_running(session)
         return reason is not None
 
+    if not live_supported(config):
+        log.info("live processing disabled: sample rate is not %d Hz", LIVE_SR)
+        return "unsupported sample rate"
     proc = LiveProcessor(session, config, engines, stop=quick_stop)
     errors = 0
     try:
@@ -1178,6 +1204,7 @@ __all__ = [
     "engines_from_deps",
     "finish",
     "has_cache",
+    "live_supported",
     "load_diar_windows",
     "request_stop",
     "run_live",

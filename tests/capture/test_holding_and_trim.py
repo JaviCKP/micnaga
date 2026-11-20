@@ -99,3 +99,23 @@ def test_trim_beyond_the_end_keeps_everything(tmp_path: Path) -> None:
     set_trim(d, 60.0)
     meta = finalize_session(d)
     assert meta.mic.samples == 5 * SR
+
+
+def test_trim_never_cuts_a_track_below_the_cut_because_the_other_is_shorter(
+    tmp_path: Path,
+) -> None:
+    # revision externa: 5 s de micro, 1 s de remoto y corte a los 3 s dejaba 1 s de micro
+    d = make_session(tmp_path, state="stopped", pid=DEAD_PID, mic_samples=5 * SR, sys_samples=SR)
+    head, _ = sf.read(str(d / paths.AUDIO_ME_WAV), dtype="int16")
+    remote, _ = sf.read(str(d / paths.AUDIO_REMOTE_WAV), dtype="int16")
+    assert set_trim(d, 3.0)
+    meta = finalize_session(d)
+    assert meta.mic.samples == 3 * SR, "el micro conserva todo hasta el corte"
+    assert wavio.wav_samples(d / paths.AUDIO_ME_FLAC) == 3 * SR
+    mic, _ = sf.read(str(d / paths.AUDIO_ME_FLAC), dtype="int16")
+    assert (mic == head[: 3 * SR]).all()
+    # el remoto corto se conserva entero (y se rellena con silencio hasta el corte)
+    sys_, _ = sf.read(str(d / paths.AUDIO_REMOTE_FLAC), dtype="int16")
+    assert len(sys_) == meta.system.samples == 3 * SR
+    assert (sys_[:SR] == remote).all() and not sys_[SR:].any()
+    assert meta.extra["duration_s"] == 3.0

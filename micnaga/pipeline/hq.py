@@ -69,8 +69,17 @@ COMPRESSION_RATIO_THRESHOLD = 2.4
 MAX_GAP_TO_TURN_S = 3.0
 
 
+MIN_KEPT_RATIO = 0.3
+"""Una mejora que deja menos de este tanto de las palabras de antes se rechaza (revision
+externa: una mejora paso de seis palabras a cero y se publico)."""
+
+
 class Cancelled(Exception):
     """Se pidio cancelar (``hq.cancelar``)."""
+
+
+class HqRejected(Exception):
+    """La transcripcion mejorada salio vacia o mucho mas corta: no se publica."""
 
 
 class AsrLike(Protocol):
@@ -254,9 +263,24 @@ def _reindex(folder: Path, transcript: Transcript) -> None:
     output._reindex(folder, transcript, None)
 
 
+def _has_words(file: Path) -> bool:
+    try:
+        return _count_words(Transcript.from_json(file.read_text(encoding="utf-8"))) > 0
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+
+
 def save_previa(folder: Path) -> None:
-    """Copia la transcripcion actual (y la marca de limpieza) a ``*.previa.json``."""
-    shutil.copy2(folder / paths.TRANSCRIPT_JSON, folder / PREVIA)
+    """Copia la transcripcion actual (y la marca de limpieza) a ``*.previa.json``.
+
+    Una transcripcion actual sin palabras nunca pisa una previa que si las tiene: se conserva
+    la copia buena para que «Volver a la anterior» no devuelva una reunion vacia."""
+    current, previa = folder / paths.TRANSCRIPT_JSON, folder / PREVIA
+    if previa.is_file() and not _has_words(current) and _has_words(previa):
+        log.info("current transcript is empty; the previous backup is kept")
+        (folder / CLEAN_MARKER).unlink(missing_ok=True)  # la limpieza debe volver a pasar
+        return
+    shutil.copy2(current, previa)
     marker = folder / CLEAN_MARKER
     if marker.is_file():
         os.replace(marker, folder / CLEAN_PREVIA)
@@ -297,6 +321,14 @@ class HqResult:
 
 def _count_words(t: Transcript) -> int:
     return sum(len(s.text.split()) for s in t.segments)
+
+
+def _validate(words_before: int, words_after: int, segments_after: int) -> None:
+    """Lanza ``HqRejected`` si la mejora salio vacia o con mucho menos texto que antes."""
+    if segments_after == 0 or words_after == 0:
+        raise HqRejected(f"improved transcript is empty ({words_before} words before)")
+    if words_before > 0 and words_after < MIN_KEPT_RATIO * words_before:
+        raise HqRejected(f"improved transcript too short: {words_before} -> {words_after} words")
 
 
 def _ensure_vad(folder: Path, config: Config, progress: Progress) -> bool:
@@ -344,7 +376,9 @@ def improve(
     report = progress or (lambda _f, _p: None)
     is_cancelled = cancelled or (lambda: (folder / CANCEL).is_file())
     t0 = time.monotonic()
-    current = Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
+    # falla pronto (antes de gastar CPU) si la transcripcion no se puede leer; al publicar se
+    # vuelve a leer la del disco
+    Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
     work = paths.work_dir(folder)
     created_work = not work.is_dir()  # si se crea aqui, se borra al final (tambien si falla)
     try:
@@ -377,13 +411,18 @@ def improve(
         report("ensambla", 1.0)
         for track in words:
             words[track].sort(key=lambda w: (w.s, w.e))
-        new = rebuild(current, words["mic"], words["system"], config, name)
+        # Se relee del disco al publicar: un renombrado (o fusion de hablantes, o marcador)
+        # hecho mientras corria la mejora se conserva en vez de pisarse con la copia del inicio.
+        latest = Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
+        new = rebuild(latest, words["mic"], words["system"], config, name)
+        before, after = _count_words(latest), _count_words(new)
+        _validate(before, after, len(new.segments))
         from micnaga.pipeline import output
 
         save_previa(folder)
         output.write_transcript(folder, new)
         _reindex(folder, new)
-        return HqResult(_count_words(current), _count_words(new), time.monotonic() - t0, name)
+        return HqResult(before, after, time.monotonic() - t0, name)
     finally:
         (folder / CANCEL).unlink(missing_ok=True)
         if created_work:
@@ -504,6 +543,10 @@ def _run_locked(folder: Path, config: Config) -> int:
         (folder / CANCEL).unlink(missing_ok=True)
         write_status(folder, state="cancelled")
         return 0
+    except HqRejected as exc:
+        log.warning("hq transcription rejected, the current one is kept: %s", exc)
+        write_status(folder, state="failed", error="HqRejected")
+        return 1
     except Exception as exc:
         log.exception("hq transcription failed")
         write_status(folder, state="failed", error=type(exc).__name__)
