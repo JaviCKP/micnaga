@@ -180,8 +180,13 @@ def run_tool(
             log.error("a Google write ran without a guard receipt (%s)", full)
         return out
     out.result = mine[-1] if mine else None
+    if write and receipt is not None and (out.result is None or _lost(out.result)):
+        # el guardian la dejo pasar y no hay respuesta (o se corto): pudo hacerse. Nunca se
+        # da por fallida (un reintento duplicaria el correo): el recibo se queda.
+        out.error = "unknown_outcome"
+        return out
     if write and receipt is not None:
-        receipt_path(key).unlink(missing_ok=True)  # no se ejecuto con exito: se puede reintentar
+        receipt_path(key).unlink(missing_ok=True)  # el servicio dijo que no: se puede reintentar
     if full in res.denials:
         out.error = "denied"
     elif out.result is not None:
@@ -189,6 +194,15 @@ def run_tool(
     else:
         out.error = "not_called"
     return out
+
+
+_LOST = ("timeout", "timed out", "deadline", "503", "504", "unavailable", "connection reset")
+
+
+def _lost(result: ToolResult) -> bool:
+    """Un error de transporte (la respuesta se perdio), no un «no» del servicio."""
+    low = str(result.text or "").casefold()
+    return bool(result.is_error) and any(x in low for x in _LOST)
 
 
 def _read_receipt(key: str, folder: Path | None = None) -> dict[str, Any] | None:

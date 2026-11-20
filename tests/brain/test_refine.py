@@ -20,7 +20,7 @@ from micnaga.brain.claude import ClaudeRequest, ClaudeResult, ToolCall, ToolResu
 from micnaga.brain.executor import ApplyError, Executor
 from micnaga.brain.refine import RefineError, Refiner
 from micnaga.config import Config
-from tests.brain.conftest import odoo_config
+from tests.brain.conftest import approve, odoo_config
 from tests.brain.demo import business_transcript
 from tests.brain.fake_odoo import PROJECT_ATLAS, PROJECT_TRAINING, FakeOdoo
 from tests.brain.test_odoo_business import TODAY, _acta_with, _raw, client, employee_access
@@ -375,7 +375,7 @@ def test_applied_odoo_items_carry_their_link(fake_odoo: FakeOdoo, meeting: Path)
     cfg.secretaria.enabled = True
     task = next(p for p in props if p["tipo"] == "crear_tarea")
     svc = BrainService(lambda: cfg, odoo_factory=lambda _c: client(fake_odoo))
-    r = svc.api("apply", {"folder": meeting.name, "ids": [task["id"]]})
+    r = approve(svc, meeting.name, [task["id"]])
     done = next(p for p in r["acta"]["propuestas"] if p["id"] == task["id"])
     assert done["estado"] == "aplicada"
     assert done["enlace"].startswith(fake_odoo.url) and "model=project.task" in done["enlace"]

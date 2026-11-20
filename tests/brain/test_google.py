@@ -28,6 +28,7 @@ from micnaga.brain.google import (
 from micnaga.config import Config, config_from_dict
 from micnaga.store.db import open_database
 from micnaga.types import EnginesInfo, MeetingInfo, Segment, Speaker, Transcript
+from tests.brain.conftest import approve
 from tests.brain.fake_google import FakeGoogle, FakeGoogleRunner
 
 CAL = "mcp__claude_ai_Google_Calendar__"
@@ -1015,14 +1016,14 @@ def test_a_failed_google_item_can_be_reviewed_and_retried(
         return apply.GoogleApplier(path, runner=runner[0], db_factory=open_database, odoo=None)
 
     monkeypatch.setattr(svc, "_google_applier", make)
-    r = svc.api("apply", {"folder": meeting.name, "ids": ["p1"]})
+    r = approve(svc, meeting.name, ["p1"])
     assert r["acta"]["propuestas"][0]["estado"] == "fallida"
     r = svc.api("edit", {"folder": meeting.name, "id": "p1", "cambios": {"titulo": "Otra"}})
     assert r["ok"], r
     p = r["acta"]["propuestas"][0]
     assert (p["estado"], p["revision"], p["checked"]) == ("pendiente", 1, True)
     runner[0] = FakeGoogleRunner(google)
-    r = svc.api("apply", {"folder": meeting.name, "ids": ["p1"]})
+    r = approve(svc, meeting.name, ["p1"])
     assert r["acta"]["propuestas"][0]["estado"] == "aplicada"
 
 
@@ -1112,10 +1113,12 @@ def test_analysis_pass_with_google_uses_the_read_only_flag_set(
 @pytest.mark.parametrize("mode", ["draft", "send"])
 def test_unknown_mail_outcome_is_never_retried_blindly(tmp_path: Path, mode: str) -> None:
     """Tiempo agotado DESPUES de que el guardian dejara pasar la llamada: el correo pudo salir.
-    Reintentar no lo repite; editar la propuesta (otra revision) si permite un reintento."""
+    Reintentar no lo repite: si no se puede comprobar en Gmail queda «resultado incierto»;
+    editar la propuesta (otra revision) o confirmarlo explicitamente si permite un reintento."""
     from micnaga.brain.claude import ClaudeTimeoutError
 
     google = FakeGoogle()
+    google.search_fails = True  # no se puede comprobar si salio
     p = {
         "id": "p2",
         "grupo": "google",
@@ -1128,10 +1131,12 @@ def test_unknown_mail_outcome_is_never_retried_blindly(tmp_path: Path, mode: str
         slow.apply(p, {})
     with pytest.raises(apply.GoogleApplyError, match="google_unknown_outcome"):
         applier(tmp_path, FakeGoogleRunner(google)).apply(p, {})
-    assert len(google.calls) == 1
+    writes = [c for c in google.calls if c[0].endswith(("create_draft", "send_message"))]
+    assert len(writes) == 1
     items.edit(p, {"asunto": "R2"})  # el usuario lo revisa y decide reintentar
     applier(tmp_path, FakeGoogleRunner(google)).apply(p, {})
-    assert len(google.calls) == 2
+    writes = [c for c in google.calls if c[0].endswith(("create_draft", "send_message"))]
+    assert len(writes) == 2
 
 
 def test_an_event_confirmed_absent_is_created_again(tmp_path: Path) -> None:

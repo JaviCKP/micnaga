@@ -9,8 +9,10 @@ Por cada propuesta marcada del grupo ``google``:
    (``create_draft`` con firma) salvo que el usuario elija «Enviar» (``send_message``).
 2. Idempotencia (``store.google_writes``): ``intent`` antes de lanzar, ``done`` con ids y
    enlaces. Si una ejecucion anterior quedo a medias (``intent``/``unknown``), antes de repetir
-   se busca la marca ``ref`` de Micnaga en Calendar; ademas el recibo de un solo uso del
-   guardian impide repetir una llamada ya permitida.
+   se busca la marca ``ref`` de Micnaga en Calendar (o el mismo borrador/correo, por destinatario,
+   asunto y cuerpo exactos, en Gmail); si no se puede comprobar queda «resultado incierto» y
+   solo se repite con la confirmacion explicita del usuario (``confirm``); ademas el recibo de
+   un solo uso del guardian impide repetir una llamada ya permitida.
 3. ``calls.run_tool``: ``claude -p`` con SOLO esa herramienta y el guardian ``PreToolUse``.
 4. Eventos: espejo en Odoo (``mirror``), salvo sincronizacion nativa. Un fallo del espejo no
    deshace el evento: queda anotado en la propuesta.
@@ -19,6 +21,7 @@ Por cada propuesta marcada del grupo ``google``:
 from __future__ import annotations
 
 import html
+import json
 import logging
 from collections.abc import Callable
 from datetime import datetime, timedelta
@@ -174,6 +177,15 @@ class GoogleApplier:
         store.ensure(db)
         return db
 
+    def _key(self, p: dict[str, Any], op: str) -> str:
+        """Clave de idempotencia por la identidad de la propuesta (``uid``), nunca por su
+        etiqueta ``pN`` (que se repite entre generaciones del acta). Las propuestas antiguas sin
+        ``uid`` siguen con la clave de siempre."""
+        rev = int(p.get("revision") or 0)
+        if p.get("uid"):
+            return store.write_key("uid", str(p["uid"]), op, rev)
+        return store.write_key(self.folder.name, str(p.get("id")), op, rev)
+
     def _put(self, key: str, p: dict[str, Any], op: str, tool: str, state: str, **res: Any) -> None:
         db = self._db()
         try:
@@ -181,7 +193,7 @@ class GoogleApplier:
                 db,
                 key,
                 folder=self.folder.name,
-                proposal=str(p.get("id")),
+                proposal=str(p.get("uid") or p.get("id")),
                 op=op,
                 tool=tool,
                 state=state,
@@ -191,9 +203,16 @@ class GoogleApplier:
             db.close()
 
     def _call(
-        self, p: dict[str, Any], op: str, service: str, tool: str, tool_input: dict[str, Any]
+        self,
+        p: dict[str, Any],
+        op: str,
+        service: str,
+        tool: str,
+        tool_input: dict[str, Any],
+        *,
+        confirm: bool = False,
     ) -> calls.CallOutcome:
-        key = store.write_key(self.folder.name, str(p.get("id")), op, int(p.get("revision") or 0))
+        key = self._key(p, op)
         db = self._db()
         try:
             prior = store.get(db, key)
@@ -207,16 +226,16 @@ class GoogleApplier:
             # El guardian ya dejo pasar esta llamada una vez y no sabemos si se ejecuto (tiempo
             # agotado, proceso muerto...). Solo se repite si se COMPRUEBA que no existe; si no,
             # se para: «revisa antes de reintentar» (editar la propuesta crea otra clave).
-            state, found = self._recover(service, op, tool_input, key)
+            state, found = self._recover(service, op, tool_input, key, tool)
             if state == "found" and found is not None:
                 self._put(key, p, op, tool, "done", **found)
                 out = calls.CallOutcome(ok=True, tool=tool, input=tool_input)
                 out.extra = {"stored": found, "key": key}
                 return out
-            if state != "absent":
+            if state != "absent" and not confirm:
                 self._put(key, p, op, tool, "unknown", error="unknown_outcome")
                 raise GoogleApplyError("google_unknown_outcome")
-            calls.forget_receipt(key)  # comprobado: no esta en Google
+            calls.forget_receipt(key)  # comprobado (o confirmado por el usuario): no esta
         self._put(key, p, op, tool, "intent")
         try:
             outcome = calls.run_tool(
@@ -233,6 +252,9 @@ class GoogleApplier:
             raise GoogleApplyError(f"google_{kind}") from exc
         outcome.extra["key"] = key
         if not outcome.ok:
+            if outcome.error == "unknown_outcome":  # salio, pero no sabemos si se hizo
+                self._put(key, p, op, tool, "unknown", error="unknown_outcome")
+                raise GoogleApplyError("google_unknown_outcome")
             if outcome.error == "unguarded":
                 self._put(key, p, op, tool, "done", error="unguarded")
             else:
@@ -241,10 +263,13 @@ class GoogleApplier:
         return outcome
 
     def _recover(
-        self, service: str, op: str, tool_input: dict[str, Any], key: str
+        self, service: str, op: str, tool_input: dict[str, Any], key: str, tool: str = ""
     ) -> tuple[str, dict[str, Any] | None]:
         """¿Se ejecuto la vez anterior? ``("found", enlaces)``, ``("absent", None)`` (buscado y no
-        esta) o ``("unknown", None)``. Solo se puede comprobar al crear eventos (marca ``ref``)."""
+        esta) o ``("unknown", None)``. Eventos: por la marca ``ref``; correo: el mismo borrador o
+        enviado (destinatarios, asunto y cuerpo exactos)."""
+        if service == "gmail" and op == "create":
+            return self._recover_mail(tool, tool_input)
         if service != "calendar" or op != "create":
             return "unknown", None
         start = datetime.fromisoformat(str(tool_input["startTime"]))
@@ -267,17 +292,49 @@ class GoogleApplier:
                 return "found", event_links(ev)
         return "absent", None
 
+    def _recover_mail(
+        self, tool: str, tool_input: dict[str, Any]
+    ) -> tuple[str, dict[str, Any] | None]:
+        """Busca en borradores (o enviados) el mismo correo. Sin marca visible en el correo de un
+        cliente: coincide si estan todos los destinatarios, el asunto y el principio del cuerpo."""
+        sent = tool == "send_message"
+        to = [str(x) for x in tool_input.get("to") or []]
+        subject = str(tool_input.get("subject") or "")
+        body = " ".join(str(tool_input.get("body") or "").split())[:80]
+        query = f'subject:"{subject}" ' + " ".join(f"to:{x}" for x in to) + " newer_than:2d"
+        if sent:
+            tool, q = "search_threads", {"query": "in:sent " + query, "pageSize": 10}
+        else:
+            tool, q = "list_drafts", {"query": query, "pageSize": 10}
+        try:
+            res = calls.run_tool(self.runner, "gmail", tool, q)
+        except Exception:
+            return "unknown", None
+        if not res.ok:
+            return "unknown", None
+        items = res.structured.get("threads" if sent else "drafts")
+        if not isinstance(items, list):
+            return "unknown", None
+        for it in items:
+            if not isinstance(it, dict):
+                continue
+            blob = " ".join(json.dumps(it, ensure_ascii=False).replace("\\n", " ").split())
+            if subject in blob and all(x in blob for x in to) and body in blob:
+                return "found", mail_links(it)
+        return "absent", None
+
     # ------------------------------------------------------------------ por tipo
 
-    def apply(self, p: dict[str, Any], acta: dict[str, Any]) -> dict[str, Any]:
+    def apply(
+        self, p: dict[str, Any], acta: dict[str, Any], *, confirm: bool = False
+    ) -> dict[str, Any]:
+        """``confirm``: el usuario comprobo un «resultado incierto» y quiere repetirlo."""
         kind = p.get("tipo")
         d = p.get("datos") or {}
         if kind == "evento_google":
-            key = store.write_key(
-                self.folder.name, str(p["id"]), "create", int(p.get("revision") or 0)
-            )
+            key = self._key(p, "create")
             tool_input = event_input(d, key)
-            out = self._call(p, "create", "calendar", "create_event", tool_input)
+            out = self._call(p, "create", "calendar", "create_event", tool_input, confirm=confirm)
             links = out.extra.get("stored") or event_links(out.structured)
             if not links.get("event_id"):
                 raise GoogleApplyError("google_no_id")
@@ -293,7 +350,7 @@ class GoogleApplier:
             }
         if kind == "correo_google":
             tool, tool_input = mail_input(d)
-            out = self._call(p, "create", "gmail", tool, tool_input)
+            out = self._call(p, "create", "gmail", tool, tool_input, confirm=confirm)
             links = out.extra.get("stored") or mail_links(out.structured)
             if "stored" not in out.extra:
                 self._put(out.extra["key"], p, "create", out.tool, "done", **links)
@@ -302,7 +359,9 @@ class GoogleApplier:
                 return {"google": "enviado", "message_id": links.get("id")}
             return {"google": "borrador", "draft_id": links.get("id")}
         if kind == "acta_drive":
-            out = self._call(p, "create", "drive", "create_file", drive_input(d, acta))
+            out = self._call(
+                p, "create", "drive", "create_file", drive_input(d, acta), confirm=confirm
+            )
             links = out.extra.get("stored") or file_links(out.structured)
             if "stored" not in out.extra:
                 self._put(out.extra["key"], p, "create", out.tool, "done", **links)

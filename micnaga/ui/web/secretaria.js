@@ -29,6 +29,9 @@
   const lib = () => window.micnaga && window.micnaga.library;
   const IT = () => window.micnaga && window.micnaga.items;   // Google items + research (items.js)
   const wait = (ms) => new Promise((r) => setTimeout(r, ms));  // never rAF: occluded WebView2
+  /** A response for another meeting (the user moved on while it was in flight): ignore it, so
+   *  meeting A's answer never paints over (or re-labels) meeting B's proposals. */
+  const stale = (r, folder) => folder !== S.folder || !!(r && r.folder && r.folder !== folder);
 
   /** A small «01:17 ▸» stamp that plays that moment. */
   function stamp(t) {
@@ -305,7 +308,9 @@
   }
 
   async function edit(p, changes) {
-    const r = await call("edit", { folder: S.folder, id: p.id, cambios: changes });
+    const folder = S.folder;
+    const r = await call("edit", { folder, id: p.id, cambios: changes });
+    if (stale(r, folder)) return;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
     S.acta = r.acta;
     S.undoable.delete(p.id);   // a hand edit closes the message's one-step undo
@@ -381,14 +386,16 @@
     const li = document.querySelector(`.sec-p[data-id="${id}"]`);
     if (li) li.classList.add("thinking");
     swap(id, { keepThinking: true });
+    const folder = S.folder;
     const stop = pollStatus((s) => {
       if (!s || s.id !== id) return;
       st.status = s;
       const t = document.querySelector(`.sec-ask[data-id="${id}"] .sec-askst-t`);
       if (t) crossText(t, statusText(s));
     });
-    const r = await call("refine", { folder: S.folder, id, texto: st.text });
+    const r = await call("refine", { folder, id, texto: st.text });
     stop();
+    if (stale(r, folder)) return;
     st.busy = false;
     if (!r || !r.ok) {
       st.error = errorLine(r);
@@ -406,7 +413,9 @@
   }
 
   async function undoRefine(id) {
-    const r = await call("refine_undo", { folder: S.folder, id });
+    const folder = S.folder;
+    const r = await call("refine_undo", { folder, id });
+    if (stale(r, folder)) return;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); return; }
     S.acta = r.acta;
     S.undoable.delete(id);
@@ -419,12 +428,13 @@
   /** While a refine runs, its progress line follows the read-only lookups. */
   function pollStatus(onStatus) {
     let alive = true;
+    const folder = S.folder;
     (async () => {
-      while (alive) {
+      while (alive && folder === S.folder) {
         await wait(350);
-        if (!alive) break;
-        const r = await call("refine_status", { folder: S.folder });
-        if (alive && r && r.ok) onStatus(r.status);
+        if (!alive || folder !== S.folder) break;
+        const r = await call("refine_status", { folder });
+        if (alive && folder === S.folder && r && r.ok) onStatus(r.status);
       }
     })();
     return () => { alive = false; };
@@ -520,10 +530,13 @@
     const s = stamp(p.t);
     if (s) tools.append(s);
     if (p.estado === "fallida") {
-      const retry = el("button", "btn btn-ghost btn-sm sec-retry", mic.t("secretaria.retry"));
+      // an uncertain result (it may already be done) is never retried blindly: the user checks
+      // Odoo/Google first and confirms explicitly
+      const unsure = !!p.incierta;
+      const retry = el("button", "btn btn-ghost btn-sm sec-retry", unsure ? mic.t("secretaria.confirm_retry") : mic.t("secretaria.retry"));
       retry.type = "button";
-      retry.disabled = p.error === "google_unknown_outcome";  // checked by hand first
-      retry.addEventListener("click", () => act("apply", [p.id]));
+      if (unsure) { retry.dataset.tip = mic.t("secretaria.err.resultado_incierto"); retry.dataset.tipPos = "left"; }
+      retry.addEventListener("click", () => act("apply", [p.id], unsure ? { confirm: true } : undefined));
       tools.append(retry);
     }
     if (p.estado === "aplicada") {
@@ -618,10 +631,10 @@
       }
       const force = el("button", "sec-tlink", mic.t("secretaria.undo_force"));
       force.type = "button";
-      force.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], "forzar"); });
+      force.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], { resolver: "forzar" }); });
       const skip = el("button", "sec-tlink", mic.t("secretaria.undo_skip"));
       skip.type = "button";
-      skip.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], "omitir"); });
+      skip.addEventListener("click", (e) => { e.preventDefault(); e.stopPropagation(); act("undo", [p.id], { resolver: "omitir" }); });
       box.append(force, skip);
       return box;
     }
@@ -773,14 +786,16 @@
     const list = document.querySelector(".sec-props");
     if (list) list.classList.add("thinking");
     replaceBar();
+    const folder = S.folder;
     const stop = pollStatus((s) => {
       if (!s || s.id) return;
       S.plan.status = s;
       const t = document.querySelector(".sec-planst-t");
       if (t) crossText(t, statusText(s));
     });
-    const r = await call("refine_plan", { folder: S.folder, texto: S.plan.text });
+    const r = await call("refine_plan", { folder, texto: S.plan.text });
     stop();
+    if (stale(r, folder)) return;
     S.plan.busy = false;
     if (!r || !r.ok) {
       S.plan.error = errorLine(r);
@@ -825,7 +840,9 @@
 
   async function undoLast() {
     if (S.last === "plan") {
-      const r = await call("refine_undo", { folder: S.folder });
+      const folder = S.folder;
+      const r = await call("refine_undo", { folder });
+      if (stale(r, folder)) return;
       if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); return; }
       S.acta = r.acta;
       S.last = null;
@@ -839,17 +856,34 @@
     act("undo", props.map((p) => p.id));
   }
 
-  async function act(action, ids, resolver) {
+  /** «Aplicar» approves the exact version on screen (id + huella); Python refuses any other.
+   *  opt.confirm: the user checked an uncertain result by hand and wants it run again.
+   *  opt.resolver: «forzar» / «omitir» for an undo conflict. */
+  async function act(action, ids, opt) {
     if (!ids.length || S.busy) return;
+    const folder = S.folder;
     S.busy = true;
     const box = document.querySelector(".sec-props");
     if (box) box.dataset.busy = "true";
     refreshBar();
-    const args = { folder: S.folder, ids };
-    if (resolver) args.resolver = resolver;
+    const args = action === "apply"
+      ? {
+          folder,
+          items: ids.map((id) => {
+            const p = findP(id) || {};
+            return { id, huella: p.huella, ...(opt && opt.confirm ? { confirmar: true } : {}) };
+          }),
+        }
+      : { folder, ids };
+    if (opt && opt.resolver) args.resolver = opt.resolver;
     const r = await call(action, args);
+    if (stale(r, folder)) return;
     S.busy = false;
-    if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); render(); return; }
+    if (!r || !r.ok) {
+      snack(mic.t((r && r.error) || "library.err.op_failed"));
+      if (r && r.error === "secretaria.err.stale") load(); else render();  // show what is there now
+      return;
+    }
     S.acta = r.acta;
     S.last = action === "apply" ? "apply" : null;
     const fixes = (r.acta.propuestas || []).some((p) => ids.includes(p.id) && p.grupo === "correcciones");
@@ -872,7 +906,9 @@
   }
 
   async function analyze() {
-    const r = await call("analyze", { folder: S.folder });
+    const folder = S.folder;
+    const r = await call("analyze", { folder });
+    if (stale(r, folder)) return;
     if (!r || !r.ok) { snack(mic.t((r && r.error) || "library.err.op_failed")); return; }
     S.run = { state: "pending" };
     S.acta = null;
@@ -975,6 +1011,7 @@
     S.trail = [];
     S.full = false;
     S.run = null;
+    S.busy = false;           // a pending «Aplicar» of the previous meeting no longer counts
     clearTimeout(S.poll);
     const host = $("sec");
     if (host) { host.replaceChildren(); host.hidden = true; }

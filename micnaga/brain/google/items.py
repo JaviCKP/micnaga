@@ -176,7 +176,10 @@ def replace(acta: dict[str, Any], pid: str, new: dict[str, Any]) -> dict[str, An
             continue
         if p.get("estado") != "pendiente" or new.get("tipo", p.get("tipo")) != p.get("tipo"):
             raise EditError("estado")
-        merged = {**p, **{k: v for k, v in new.items() if k not in ("id", "estado", "checked")}}
+        merged = {
+            **p,
+            **{k: v for k, v in new.items() if k not in ("id", "uid", "estado", "checked")},
+        }
         merged["datos"] = _revised(p, new.get("datos"))
         merged["id"] = pid
         merged["estado"] = "pendiente"

@@ -563,7 +563,9 @@ def test_every_item_is_editable_and_replaced_keeping_its_id(
 
     Executor(meeting, odoo=lambda: client(fake_odoo), today=TODAY).apply([note_id, act_id, task_id])
     note = [m for m in fake_odoo.data["mail.message"] if m.get("model") == "project.task"][-1]
-    assert note["body"] == "<p>Resumen corto</p><p>&lt;script&gt;x&lt;/script&gt;</p>"
+    body = str(note["body"])
+    assert body.startswith("<p>Resumen corto</p><p>&lt;script&gt;x&lt;/script&gt;</p>")
+    assert body.endswith("</p>") and "Micnaga · ref micnaga-" in body  # para un reintento
     act = fake_odoo.data["mail.activity"][-1]
     assert act["activity_type_id"] == 4 and act["date_deadline"] == "2026-11-25"
     assert fake_odoo.data["project.task"][-1]["project_id"] == PROJECT_TRAINING
