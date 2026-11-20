@@ -70,6 +70,9 @@ WatcherFactory = Callable[
 HotkeysFactory = Callable[[Config, Callable[[], None], Callable[[], None]], "HotkeyManager"]
 
 ENV_NO_AUTOSTART = "MICNAGA_NO_AUTOSTART"
+PENDING_ROOTS_FILE = "pending_roots.json"
+"""Indices de carpetas de reuniones anteriores con trabajos pendientes (``MICNAGA_HOME``): el
+supervisor sigue lanzando el worker sobre ellas tras un reinicio (hallazgo P1-4)."""
 
 
 def default_watcher_factory(
@@ -248,6 +251,7 @@ class Application:
             spawn=spawn,
             # con un ``spawn`` inyectado (tests) nunca se lanza un worker real para otra carpeta
             spawn_for=(lambda _root: spawn()) if spawn is not None else None,
+            watch_file=paths.app_data_dir() / PENDING_ROOTS_FILE,
             is_running=is_worker_running,
             models_ready=self._models_ready_fn,
             on_busy=self._on_busy,

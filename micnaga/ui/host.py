@@ -139,7 +139,8 @@ class UiHost:
         self._registry = registry
         self._w32 = win32 or winapi.default_api()
         self._server = server or LocalServer(
-            meetings_root=lambda: paths.meetings_root(self._config)
+            meetings_root=lambda: paths.meetings_root(self._config),
+            db_factory=lambda: self._db_factory(),
         )
         self._factory: WindowFactory = factory or PywebviewFactory(self._server, self._w32)
         self._db_factory = db_factory or (lambda: open_database(self._config))
