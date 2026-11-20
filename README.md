@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/JaviCKP/micnaga/releases/latest/download/Micnaga-Setup-0.1.0.exe"><b>Descargar para Windows</b></a>
+  <a href="https://github.com/JaviCKP/micnaga/releases/latest/download/Micnaga-Setup-0.1.1.exe"><b>Descargar para Windows</b></a>
   &nbsp;·&nbsp; <a href="docs/ONBOARDING.md">Guía de puesta en marcha</a>
   &nbsp;·&nbsp; <a href="#cómo-funciona">Cómo funciona</a>
   &nbsp;·&nbsp; <a href="#privacidad">Privacidad</a>
@@ -20,7 +20,7 @@ de seguimiento. **Nada se escribe en ningún sitio hasta que pulsas «Aplicar».
 
 ## Instalar
 
-1. Descarga **[Micnaga-Setup-0.1.0.exe](https://github.com/JaviCKP/micnaga/releases/latest)** (70 MB) y ábrelo. Se instala con un clic y arranca con Windows.
+1. Descarga **[Micnaga-Setup-0.1.1.exe](https://github.com/JaviCKP/micnaga/releases/latest)** (70 MB) y ábrelo. Se instala con un clic y arranca con Windows.
 2. La primera vez descarga los modelos de voz (~700 MB) y comprueba tu micro y tu audio.
 3. Ya está. Vive en la bandeja del sistema y no tienes que abrirlo para que funcione.
 
