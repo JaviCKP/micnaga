@@ -293,19 +293,20 @@ def restore(folder: Path) -> bool:
     from micnaga.pipeline import output
 
     previa = folder / PREVIA
-    if not previa.is_file():
-        return False
-    transcript = Transcript.from_json(previa.read_text(encoding="utf-8"))
-    if not any(seg.text.strip() for seg in transcript.segments):
-        return False  # una previa vacia (de una version antigua) nunca sustituye a la actual
-    output.write_transcript(folder, transcript)
-    clean = folder / CLEAN_PREVIA
-    if clean.is_file():
-        os.replace(clean, folder / CLEAN_MARKER)
-    else:
-        (folder / CLEAN_MARKER).unlink(missing_ok=True)
-    previa.unlink()
-    _reindex(folder, transcript)
+    with output.transcript_lock(folder):
+        if not previa.is_file():
+            return False
+        transcript = Transcript.from_json(previa.read_text(encoding="utf-8"))
+        if not any(seg.text.strip() for seg in transcript.segments):
+            return False  # una previa vacia (de una version antigua) nunca sustituye a la actual
+        output.write_transcript(folder, transcript)
+        clean = folder / CLEAN_PREVIA
+        if clean.is_file():
+            os.replace(clean, folder / CLEAN_MARKER)
+        else:
+            (folder / CLEAN_MARKER).unlink(missing_ok=True)
+        previa.unlink()
+        _reindex(folder, transcript)
     (folder / STATUS).unlink(missing_ok=True)
     return True
 
@@ -413,17 +414,21 @@ def improve(
         report("ensambla", 1.0)
         for track in words:
             words[track].sort(key=lambda w: (w.s, w.e))
-        # Se relee del disco al publicar: un renombrado (o fusion de hablantes, o marcador)
-        # hecho mientras corria la mejora se conserva en vez de pisarse con la copia del inicio.
-        latest = Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
-        new = rebuild(latest, words["mic"], words["system"], config, name)
-        before, after = _count_words(latest), _count_words(new)
-        _validate(before, after, len(new.segments))
         from micnaga.pipeline import output
 
-        save_previa(folder)
-        output.write_transcript(folder, new)
-        _reindex(folder, new)
+        # Se relee del disco al publicar, bajo el cerrojo de la transcripcion: un renombrado (o
+        # fusion de hablantes) hecho mientras corria la mejora se conserva, y uno que llegue
+        # durante la publicacion espera y despues edita la version mejorada.
+        with output.transcript_lock(folder):
+            latest = Transcript.from_json(
+                (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
+            )
+            new = rebuild(latest, words["mic"], words["system"], config, name)
+            before, after = _count_words(latest), _count_words(new)
+            _validate(before, after, len(new.segments))
+            save_previa(folder)
+            output.write_transcript(folder, new)
+            _reindex(folder, new)
         return HqResult(before, after, time.monotonic() - t0, name)
     finally:
         (folder / CANCEL).unlink(missing_ok=True)

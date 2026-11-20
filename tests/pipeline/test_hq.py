@@ -242,6 +242,86 @@ def test_rename_made_while_improving_is_kept(tmp_path: Path, no_vad: None) -> No
     assert {s.id: s.name for s in _read(folder, hq.PREVIA).speakers}["S1"] == "Ana María"
 
 
+def test_rename_racing_the_publish_never_overwrites_the_improved_transcript(
+    tmp_path: Path, no_vad: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Renombrado que lee antes de que la mejora publique y escribe despues (la carrera)."""
+    import threading
+
+    from micnaga.pipeline import output
+
+    folder = _meeting(tmp_path)
+    did_read, go = threading.Event(), threading.Event()
+    real_read = output.read_transcript
+
+    def slow_read(f: Path) -> Transcript:
+        t = real_read(f)
+        if threading.current_thread().name == "rename":
+            did_read.set()
+            go.wait(5)  # el renombrado se queda con la copia vieja mientras la mejora publica
+        return t
+
+    monkeypatch.setattr(output, "read_transcript", slow_read)
+    errors: list[BaseException] = []
+
+    def run(fn: Any) -> None:
+        try:
+            fn()
+        except BaseException as exc:  # pragma: no cover - se comprueba abajo
+            errors.append(exc)
+
+    rename = threading.Thread(
+        target=run,
+        args=(lambda: output.rename_speaker(folder, "S1", "Ana María", reindex=False),),
+        name="rename",
+    )
+    improve = threading.Thread(
+        target=run, args=(lambda: hq.improve(folder, Config(), _engine),), name="hq"
+    )
+    rename.start()
+    assert did_read.wait(5)
+    improve.start()
+    improve.join(1.0)  # sin cerrojo la mejora publica aqui; con cerrojo espera al renombrado
+    go.set()
+    rename.join(10)
+    improve.join(10)
+    assert not errors
+    final = _read(folder)
+    assert final.engines.asr == "fake-large", "el renombrado piso la transcripcion mejorada"
+    assert final.segments[2].text == "Yo también."
+    assert {s.id: s.name for s in final.speakers}["S1"] == "Ana María"
+
+
+def test_transcript_lock_excludes_other_processes(tmp_path: Path) -> None:
+    import subprocess
+    import sys
+    import time
+
+    from micnaga.pipeline import output
+
+    folder = tmp_path / "reunion"
+    folder.mkdir()
+    code = (
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "from micnaga.pipeline import output\n"
+        "with output.transcript_lock(Path(sys.argv[1])):\n"
+        "    print('held', flush=True)\n"
+        "    time.sleep(1.5)\n"
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", code, str(folder)], stdout=subprocess.PIPE, text=True
+    )
+    try:
+        assert proc.stdout is not None and proc.stdout.readline().strip() == "held"
+        t0 = time.monotonic()
+        with output.transcript_lock(folder):
+            waited = time.monotonic() - t0
+    finally:
+        proc.wait(10)
+    assert waited > 0.5, "el cerrojo no bloquea entre procesos"
+
+
 def test_status_and_estimate(tmp_path: Path) -> None:
     folder = _meeting(tmp_path)
     assert hq.read_status(folder) is None
