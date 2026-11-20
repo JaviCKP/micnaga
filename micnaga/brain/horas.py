@@ -252,55 +252,108 @@ def _remember_pattern(pattern: list[dict[str, Any]], today: date) -> bool:
 # ============================================================================== aplicar
 
 
-def apply(odoo: Any, lines: list[dict[str, Any]], *, today: date) -> dict[str, Any]:
-    """Crea las lineas (validadas una a una). Devuelve resultados por ``key`` y el lote."""
+def _save_batch(batch: dict[str, Any]) -> None:
+    """Guarda (o sustituye) el lote releyendo el estado: no pisa dias libres ni avisos."""
+    data = load_state()
+    others = [b for b in data["lotes"] if b.get("id") != batch["id"]]
+    data["lotes"] = [*others[-(MAX_BATCHES - 1) :], batch]
+    save_state(data)
+
+
+def _drop_batch(batch_id: str) -> None:
+    data = load_state()
+    data["lotes"] = [b for b in data["lotes"] if b.get("id") != batch_id]
+    save_state(data)
+
+
+def apply(
+    odoo: Any, lines: list[dict[str, Any]], *, today: date, batch: str | None = None
+) -> dict[str, Any]:
+    """Crea las lineas (validadas una a una). Devuelve resultados por ``key`` y el lote.
+
+    El lote se guarda **antes** de la primera escritura y se actualiza tras cada linea
+    confirmada: si Odoo falla a mitad (o el proceso muere), lo creado queda en un lote
+    ``parcial`` que se puede deshacer o completar (``batch``: reintento sobre el mismo lote;
+    lo ya registrado se reconoce y no se duplica)."""
     book = HoursBook(odoo, today)
     results: list[dict[str, Any]] = []
-    created: list[dict[str, Any]] = []
-    for raw in lines[:MAX_LINES]:
-        if not isinstance(raw, dict):
-            continue
-        key = str(raw.get("key") or "")
-        try:
-            line = book.validate(raw)
-        except ts.LineError as exc:
-            dup = str(exc) == "ya_existe"  # reaplicar no duplica
-            results.append({"key": key, "ok": dup, "error": str(exc), "id": None})
-            continue
-        try:
-            new_id = odoo.create(TIMESHEET_MODEL, create_values(line))
-        except Exception as exc:
-            kind = getattr(exc, "kind", "failed")
-            results.append({"key": key, "ok": False, "error": f"odoo_{kind}"})
-            continue
-        book.accept(line)
-        created.append({**line, "odoo_id": new_id})
-        results.append({"key": key, "ok": True, "error": None, "id": new_id})
-    batch = None
-    if created:
-        batch = uuid.uuid4().hex[:12]
-        data = load_state()
-        data["lotes"] = [
-            *data["lotes"][-(MAX_BATCHES - 1) :],
-            {
-                "id": batch,
-                "creado": datetime.now().isoformat(timespec="seconds"),
-                "lineas": created,
-                "deshecho": False,
-            },
-        ]
-        save_state(data)
-    return {"resultados": results, "lote": batch, "creadas": len(created)}
+    todo = [raw for raw in lines[:MAX_LINES] if isinstance(raw, dict)]
+    record = (
+        next((b for b in load_state()["lotes"] if b.get("id") == batch), None) if batch else None
+    )
+    if record is None or record.get("deshecho"):
+        record = {
+            "id": uuid.uuid4().hex[:12],
+            "creado": datetime.now().isoformat(timespec="seconds"),
+            "lineas": [],
+            "deshecho": False,
+        }
+        prior = 0
+    else:
+        prior = len(record.get("lineas") or [])
+    record["estado"] = "aplicando"
+    record["total"] = prior + len(todo)  # provisional; al terminar, lo intentado de verdad
+    _save_batch(record)
+    new = 0
+    failed = 0
+    try:
+        for raw in todo:
+            key = str(raw.get("key") or "")
+            try:
+                line = book.validate(raw)
+            except ts.LineError as exc:
+                dup = str(exc) == "ya_existe"  # reaplicar no duplica
+                results.append({"key": key, "ok": dup, "error": str(exc), "id": None})
+                continue
+            except Exception as exc:  # Odoo fallo al validar (proyecto, tarea, dia...)
+                failed += 1
+                kind = getattr(exc, "kind", "failed")
+                results.append({"key": key, "ok": False, "error": f"odoo_{kind}", "id": None})
+                continue
+            try:
+                new_id = odoo.create(TIMESHEET_MODEL, create_values(line))
+            except Exception as exc:
+                failed += 1
+                kind = getattr(exc, "kind", "failed")
+                results.append({"key": key, "ok": False, "error": f"odoo_{kind}", "id": None})
+                continue
+            book.accept(line)
+            record["lineas"].append({**line, "odoo_id": new_id})
+            new += 1
+            _save_batch(record)  # cada linea confirmada queda registrada al momento
+            results.append({"key": key, "ok": True, "error": None, "id": new_id})
+    finally:
+        record["estado"] = "parcial" if failed else "completo"
+        record["total"] = prior + new + failed
+        if record["lineas"]:
+            _save_batch(record)
+        else:
+            _drop_batch(record["id"])
+    lote = record["id"] if record["lineas"] else None
+    return {
+        "resultados": results,
+        "lote": lote,
+        "creadas": new,
+        "aplicadas": len(record["lineas"]),
+        "total": record["total"],
+        "parcial": bool(failed),
+    }
 
 
 def undo(odoo: Any, batch: str) -> dict[str, Any]:
+    from micnaga.brain.executor import unlink_gone_ok
+
     data = load_state()
     found = next((b for b in data["lotes"] if b.get("id") == batch), None)
     if found is None or found.get("deshecho"):
         return {"ok": False, "error": "no_batch"}
     ids = [int(ln["odoo_id"]) for ln in found.get("lineas") or [] if ln.get("odoo_id")]
     if ids:
-        odoo.unlink(TIMESHEET_MODEL, ids)
+        try:
+            odoo.unlink(TIMESHEET_MODEL, ids)
+        except Exception:
+            for rid in ids:  # alguna ya no existe: una a una (lo ya borrado cuenta hecho)
+                unlink_gone_ok(odoo, TIMESHEET_MODEL, rid)
     found["deshecho"] = True
     save_state(data)
     return {"ok": True, "deshechas": len(ids)}

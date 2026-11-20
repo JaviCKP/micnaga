@@ -346,23 +346,31 @@ class GoogleApplier:
         u = p.get("deshacer") or {}
         kind = u.get("google")
         if kind == "evento":
-            q: dict[str, Any] = {
-                "eventId": u["event_id"],
-                "notificationLevel": u.get("notificacion") or "NONE",
-            }
-            if u.get("calendario"):
-                q["calendarId"] = u["calendario"]
-            self._call(p, "undo", "calendar", "delete_event", q)
-            if self._odoo is not None and (p.get("espejo") or {}).get("estado") in (
-                "creado",
-                "actualizado",
-            ):
-                odoo = self._odoo()
-                db = self._db()
+            # Dos pasos (Calendar y su copia en Odoo), cada uno con su resultado guardado en la
+            # propuesta: un reintento solo repite el que fallo; lo que ya no existe cuenta hecho.
+            steps: dict[str, str] = u.setdefault("pasos", {})
+            if steps.get("google") != "hecho":
                 try:
-                    mirror.remove(odoo, db, str(u["event_id"]))
-                finally:
-                    db.close()
+                    self._delete_event(p, u)
+                except Exception:
+                    steps["google"] = "fallido"
+                    raise
+                steps["google"] = "hecho"
+            mirrored = (p.get("espejo") or {}).get("estado") in ("creado", "actualizado")
+            if mirrored and steps.get("odoo") != "hecho":
+                try:
+                    if self._odoo is None:  # la copia sigue en Odoo: nunca «deshecho» sin ella
+                        raise GoogleApplyError("incomplete")  # «Configura Odoo en Ajustes»
+                    odoo = self._odoo()
+                    db = self._db()
+                    try:
+                        mirror.remove(odoo, db, str(u["event_id"]))
+                    finally:
+                        db.close()
+                except Exception:
+                    steps["odoo"] = "fallido"
+                    raise
+                steps["odoo"] = "hecho"
             return
         if kind == "borrador":
             self._call(p, "undo", "gmail", "delete_draft", {"draftId": u["draft_id"]})
@@ -371,3 +379,55 @@ class GoogleApplier:
             self._call(p, "undo", "drive", "trash_file", {"fileId": u["file_id"]})
             return
         raise GoogleApplyError("not_undoable")  # un correo enviado no se puede deshacer
+
+    def _delete_event(self, p: dict[str, Any], u: dict[str, Any]) -> None:
+        q: dict[str, Any] = {
+            "eventId": u["event_id"],
+            "notificationLevel": u.get("notificacion") or "NONE",
+        }
+        if u.get("calendario"):
+            q["calendarId"] = u["calendario"]
+        try:
+            out = self._call(p, "undo", "calendar", "delete_event", q)
+        except GoogleApplyError:
+            if self._event_gone(p, u) is not True:
+                raise
+            key = store.write_key(self.folder.name, str(p.get("id")), "undo", _rev(p))
+            self._put(key, p, "undo", "delete_event", "done", gone=True)
+            calls.forget_receipt(key)
+            return
+        if "stored" not in out.extra:  # sin «done», un reintento se quedaria bloqueado
+            self._put(out.extra["key"], p, "undo", out.tool, "done")
+
+    def _event_gone(self, p: dict[str, Any], u: dict[str, Any]) -> bool | None:
+        """¿El evento ya no esta en Calendar? Se COMPRUEBA buscando su marca ``ref`` (y su id)
+        en una ventana amplia; ``None`` si no se puede saber (nunca se supone)."""
+        try:
+            start = datetime.fromisoformat(str((p.get("datos") or {})["inicio"]))
+        except (KeyError, ValueError):
+            return None
+        ref = ref_of(store.write_key(self.folder.name, str(p.get("id")), "create", _rev(p)))
+        q: dict[str, Any] = {
+            "fullText": ref,
+            "startTime": _local(start - timedelta(days=365)),
+            "endTime": _local(start + timedelta(days=730)),
+            "pageSize": 10,
+        }
+        if u.get("calendario"):
+            q["calendarId"] = u["calendario"]
+        try:
+            res = calls.run_tool(self.runner, "calendar", "list_events", q)
+        except Exception:
+            return None
+        if not res.ok:
+            return None
+        for ev in res.structured.get("events") or []:
+            if not isinstance(ev, dict) or ev.get("status") == "cancelled":
+                continue
+            if ev.get("id") == u["event_id"] or ref in str(ev.get("description") or ""):
+                return False
+        return True
+
+
+def _rev(p: dict[str, Any]) -> int:
+    return int(p.get("revision") or 0)

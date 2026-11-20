@@ -249,7 +249,8 @@ class Executor:
                 values["date_deadline"] = d["fecha_cierre"]
                 prev["date_deadline"] = lead.get("fecha_cierre") or False
             o.write("crm.lead", [d["id"]], values)
-            return {"modelo": "crm.lead", "id": d["id"], "antes": prev}
+            # ``escrito``: lo que pone Micnaga; el «Deshacer» solo restaura si sigue asi
+            return {"modelo": "crm.lead", "id": d["id"], "antes": prev, "escrito": values}
         if kind == "programar_actividad":
             values = {
                 "res_id": d["id"],
@@ -554,33 +555,49 @@ class Executor:
 
     # ------------------------------------------------------------------ deshacer
 
-    def undo(self, ids: list[str]) -> dict[str, Any]:
+    def undo(self, ids: list[str], *, resolve: str | None = None) -> dict[str, Any]:
+        """Deshace lo aplicado. Un campo que cambio en Odoo despues de aplicar no se pisa: el
+        item queda en ``deshacer_estado = "conflicto"`` (con ``conflicto``: actual / escrito /
+        original) hasta que el usuario elija ``resolve`` (``"forzar"`` u ``"omitir"``, solo para
+        un item a la vez). Si un paso falla tras otros hechos queda ``"a_medias"`` y el
+        reintento solo repite lo que falto."""
         acta = acta_io.read_acta(self.folder)
         if acta is None:
             raise ApplyError("no_acta")
         wanted = set(ids)
+        if len(wanted) != 1 or resolve not in ("forzar", "omitir"):
+            resolve = None  # «Deshacer todo» nunca fuerza
         for p in reversed(acta.get("propuestas") or []):
             if p.get("id") not in wanted or p.get("estado") != "aplicada":
                 continue
             try:
-                self._undo_one(p)
+                done = self._undo_one(p, resolve)
             except Exception as exc:
                 p["error"] = _error_key(exc)
+                steps = (p.get("deshacer") or {}).get("pasos") or {}
+                p["deshacer_estado"] = "a_medias" if "hecho" in steps.values() else None
                 log.warning("undo of %s failed: %s", p.get("id"), p["error"])
             else:
-                p["estado"] = "deshecha"
-                p["error"] = None
-                if p.get("tipo") == "hablante":
-                    self._relabel(acta)
+                if done:
+                    p["estado"] = "deshecha"
+                    p["error"] = None
+                    p.pop("deshacer_estado", None)
+                    p.pop("conflicto", None)
+                    if p.get("tipo") == "hablante":
+                        self._relabel(acta)
+                else:
+                    p["error"] = "undo_conflict"
+                    p["deshacer_estado"] = "conflicto"
             acta_io.write_acta(self.folder, acta)
         return acta
 
-    def _undo_one(self, p: dict[str, Any]) -> None:
+    def _undo_one(self, p: dict[str, Any], resolve: str | None = None) -> bool:
+        """``True`` si quedo deshecho; ``False`` si hay conflicto (no se escribio nada)."""
         u = p.get("deshacer") or {}
         kind = p.get("tipo")
         if p.get("grupo") == "google":
             self.google().undo(p)
-            return
+            return True
         if p.get("grupo") == "correcciones":
             if kind == "hablante":
                 output.rename_speaker(self.folder, u["hablante"], u["nombre"], db=self._db)
@@ -590,12 +607,96 @@ class Executor:
                 if n:
                     output.write_transcript(self.folder, updated)
                     output._reindex(self.folder, updated, self._db)
-            return
+            return True
         o = self.odoo()
         if "creado" in u and u.get("creado"):
-            o.unlink(str(u["modelo"]), [int(u["creado"])])
+            unlink_gone_ok(o, str(u["modelo"]), int(u["creado"]))
         elif kind == "actualizar_oportunidad":
-            o.write("crm.lead", [int(u["id"])], dict(u.get("antes") or {}))
+            return self._revert_fields(o, p, resolve)
+        return True
+
+    @staticmethod
+    def _revert_fields(o: Any, p: dict[str, Any], resolve: str | None) -> bool:
+        """Restaura los valores anteriores **solo** donde Odoo sigue con lo que escribio
+        Micnaga (se relee antes). Lo que ya esta como antes no se toca; lo demas es conflicto."""
+        u = p.get("deshacer") or {}
+        model, rid = str(u.get("modelo") or "crm.lead"), int(u["id"])
+        before: dict[str, Any] = dict(u.get("antes") or {})
+        written: dict[str, Any] = dict(u.get("escrito") or _written_from(p.get("datos") or {}))
+        if not before:
+            return True
+        rows = o.read(model, [rid], list(before))
+        if not rows:
+            raise ApplyError("gone")
+        now = rows[0]
+        restore: dict[str, Any] = {}
+        conflicts: list[dict[str, Any]] = []
+        for field, orig in before.items():
+            cur = _norm_value(now.get(field))
+            if _same(cur, orig):
+                continue  # ya esta como antes
+            if (field in written and _same(cur, written[field])) or resolve == "forzar":
+                restore[field] = orig
+            else:
+                conflicts.append(
+                    {
+                        "campo": field,
+                        "actual": cur,
+                        "escrito": written.get(field),
+                        "original": _norm_value(orig),
+                    }
+                )
+        if conflicts and resolve != "omitir":
+            p["conflicto"] = conflicts
+            return False
+        if restore:
+            o.write(model, [rid], restore)
+        return True
+
+
+def _written_from(d: dict[str, Any]) -> dict[str, Any]:
+    """Lo que escribio una aplicacion anterior a ``escrito`` (actas ya aplicadas)."""
+    out: dict[str, Any] = {}
+    if d.get("etapa_id") is not None:
+        out["stage_id"] = d["etapa_id"]
+    if d.get("importe") is not None:
+        out["expected_revenue"] = d["importe"]
+    if d.get("fecha_cierre"):
+        out["date_deadline"] = d["fecha_cierre"]
+    return out
+
+
+def _norm_value(v: Any) -> Any:
+    """Valor de Odoo comparable: many2one ``[id, nombre]`` -> id; vacio (False/""/None) -> None."""
+    if isinstance(v, list | tuple) and len(v) == 2 and isinstance(v[0], int):
+        return v[0]
+    if v is False or v == "" or v is None:
+        return None
+    return v
+
+
+def _same(a: Any, b: Any) -> bool:
+    a, b = _norm_value(a), _norm_value(b)
+    if isinstance(a, int | float) and isinstance(b, int | float) and not isinstance(a, bool):
+        return abs(float(a) - float(b)) < 1e-6
+    return bool(a == b)
+
+
+def unlink_gone_ok(o: Any, model: str, rid: int) -> None:
+    """``unlink`` en el que borrar algo que ya no existe cuenta como hecho (se comprueba
+    releyendo, incluso archivados; un fallo con el registro aun presente se relanza)."""
+    try:
+        o.unlink(model, [rid])
+    except Exception:
+        try:
+            n = o.call(
+                model, "search_count", [[("id", "=", rid)]], {"context": {"active_test": False}}
+            )
+        except Exception:
+            n = None
+        if n == 0:
+            return
+        raise
 
 
 _NOT_DATA = ("previa", "cambiados", "campos", "enlace")
