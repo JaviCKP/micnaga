@@ -10,6 +10,11 @@
   lee el de la nueva y las transcripciones se quedarian paradas. Los trabajos que quedaran
   pendientes en el indice antiguo no se mueven (la carpeta antigua sigue siendo valida si se
   vuelve a ella).
+* Una sesion conserva su carpeta **y su indice** hasta terminar el procesado (hallazgo P1-4):
+  ``submit(..., db_path=)`` ejecuta la tarea contra el indice de la carpeta donde se grabo, no
+  contra el de la config de ahora, y ``WorkerSupervisor.watch`` vigila ese indice y lanza el
+  worker sobre esa carpeta (``MICNAGA_STORAGE``) hasta vaciarlo. Antes el audio quedaba en A y el
+  trabajo/indice en B: la biblioteca de B la listaba pero no la abria.
 * ``WorkerSupervisor``: mantiene vivo el proceso de trabajo mientras haya trabajos pendientes. El
   worker lanzado por la app sale al vaciar la cola (``--once``: cada tanda empieza en un proceso
   limpio, asi la memoria de torch/diarize se devuelve al sistema); si un trabajo se encola justo
@@ -37,22 +42,47 @@ log = logging.getLogger(__name__)
 DbFactory = Callable[[], Database]
 DbKey = Callable[[], object]
 Task = Callable[[Database], None]
+PathDbFactory = Callable[[Path], Database]
+
+
+def open_database_at(path: Path) -> Database:
+    """Abre el indice de una carpeta concreta (creandola); reintenta si esta bloqueado."""
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(5):
+        try:
+            return Database(path)
+        except sqlite3.OperationalError:
+            if attempt == 4:
+                raise
+            time.sleep(0.2 * (attempt + 1))
+    raise AssertionError("unreachable")  # pragma: no cover
 
 
 class Finisher:
     """Hilo serie de tareas de cierre."""
 
-    def __init__(self, db_factory: DbFactory, *, db_key: DbKey | None = None) -> None:
+    def __init__(
+        self,
+        db_factory: DbFactory,
+        *,
+        db_key: DbKey | None = None,
+        path_factory: PathDbFactory | None = None,
+    ) -> None:
         self._db_factory = db_factory
         self._db_key = db_key or (lambda: None)
-        self._queue: queue.Queue[tuple[str, Task] | None] = queue.Queue()
+        self._path_factory = path_factory or open_database_at
+        self._queue: queue.Queue[tuple[str, Task, Path | None] | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
         self._idle = threading.Event()
         self._idle.set()
         self._pending = 0
 
-    def submit(self, label: str, task: Task) -> None:
+    def submit(self, label: str, task: Task, *, db_path: Path | None = None) -> None:
+        """Encola ``task``. Con ``db_path`` corre contra ese indice (el de la carpeta de la
+        sesion) aunque la config apunte ya a otra carpeta."""
         with self._lock:
             self._pending += 1
             self._idle.clear()
@@ -61,7 +91,7 @@ class Finisher:
                     target=self._run, name="micnaga-finisher", daemon=True
                 )
                 self._thread.start()
-        self._queue.put((label, task))
+        self._queue.put((label, task, db_path))
 
     def wait_idle(self, timeout_s: float | None = None) -> bool:
         return self._idle.wait(timeout_s)
@@ -83,9 +113,17 @@ class Finisher:
                 item = self._queue.get()
                 if item is None:
                     return
-                label, task = item
+                label, task, db_path = item
                 try:
                     wanted = self._db_key()
+                    if db_path is not None and str(db_path) != wanted:
+                        own = self._path_factory(db_path)  # indice de la carpeta de la sesion
+                        try:
+                            task(own)
+                        finally:
+                            with contextlib.suppress(Exception):
+                                own.close()
+                        continue
                     if db is not None and wanted != key:
                         log.info("meetings folder changed: reopening the jobs index")
                         with contextlib.suppress(Exception):
@@ -106,6 +144,62 @@ class Finisher:
             if db is not None:
                 with contextlib.suppress(Exception):
                     db.close()
+
+
+# ----------------------------------------------------------------------------- recorte
+
+TRIM_MARKER = ".micnaga-trim.json"
+"""Punto de corte (fin real de la reunion) escrito con ``fsync`` **antes** de parar el grabador
+(hallazgo P2-a). ``capture.json`` no sirve hasta que el grabador para: lo reescribe entero en cada
+escritura. Si la app muere entre la parada y el cierre, el arranque lo aplica antes del FLAC (sin
+el, encolaba tambien la cola grabada tras el fin de la reunion)."""
+
+
+def write_trim_marker(session_dir: Path, end_s: float) -> bool:
+    import json
+    import os
+
+    path = session_dir / TRIM_MARKER
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"end_s": float(end_s)}, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, path)
+        return True
+    except OSError:
+        log.exception("could not persist the trim point")
+        return False
+
+
+def read_trim_marker(session_dir: Path) -> float | None:
+    import json
+
+    try:
+        data = json.loads((session_dir / TRIM_MARKER).read_text(encoding="utf-8"))
+        value = data.get("end_s") if isinstance(data, dict) else None
+    except (OSError, ValueError):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        return None
+    return float(value)
+
+
+def apply_trim_marker(session_dir: Path) -> float | None:
+    """Pasa el corte persistido a ``capture.json`` (lo recorta ``finalize_session``)."""
+    end_s = read_trim_marker(session_dir)
+    if end_s is None:
+        return None
+    from micnaga.capture.recovery import set_trim
+
+    set_trim(session_dir, end_s)
+    return end_s
+
+
+def drop_trim_marker(session_dir: Path) -> None:
+    with contextlib.suppress(OSError):
+        (session_dir / TRIM_MARKER).unlink()
 
 
 # ----------------------------------------------------------------------------- tareas
@@ -130,6 +224,7 @@ def finalize_and_enqueue(
             set_trim(session_dir, end_s)
         try:
             finalize_session(session_dir, flac_level=config.capture.flac_level)
+            drop_trim_marker(session_dir)
         except Exception:
             log.exception("finalize failed for a session; queueing it anyway")
         job = db.enqueue_job(session_dir)
@@ -155,6 +250,7 @@ def finalize_and_hold(
             set_trim(session_dir, end_s)
         try:
             finalize_session(session_dir, flac_level=config.capture.flac_level)
+            drop_trim_marker(session_dir)
         except Exception:
             log.exception("finalize failed for a held session; holding the WAV files")
         holding.move_to_held(session_dir, reason)
@@ -188,6 +284,8 @@ class WorkerSupervisor:
         db_factory: DbFactory | None = None,
         db_key: DbKey | None = None,
         spawn: Callable[[], subprocess.Popen[bytes] | None] | None = None,
+        spawn_for: Callable[[Path], subprocess.Popen[bytes] | None] | None = None,
+        path_factory: PathDbFactory | None = None,
         is_running: Callable[[], bool] | None = None,
         models_ready: Callable[[], bool] | None = None,
         on_busy: Callable[[bool], None] | None = None,
@@ -199,6 +297,10 @@ class WorkerSupervisor:
         self._db_factory = db_factory or (lambda: open_database(config))
         self._db_key = db_key or (lambda: None)
         self._spawn = spawn or _default_spawn
+        self._spawn_for = spawn_for or _default_spawn_for
+        self._path_factory = path_factory or open_database_at
+        self._watched: dict[str, Path] = {}  # indice de otra carpeta con trabajos -> su raiz
+        self._watch_lock = threading.Lock()
         self._is_running = is_running or _default_is_running
         self._models_ready = models_ready or (lambda: _models_ready(config))
         self._on_busy = on_busy
@@ -222,6 +324,37 @@ class WorkerSupervisor:
 
     def kick(self) -> None:
         self._wake.set()
+
+    def watch(self, db_path: Path) -> None:
+        """Vigila tambien el indice de otra carpeta (una sesion grabada antes de cambiarla)."""
+        if str(db_path) != self._db_key():
+            with self._watch_lock:
+                self._watched[str(db_path)] = db_path.parent
+        self._wake.set()
+
+    def _watched_busy_root(self) -> Path | None:
+        """Raiz de la primera carpeta vigilada con trabajos pendientes (las vacias se olvidan)."""
+        current = self._db_key()
+        with self._watch_lock:
+            items = list(self._watched.items())
+        for key, root in items:
+            busy = False
+            if key != current:
+                try:
+                    other = self._path_factory(Path(key))
+                    try:
+                        counts = other.count_jobs()
+                    finally:
+                        other.close()
+                    busy = counts[JobState.PENDING] + counts[JobState.PROCESSING] > 0
+                except Exception:
+                    log.warning("could not read the jobs of a previous meetings folder")
+                    continue
+            if busy:
+                return root
+            with self._watch_lock:
+                self._watched.pop(key, None)
+        return None
 
     def stop(self) -> None:
         self._stop.set()
@@ -260,9 +393,10 @@ class WorkerSupervisor:
         self._reap()
         counts = db.count_jobs()
         busy = counts[JobState.PENDING] + counts[JobState.PROCESSING] > 0
+        other = None if busy else self._watched_busy_root()
         if self._on_busy is not None:
-            self._on_busy(busy)
-        if not busy or not self._models_ready():
+            self._on_busy(busy or other is not None)
+        if not (busy or other is not None) or not self._models_ready():
             return
         if self._is_running():
             return
@@ -270,7 +404,7 @@ class WorkerSupervisor:
         if now < self._next_spawn:
             return
         try:
-            proc = self._spawn()
+            proc = self._spawn() if other is None else self._spawn_for(other)
         except Exception:
             log.exception("could not start the worker")
             self._next_spawn = now + 60.0
@@ -309,6 +443,14 @@ def _default_spawn() -> subprocess.Popen[bytes] | None:
     from micnaga.pipeline.worker import spawn_worker
 
     return spawn_worker(("--once",))
+
+
+def _default_spawn_for(root: Path) -> subprocess.Popen[bytes] | None:
+    """Worker sobre otra carpeta de reuniones (su indice y sus sesiones)."""
+    from micnaga import paths
+    from micnaga.pipeline.worker import spawn_worker
+
+    return spawn_worker(("--once",), env={paths.ENV_STORAGE: str(root)})
 
 
 def _default_is_running() -> bool:

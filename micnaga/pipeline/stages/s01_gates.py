@@ -25,6 +25,7 @@ from micnaga.pipeline.stages.base import (
 
 OUTPUT = "01_gates.json"
 UNCONFIRMED = "sin confirmar"
+USER_RESTORED = "recuperada por el usuario"
 
 
 def run(ctx: StageContext) -> StageResult:
@@ -36,6 +37,18 @@ def run(ctx: StageContext) -> StageResult:
         raise SessionDiscarded(UNCONFIRMED)
     frames = [audio_frames(ctx.source_track_path(t)) for t in ("mic", "system")]
     duration_s = max(n / sr for n, sr in frames)
+    if gates.user_restored(ctx.meta.extra):  # «Recuperar y transcribir»: decision del usuario
+        metrics = gates.GateMetrics(duration_s, 0.0, 0)
+        ctx.write_json(
+            OUTPUT,
+            {
+                "passed": True,
+                "reason": USER_RESTORED,
+                "confirmed": True,
+                "metrics": metrics.to_dict(),
+            },
+        )
+        return StageResult([OUTPUT], {"confirmed": True, **metrics.to_dict()})
     me_regions: list[Any] = []
     system_regions: list[Any] = []
     if confirmed:

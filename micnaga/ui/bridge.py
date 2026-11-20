@@ -623,10 +623,8 @@ class LibraryApi:
                 log.exception("secretaria re-run after hq failed")
 
     def open_folder(self, folder: str) -> Result:
-        if not valid_folder_name(folder):
-            return fail("library.err.not_found")
-        target = self._root() / folder
-        if not target.is_dir():
+        target = self._meeting_dir(folder)
+        if target is None:
             return fail("library.err.not_found")
         self._opener(target)
         return ok()
@@ -638,9 +636,37 @@ class LibraryApi:
             return None
         root = self._root().resolve()
         path = (root / folder / paths.TRANSCRIPT_JSON).resolve()
-        if not path.is_relative_to(root) or not path.is_file():
+        if path.is_relative_to(root) and path.is_file():
+            return path
+        stored = self._indexed_dir(folder)
+        return None if stored is None else stored / paths.TRANSCRIPT_JSON
+
+    def _meeting_dir(self, folder: object) -> Path | None:
+        """Carpeta de la reunion: bajo la raiz de ahora o, si no esta, la ruta que guarda el
+        indice (grabada en otra carpeta de reuniones, hallazgo P1-4)."""
+        if not isinstance(folder, str) or not valid_folder_name(folder):
             return None
-        return path
+        root = self._root().resolve()
+        target = (root / folder).resolve()
+        if target.is_relative_to(root) and target != root and target.is_dir():
+            return target
+        return self._indexed_dir(folder)
+
+    def _indexed_dir(self, folder: str) -> Path | None:
+        """Ruta guardada en el indice (``meetings.job_id`` -> ``jobs.session_dir``) si existe,
+        se llama igual y tiene transcripcion. Nunca una ruta que no salga del indice."""
+        try:
+            with self._db_factory() as db:
+                rec = db.get_meeting(folder)
+                if rec is None or rec.job_id is None:
+                    return None
+                stored = Path(db.get_job(rec.job_id).session_dir)
+        except Exception:
+            log.debug("indexed folder lookup failed", exc_info=True)
+            return None
+        if stored.name != folder or not (stored / paths.TRANSCRIPT_JSON).is_file():
+            return None
+        return stored
 
     def _guard(self, folder: str, speaker_id: str) -> Result | None:
         """Comprobaciones comunes: operaciones disponibles, reunion y hablante existen."""

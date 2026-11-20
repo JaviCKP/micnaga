@@ -173,6 +173,24 @@ def test_boot_sweep_picks_up_stopped_orphans_but_not_known_or_done(tmp_storage: 
         db.close()
 
 
+def test_boot_recovery_applies_the_trim_persisted_before_stop(tmp_storage: Path) -> None:
+    """P2-a: la app murio tras parar y antes del cierre: el arranque recorta en el corte."""
+    from micnaga.integration.jobs import TRIM_MARKER, write_trim_marker
+
+    folder = _record(tmp_storage / "cortada", 1.5, confirmed=True)
+    assert write_trim_marker(folder, 0.5)
+    db = open_database()
+    try:
+        assert recover_and_enqueue(Rig().cfg, db) == [folder]
+    finally:
+        db.close()
+    meta = read_capture_json(folder)
+    assert meta.extra["state"] == "finalized"
+    assert meta.extra["duration_s"] == pytest.approx(0.5, abs=0.01)
+    assert meta.mic.samples == meta.system.samples <= round(0.5 * meta.mic.sample_rate)
+    assert not (folder / TRIM_MARKER).exists()
+
+
 def test_application_boot_recovers_and_kicks_the_worker(tmp_storage: Path) -> None:
     folder = _record(tmp_storage / "boot", confirmed=True)
     _make_it_look_crashed(folder)

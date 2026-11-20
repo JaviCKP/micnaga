@@ -12,6 +12,7 @@ import argparse
 import sys
 import threading
 from pathlib import Path
+from typing import Any
 
 EXIT_OK = 0
 EXIT_FAILED = 1
@@ -59,9 +60,7 @@ def run_process(argv: list[str]) -> int:
     db = open_database(config)
     try:
         if args.enqueue:
-            job = db.enqueue_job(session)
-            print(f"en cola: trabajo {job.id}")
-            return EXIT_OK
+            return _enqueue(db, session)
         from micnaga.pipeline.runner import PipelineRunner
 
         runner = PipelineRunner(config, db=db, keep_work=args.keep_work, rename=not args.no_rename)
@@ -75,6 +74,29 @@ def run_process(argv: list[str]) -> int:
         print(f"descartada: {result.reason}")
         return EXIT_DISCARDED
     print(f"error: {result.reason}", file=sys.stderr)
+    return EXIT_FAILED
+
+
+def _enqueue(db: Any, session: Path) -> int:
+    """``process --enqueue``: deja la sesion ``pending`` de verdad. Un trabajo ``failed`` se
+    reintenta (antes se devolvia exito y seguia fallido: el worker nunca lo cogia)."""
+    from micnaga.store.db import JobState
+
+    job = db.enqueue_job(session)
+    if job.state is JobState.FAILED:
+        job = db.retry_job(job.id, reset_attempts=True)
+        print(f"en cola de nuevo: trabajo {job.id} (habia fallado)")
+        return EXIT_OK
+    if job.state is JobState.PENDING:
+        print(f"en cola: trabajo {job.id}")
+        return EXIT_OK
+    if job.state is JobState.PROCESSING:
+        print(f"el trabajo {job.id} ya se esta procesando")
+        return EXIT_OK
+    print(
+        f"micnaga process: el trabajo {job.id} ya esta {job.state.value}; no se vuelve a encolar",
+        file=sys.stderr,
+    )
     return EXIT_FAILED
 
 

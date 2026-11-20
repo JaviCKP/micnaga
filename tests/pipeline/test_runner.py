@@ -306,6 +306,38 @@ def test_short_confirmed_session_is_discarded_by_duration() -> None:
     assert result.status == "discarded" and result.reason == "duracion 15 s < 20 s"
 
 
+def test_user_restored_short_session_is_transcribed_not_held_again() -> None:
+    """P2-b: «Recuperar y transcribir» de una sesion corta no la devuelve a «Descartadas»."""
+    from micnaga import holding
+
+    session = make_session(
+        "tmp-short", SyntheticSpec(kind="voice_note", duration_s=15.0, confirmed=True)
+    )
+    root = session.parent
+    assert runner_for().run(session).status == "discarded"
+    assert [h.name for h in holding.list_held(root)] == ["tmp-short"]
+    restored = holding.restore_held(root, "tmp-short")
+    result = runner_for(rename=False, keep_work=True).run(restored)
+    assert result.status == "done", result.reason
+    assert holding.list_held(root) == []
+    gates = json.loads((restored / "work" / "01_gates.json").read_text(encoding="utf-8"))
+    assert gates["passed"] and gates["reason"] == "recuperada por el usuario"
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_done_job_marks_the_acta_as_pending_only_with_secretaria(
+    db: Database, enabled: bool
+) -> None:
+    """P2-c: la marca duradera se escribe al terminar (antes de ``finish_job``)."""
+    session = make_session("tmp-mark", SyntheticSpec(kind="voice_note", confirmed=True))
+    cfg = relaxed_config()
+    cfg.secretaria.enabled = enabled
+    job = claim(db, session)
+    result = runner_for(config=cfg, db=db).run(session, job)
+    assert result.status == "done"
+    assert (result.session_dir / paths.ANALYSIS_PENDING).is_file() is enabled
+
+
 def test_confirmed_session_skips_vad_gates() -> None:
     # solo micro (nota de voz) pero confirmada: la compuerta 1 es la unica que cuenta
     session = make_session("tmp-conf", SyntheticSpec(kind="voice_note", confirmed=True))
