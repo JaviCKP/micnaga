@@ -6,7 +6,9 @@ Contexto que se carga en cada pasada (en este orden):
    adaptar la Secretaria a un Odoo concreto, ver ``docs/ONBOARDING.md`` §6.2);
 2. ``<datos>/secretaria/context/*.md`` (lo mismo, fuera del programa: sobrevive a las
    actualizaciones);
-3. ``<datos>/secretaria/learned.md``: lo que la Secretaria aprende sola.
+3. ``<datos>/secretaria/odoo/<clave>/contexto.md``: lo que sabe del Odoo conectado
+   («Conocer tu Odoo», ``micnaga.brain.odoo_learn``; solo si se pasa ``odoo_key``);
+4. ``<datos>/secretaria/learned.md``: lo que la Secretaria aprende sola.
 
 ``learned.md`` es una lista de lineas ``- [AAAA-MM-DD · fuente] hecho``. Cada pasada puede traer
 ``aprendizajes``; Micnaga los valida **en local** antes de escribir nada:
@@ -42,7 +44,7 @@ LEARNED_FILE = "learned.md"
 HEADER = (
     "# Lo que ha aprendido la Secretaria\n\n"
     "<!-- Lo escribe Micnaga tras validar cada aprendizaje. Una linea por hecho:\n"
-    "     - [AAAA-MM-DD · fuente] hecho        (fuente: crm | reunion | aprobacion)\n"
+    "     - [AAAA-MM-DD · fuente] hecho        (fuente: crm | reunion | aprobacion | odoo)\n"
     "     «a revisar» = contradice algo anterior; no se aplica hasta revisarlo. -->\n\n"
 )
 CONSOLIDATE_LINES = 80
@@ -112,9 +114,14 @@ def base_context() -> str:
     return "\n\n".join(p for p in parts if p)
 
 
-def load_context() -> str:
-    """Skill base + negocio + ``learned.md`` (solo lo aplicado; lo «a revisar» no entra)."""
+def load_context(odoo_key: str | None = None) -> str:
+    """Skill base + negocio + lo que sabe de tu Odoo (si hay ``odoo_key``) + ``learned.md``
+    (solo lo aplicado; lo «a revisar» no entra)."""
     parts = [base_context()]
+    if odoo_key:
+        from micnaga.brain.odoo_learn import context_text
+
+        parts.append(context_text(odoo_key))
     learned = [i.fact for i in list_learned() if not i.review]
     if learned:
         parts.append(
@@ -233,8 +240,15 @@ def add_learnings(
     today: str | None = None,
     min_confidence: float = 0.6,
     path: Path | None = None,
+    source: str | None = None,
+    exact: bool = False,
 ) -> LearnOutcome:
-    """Valida y anade ``aprendizajes`` del modelo. Nunca lanza por un aprendizaje malo."""
+    """Valida y anade ``aprendizajes`` del modelo. Nunca lanza por un aprendizaje malo.
+
+    ``source`` fija la fuente (hechos que calcula Micnaga, p. ej. ``odoo``; el modelo solo puede
+    usar ``LEARN_SOURCES``). ``exact``: hechos deterministas (nombres leidos de Odoo): solo se
+    descartan duplicados identicos y no se buscan contradicciones (con el parecido difuso, dos
+    hechos con el mismo prefijo y nombres cortos distintos se tomarian por el mismo)."""
     from micnaga.brain.schema import LEARN_SOURCES, clean_text, confidence
 
     day = today or datetime.now().date().isoformat()
@@ -246,9 +260,9 @@ def add_learnings(
         if not isinstance(item, dict):
             continue
         fact = clean_text(item.get("hecho"), MAX_LEN + 1)
-        source = str(item.get("fuente", "reunion"))
-        if source not in LEARN_SOURCES:
-            source = "reunion"
+        src = source or str(item.get("fuente", "reunion"))
+        if source is None and src not in LEARN_SOURCES:
+            src = "reunion"
         reason = reject_reason(fact)
         if reason is None and confidence(item.get("confianza")) < min_confidence:
             reason = "low_confidence"
@@ -256,12 +270,18 @@ def add_learnings(
             rejected.append((fact, reason))
             continue
         existing = [i.fact for i in [*current, *added]]
+        if exact:
+            if _norm(fact) in {_norm(x) for x in existing}:
+                rejected.append((fact, "duplicate"))
+                continue
+            added.append(Learned(day, src, " ".join(fact.split())))
+            continue
         verdict = _compare(fact, existing)
         if verdict == "duplicate":
             rejected.append((fact, "duplicate"))
             continue
         review = verdict == "contradiction" or _compare(fact, base_lines) == "contradiction"
-        added.append(Learned(day, source, fact, review))
+        added.append(Learned(day, src, fact, review))
     if added:
         _write([*current, *added], path)
     for fact, why in rejected:

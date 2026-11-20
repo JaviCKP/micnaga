@@ -282,6 +282,9 @@ class Application:
         setter = getattr(self.ui, "set_brain", None)
         if self.brain is not None and setter is not None:
             setter(self.brain)
+        busy = getattr(self.brain, "set_busy", None)
+        if busy is not None:  # «Conocer tu Odoo» en segundo plano: nunca grabando
+            busy(lambda: bool(self.controller.recording))
         self.live_title = live_title if live_title is not None else self._make_live_title()
         self.google_context = self._make_google_context()
 

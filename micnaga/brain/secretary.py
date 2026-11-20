@@ -368,7 +368,7 @@ class Secretary:
         req = ClaudeRequest(
             prompt=build_input(
                 transcript,
-                context=learn.load_context(),
+                context=learn.load_context(odoo_context_key(self.config)),
                 glossary=glossary_lines(self.config),
                 odoo=odoo_text,
                 user_name=(str(profile.get("user") or "") or None) if profile else None,
@@ -614,3 +614,10 @@ def _first_arg(args: dict[str, Any]) -> str | None:
         if isinstance(v, str | int) and not isinstance(v, bool):
             return str(v)[:60]
     return None
+
+
+def odoo_context_key(cfg: Any) -> str | None:
+    """Clave de la conexion de Odoo configurada (para su ``contexto.md``)."""
+    from micnaga.brain.odoo_learn import connection_key_for
+
+    return connection_key_for(cfg.secretaria)

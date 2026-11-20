@@ -494,10 +494,48 @@
     };
   }
 
+  /** «Conocer tu Odoo»: when it last read this Odoo (read-only) and what it found, + scan now. */
+  function odooKnowRow(onDone) {
+    const row = el("div", "frow sec-status");
+    row.hidden = true;
+    const info = el("div", "finfo");
+    const text = el("span", "sec-st-text");
+    info.append(text);
+    const ctl = el("div", "ctl");
+    const scan = el("button", "btn btn-sm", mic.t("secretaria.know.scan"));
+    scan.type = "button";
+    const view = el("button", "btn btn-sm btn-ghost", mic.t("secretaria.know.view"));
+    view.type = "button";
+    view.addEventListener("click", () => sec("odoo_learn_open"));
+    ctl.append(view, scan);
+    row.append(info, ctl);
+    let timer = 0;
+    let was = false;
+    async function load(r) {
+      r = r || (await sec("odoo_learn"));
+      if (!r || !r.ok || !r.conectado) { row.hidden = true; return; }
+      row.hidden = false;
+      view.hidden = !r.hay;
+      scan.disabled = !!r.escaneando;
+      const n = r.contadores || {};
+      if (r.escaneando) text.textContent = mic.t("secretaria.know.scanning");
+      else if (r.actualizado) text.textContent = mic.t("secretaria.know.done", { t: shortWhen(r.actualizado), e: n.etapas || 0, c: n.clientes || 0, p: n.proyectos || 0 });
+      else if (r.error) text.textContent = mic.t("secretaria.know.failed");
+      else text.textContent = mic.t("secretaria.know.never");
+      clearTimeout(timer);
+      if (r.escaneando) timer = setTimeout(load, 1500);
+      else if (was) onDone();
+      was = !!r.escaneando;
+    }
+    scan.addEventListener("click", async () => load(await sec("odoo_learn_refresh")));
+    load();
+    return row;
+  }
+
   function learnedCard() {
     const c = group(mic.t("secretaria.learned"));
     const list = el("div");
-    c.append(list);
+    c.append(odooKnowRow(() => load()), list);
     async function load(r) {
       r = r || (await sec("learned"));
       list.replaceChildren();

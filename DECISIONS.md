@@ -1256,3 +1256,31 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    terminar bien, la biblioteca pide `analyze` a la Secretaria (limpieza + acta) si está activa.
 7. **Medido de verdad** (copia de 3 min, `large-v3`, modelo ya descargado): 139,9 s de reloj;
    331 → 330 palabras.
+
+## 27. «Conocer tu Odoo»: la Secretaria explora el Odoo sola (rama `feat/odoo-learn`)
+
+1. **Cuándo:** al conectar Odoo (o cuando «Probar» funciona con una conexión sin escaneo previo),
+   después una vez por semana desde el tic del servicio (solo con la cola vacía, sin fallo en la
+   última hora y **nunca grabando**: la app pasa `set_busy(controller.recording)` y el escaneo se
+   para entre lecturas si empieza una grabación, sin escribir nada) y con «Escanear ahora» en
+   Ajustes → Secretaria → «Lo que ha aprendido».
+2. **Qué lee** (`micnaga/brain/odoo_learn.py`, Python determinista por XML-RPC, cliente forzado a
+   `read_only`): etapas del CRM, equipos de venta, motivos de pérdida, una muestra de títulos de
+   oportunidad (patrón deducido, p. ej. «cliente · asunto»), clientes con más actividad en 90 días
+   (oportunidades y pedidos; si no hay CRM, los clientes de los proyectos), proyectos activos con
+   cliente, etapas de tareas, categorías de producto, el patrón de partes de horas y nombre y cargo
+   del usuario. Modelos del perfil de capacidades: según el perfil; el resto (`crm.team`,
+   `crm.lost.reason`, `project.task.type`, `product.category`, `sale.order`, `hr.employee`):
+   `check_access_rights` antes de leer. Solo campos de nombre y many2one; nada de `read_group`.
+3. **Qué escribe:** `<datos>/secretaria/odoo/<clave>/contexto.md` (≤ 60 líneas, lo añade
+   `learn.load_context(odoo_key)` a cada pasada y al acta completa) y `estado.json` (última
+   instantánea + todo lo visto alguna vez). Cada nombre pasa los filtros de `learned.md` (correos,
+   teléfonos, importes, secretos); límites por sección (12 clientes, 20 proyectos...).
+4. **Aprender:** la primera vez es la base: solo líneas resumen que se mantienen al día con
+   `upsert_prefixed` («Conoce tu Odoo: …», «Etapas del CRM en Odoo: …», «Nombres de oportunidad
+   en Odoo: …»). Después, etapas, proyectos y clientes **nunca vistos** entran con fuente `odoo`
+   (historial y «Olvidar» como siempre; máx. 12 por escaneo). Se compara con «lo visto alguna
+   vez», no con la última lista, para que un cliente que entra y sale del top no se reaprenda.
+   `add_learnings(source=…, exact=True)`: con el parecido difuso, «Web A …» y «Web B …» serían
+   duplicados. Lo que desaparece sale del contexto; una sección que falla cuenta como
+   desconocida, no como vacía.

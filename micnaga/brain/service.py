@@ -16,6 +16,9 @@
   tic; panel «Rellenar partes de horas» (``horas_plan`` / ``horas_apply`` / ``horas_undo`` /
   ``horas_off``) y el aviso del viernes por la tarde si la semana tiene huecos
   (``secretaria.horas_nudge``, apagado por defecto).
+* **«Conocer tu Odoo»** (``micnaga.brain.odoo_learn``): un escaneo de solo lectura al conectar
+  (o al «Probar» una conexion nueva), una vez por semana en segundo plano (solo con la cola vacia
+  y nunca grabando: se para si empieza una grabacion) y con «Actualizar» (``odoo_learn*``).
 * **«Corregir con un mensaje»** (``refine`` / ``refine_plan`` / ``refine_undo`` /
   ``refine_status``, ``micnaga.brain.refine``): un ``claude -p`` corto de solo lectura revisa una
   propuesta o la lista; el progreso se consulta mientras dura.
@@ -90,10 +93,27 @@ class BrainService(GoogleApiMixin):
         self._full: dict[str, dict[str, Any]] = {}
         """«Acta completa» en curso por carpeta (texto en streaming) o su ultimo resultado."""
         self._open_file: Callable[[Path], None] = _startfile
+        self._busy: Callable[[], bool] = lambda: False
+        """¿Se esta grabando? (lo pone la app con ``set_busy``)."""
+        self._learn_thread: threading.Thread | None = None
+        self._learn_lock = threading.Lock()
+        self._learn_failed_at = 0.0
+        self._learn_error: str | None = None
+        self._spawn: Callable[[Callable[[], None]], Any] = _spawn
 
     def set_nudge(self, nudge: Nudge | None) -> None:
         """La UI pone aqui como ensenar el aviso semanal de horas (toast)."""
         self._nudge = nudge
+
+    def set_busy(self, busy: Callable[[], bool] | None) -> None:
+        """La app dice aqui si esta grabando: entonces no se explora Odoo en segundo plano."""
+        self._busy = busy or (lambda: False)
+
+    def _recording(self) -> bool:
+        try:
+            return bool(self._busy())
+        except Exception:
+            return True  # ante la duda, no molestar
 
     # ------------------------------------------------------------------ ciclo de vida
 
@@ -258,6 +278,7 @@ class BrainService(GoogleApiMixin):
         except Exception:
             log.debug("secretaria tick failed", exc_info=True)
         self._odoo_daily()
+        self._odoo_learn_weekly()
 
     def _odoo_daily(self) -> None:
         """Perfil de capacidades una vez al dia y, el viernes por la tarde, el aviso de horas."""
@@ -288,6 +309,91 @@ class BrainService(GoogleApiMixin):
         except Exception as exc:
             self._odoo_failed_at = time.monotonic()
             log.info("odoo daily check skipped: %s", getattr(exc, "kind", type(exc).__name__))
+
+    # ------------------------------------------------------------------ «Conocer tu Odoo»
+
+    def _odoo_learn_weekly(self) -> None:
+        """Al conectar y luego cada semana: con la cola vacia, sin grabar y sin fallo reciente."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        if key is None or self._learning() or self._recording() or not self._queue.empty():
+            return
+        if time.monotonic() - self._learn_failed_at < ODOO_RETRY_S and self._learn_failed_at:
+            return
+        if not odoo_learn.is_stale(odoo_learn.load_state(key), now=self.now()):
+            return
+        self._start_learn(self._odoo_client, background=True)
+
+    def _learning(self) -> bool:
+        t = self._learn_thread
+        return t is not None and t.is_alive()
+
+    def _start_learn(self, make_client: Callable[[], Any], *, background: bool) -> bool:
+        """Lanza el escaneo en su hilo (uno a la vez). ``background``: se para si se graba."""
+        with self._learn_lock:
+            if self._learning():
+                return False
+            self._learn_error = None
+
+            def work() -> None:
+                self._learn_run(make_client, background=background)
+
+            self._learn_thread = self._spawn(work)
+        return True
+
+    def _learn_run(self, make_client: Callable[[], Any], *, background: bool) -> None:
+        from micnaga.brain import odoo_learn
+
+        def stop() -> bool:
+            return self._stop.is_set() or (background and self._recording())
+
+        try:
+            client = make_client()
+            if client is None:
+                return
+            odoo_learn.refresh(client, now=self.now(), stop=stop)
+            self._learn_failed_at = 0.0
+        except odoo_learn.ScanStopped:
+            log.info("odoo scan paused (recording)")
+        except Exception as exc:
+            self._learn_failed_at = time.monotonic()
+            self._learn_error = str(getattr(exc, "kind", "failed"))
+            log.info("odoo scan failed: %s", self._learn_error)
+
+    def _api_odoo_learn(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Lo que sabe de tu Odoo»: ultima actualizacion y cuantas cosas (sin red)."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        return {
+            "ok": True,
+            **odoo_learn.status(key),
+            "escaneando": self._learning(),
+            "error": self._learn_error,
+            "hay": bool(key and odoo_learn.context_text(key)),
+            "conectado": key is not None,
+        }
+
+    def _api_odoo_learn_refresh(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Actualizar»: escanea ya (aunque no toque)."""
+        from micnaga.brain import odoo_learn
+
+        if odoo_learn.connection_key_for(self.config.secretaria) is None:
+            return {"ok": False, "error": "secretaria.err.odoo_incomplete"}
+        self._start_learn(self._odoo_client, background=False)
+        return self._api_odoo_learn({})
+
+    def _api_odoo_learn_open(self, args: dict[str, Any]) -> dict[str, Any]:
+        """«Ver»: abre el ``contexto.md`` de la conexion configurada."""
+        from micnaga.brain import odoo_learn
+
+        key = odoo_learn.connection_key_for(self.config.secretaria)
+        target = odoo_learn.context_path(key) if key else None
+        if target is None or not target.is_file():
+            return {"ok": False, "error": "library.err.not_found"}
+        self._open_file(target)
+        return {"ok": True}
 
     def _secretary(self) -> Any:
         cfg = self.config
@@ -946,6 +1052,10 @@ class BrainService(GoogleApiMixin):
             profile = capabilities.ensure(client, refresh=True)
         except OdooError as exc:
             return {"ok": False, "error": f"secretaria.err.odoo_{exc.kind}"}
+        from micnaga.brain import odoo_learn
+
+        if odoo_learn.load_state(str(profile["key"])) is None:  # conexion nueva: conocerla
+            self._start_learn(lambda: client, background=False)
         return {
             "ok": True,
             **info,
@@ -988,6 +1098,12 @@ class BrainService(GoogleApiMixin):
         if not isinstance(version, str):
             return {"ok": False, "error": "secretaria.err.invalid"}
         return {"ok": learn.restore(version), **self._api_learned({})}
+
+
+def _spawn(fn: Callable[[], None]) -> threading.Thread:
+    t = threading.Thread(target=fn, name="micnaga-odoo-learn", daemon=True)
+    t.start()
+    return t
 
 
 def _startfile(path: Path) -> None:  # pragma: no cover - abre el editor de Markdown real
