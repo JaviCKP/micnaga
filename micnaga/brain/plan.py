@@ -894,7 +894,7 @@ def options(
 # generaciones del acta pueden tener un ``p1`` cada una y nunca comparten resultado.
 
 # lo ya ejecutado (o que pudo ejecutarse) se conserva al regenerar el acta
-KEEP_ON_REGENERATE = ("aplicada", "incierta")
+KEEP_ON_REGENERATE = ("aplicada",)
 
 
 def new_uid() -> str:
@@ -944,7 +944,9 @@ def carried_over(previous: dict[str, Any] | None) -> list[dict[str, Any]]:
     ``uid`` y lo necesario para deshacer) y las de resultado incierto o a medias."""
     out = []
     for p in (previous or {}).get("propuestas") or []:
-        if isinstance(p, dict) and (p.get("estado") in KEEP_ON_REGENERATE or p.get("en_curso")):
+        if isinstance(p, dict) and (
+            p.get("estado") in KEEP_ON_REGENERATE or p.get("en_curso") or p.get("incierta")
+        ):
             out.append(p)
     ensure_uids(out)
     return out

@@ -99,3 +99,15 @@ def read_log(path: Path) -> dict[str, Any]:
 
 
 PYTHON = sys.executable
+
+
+def approve(svc: Any, folder: str, ids: list[str], *, confirm: bool = False) -> dict[str, Any]:
+    """«Aplicar» como lo hace la vista: con la huella de la version que se esta viendo."""
+    acta = svc.api("acta", {"folder": folder})["acta"]
+    items = [
+        {"id": p["id"], "huella": p.get("huella"), **({"confirmar": True} if confirm else {})}
+        for p in acta["propuestas"]
+        if p["id"] in ids
+    ]
+    out: dict[str, Any] = svc.api("apply", {"folder": folder, "items": items})
+    return out

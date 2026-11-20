@@ -17,7 +17,7 @@ from micnaga.config import Config
 from micnaga.pipeline import output
 from micnaga.store.db import open_database
 from tests.brain import canned
-from tests.brain.conftest import FakeClaude, business_transcript, write_meeting
+from tests.brain.conftest import FakeClaude, approve, business_transcript, write_meeting
 
 RESEARCH = [{"tool": "reuniones_con", "args": {"texto": "Dental Triana"}}]
 """El modelo falso investiga (sin investigar, la Secretaria repite la pasada una vez)."""
@@ -176,7 +176,7 @@ def test_ui_api(fake_claude: FakeClaude, meeting: Path, secrets_file: Path) -> N
     assert got["ok"] and got["acta"]["titulo"] == "Dental Triana: alcance ampliado"
     assert svc.api("acta", {"folder": "../.."})["ok"] is False
     ids = [p["id"] for p in got["acta"]["propuestas"] if p["tipo"] == "hablante"]
-    applied = svc.api("apply", {"folder": name, "ids": ids})
+    applied = approve(svc, name, ids)
     assert all(p["estado"] == "aplicada" for p in applied["acta"]["propuestas"] if p["id"] in ids)
     names = {s.id: s.name for s in output.read_transcript(res.folder).speakers}
     assert names["S2"] == "Marta Gil"

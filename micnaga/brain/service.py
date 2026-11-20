@@ -42,6 +42,23 @@ from micnaga.config import Config
 
 log = logging.getLogger(__name__)
 
+# respuestas asincronas de la revision: llevan la reunion a la que pertenecen (la vista ignora
+# la respuesta de una reunion que ya no es la que se mira)
+_ECHO_FOLDER = frozenset(
+    {
+        "acta",
+        "apply",
+        "undo",
+        "edit",
+        "dismiss",
+        "refine",
+        "refine_plan",
+        "refine_undo",
+        "refine_status",
+        "analyze",
+    }
+)
+
 TOAST_WAIT_S = 120.0
 TICK_S = 60.0
 BOOT_WINDOW_H = 24
@@ -448,14 +465,25 @@ class BrainService(GoogleApiMixin):
             return {"ok": False, "error": "secretaria.err.unknown"}
         try:
             out: dict[str, Any] = handler(args)
+            if (
+                action in _ECHO_FOLDER
+                and isinstance(out.get("acta"), dict)
+                and isinstance(args.get("folder"), str)
+            ):
+                # cada respuesta dice de que reunion es: la vista ignora la de otra reunion
+                out.setdefault("folder", args["folder"])
             if isinstance(out.get("acta"), dict):  # items con su esquema editable
-                from micnaga.brain.plan import decorate
+                from micnaga.brain.plan import decorate, fingerprint
 
                 decorate(out["acta"])
                 from micnaga.brain.google.items import decorate as decorate_google
 
                 decorate_google(out["acta"])  # items de Google (su propio esquema)
                 self._decorate_links(out["acta"])
+                for p in out["acta"].get("propuestas") or []:
+                    # la version exacta que ve el usuario: «Aplicar» solo vale para ella
+                    if isinstance(p, dict) and p.get("uid"):
+                        p["huella"] = fingerprint(p)
             return out
         except Exception as exc:
             log.exception("secretaria api %s failed", action)
@@ -482,6 +510,13 @@ class BrainService(GoogleApiMixin):
                 moved = self._renames.get(str(args.get("folder")))
             return {"ok": False, "error": "library.err.not_found", "moved": moved}
         acta = acta_io.read_acta(path)
+        if acta is not None and any(not p.get("uid") for p in acta.get("propuestas") or []):
+            from micnaga.brain.plan import ensure_uids
+
+            with self._acta_lock:  # actas antiguas: cada propuesta recibe su identidad
+                acta = acta_io.read_acta(path) or acta
+                if ensure_uids(acta.get("propuestas") or []):
+                    acta_io.write_acta(path, acta)
         if acta is not None:
             from micnaga.brain.plan import relabel
             from micnaga.pipeline import output
@@ -608,11 +643,32 @@ class BrainService(GoogleApiMixin):
         return [str(i) for i in ids if isinstance(i, str)][:200] if isinstance(ids, list) else []
 
     def _api_apply(self, args: dict[str, Any]) -> dict[str, Any]:
+        """``items``: ``[{id, huella, confirmar?}]``. La aprobacion vale para la version que vio el
+        usuario en ESTA reunion; si alguna cambio (otra generacion del acta, una revision...), no
+        se aplica nada. ``confirmar``: repetir un «resultado incierto» ya comprobado a mano."""
+        from micnaga.brain.executor import StaleError
+
         path = self._folder_path(args)
         if path is None:
             return {"ok": False, "error": "library.err.not_found"}
-        with self._acta_lock:
-            acta = self._executor(path).apply(self._ids(args))
+        items = args.get("items")
+        if not isinstance(items, list) or not items:
+            return {"ok": False, "error": "secretaria.err.stale"}
+        expect: dict[str, str] = {}
+        confirm: list[str] = []
+        for it in items[:200]:
+            if not isinstance(it, dict) or not isinstance(it.get("id"), str):
+                continue
+            expect[it["id"]] = str(it.get("huella") or "")
+            if it.get("confirmar") is True:
+                confirm.append(it["id"])
+        if not expect:
+            return {"ok": False, "error": "secretaria.err.stale"}
+        try:
+            with self._acta_lock:
+                acta = self._executor(path).apply(list(expect), expect=expect, confirm=confirm)
+        except StaleError as exc:
+            return {"ok": False, "error": "secretaria.err.stale", "stale": exc.ids}
         db = self._db()
         try:
             bstore.set_proposals(db, path.name, acta_io.pending_count(acta))

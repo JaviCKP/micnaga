@@ -29,6 +29,7 @@ class FakeGoogle:
         self.sent: list[dict[str, Any]] = []
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.listed: list[dict[str, Any]] = []
+        self.search_fails = False
         self._n = 0
 
     def _id(self, prefix: str) -> str:
@@ -75,6 +76,19 @@ class FakeGoogle:
         if name == "delete_draft":
             self.drafts.pop(inp["draftId"])
             return {}
+        if name in ("list_drafts", "search_threads") and self.search_fails:
+            raise RuntimeError("gmail search unavailable")
+        if name == "list_drafts":
+            return {
+                "drafts": [
+                    {"id": did, "message": {k: v for k, v in d.items() if k != "includeSignature"}}
+                    for did, d in self.drafts.items()
+                ]
+            }
+        if name == "search_threads":
+            sent = inp.get("query", "").startswith("in:sent")
+            msgs = self.sent if sent else []
+            return {"threads": [{"id": "th1", "messages": [{"id": "m1", **m}]} for m in msgs]}
         if name == "send_message":
             self.sent.append(inp)
             return {"id": "m1", "threadId": "th1"}
