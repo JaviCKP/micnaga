@@ -14,7 +14,9 @@ Es **la unica** parte de Micnaga que toca la red. Reglas:
 
 Grupos:
 
-``parakeet-tdt-0.6b-v3-int8``  ASR por defecto (onnx-asr), CC-BY-4.0.
+``faster-whisper-large-v3-turbo``  ASR por defecto (faster-whisper, DECISIONS §32) y opcion de
+                               «Mejorar transcripcion»; MIT.
+``parakeet-tdt-0.6b-v3-int8``  ASR alternativo, mas rapido y peor en espanol (onnx-asr), CC-BY-4.0.
 ``silero-vad``                 VAD (ONNX directo con onnxruntime), MIT.
 ``wespeaker``                  Embeddings de hablante que usa la libreria ``diarize`` (y las huellas
                                de voz). ``diarize`` los descarga solo de un servidor chino
@@ -22,6 +24,7 @@ Grupos:
                                el adaptador ``diar/diarize.py`` lo parchea para leer de aqui
                                (fichero verificado byte a byte identico), asi no hay red oculta.
 ``faster-whisper-small``       ASR alternativo (opcional; no se descarga salvo que se pida).
+``faster-whisper-large-v3``    «Mejorar transcripcion» (solo se descarga al primer uso).
 
 ``CANDIDATE_MANIFEST`` (aparte, nunca lo descarga la app): segmentacion pyannote 3.0 y cuatro
 modelos de embeddings de sherpa-onnx evaluados para la diarizacion y no adoptados.
@@ -34,8 +37,12 @@ from __future__ import annotations
 
 import contextlib
 import hashlib
+import http.client
 import logging
 import os
+import shutil
+import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Sequence
@@ -79,7 +86,22 @@ _SHERPA_EMB_BASE = f"{_HF}/csukuangfj/speaker-embedding-models/resolve/{_SHERPA_
 
 
 class ModelError(RuntimeError):
-    """Error de descarga o verificacion de modelos."""
+    """Error de descarga o verificacion de modelos.
+
+    El texto (ingles) va al log; ``key`` es la clave i18n (``models.err.*``) que la UI ensena en
+    castellano y ``info`` sus variables (p. ej. ``need``/``free`` en bytes para el disco)."""
+
+    def __init__(self, message: str, key: str = "models.err.generic", **info: Any) -> None:
+        super().__init__(message)
+        self.key = key
+        self.info = info
+
+
+class DownloadCancelled(ModelError):
+    """El usuario cancelo la descarga (los ``.part`` se conservan para reanudar)."""
+
+    def __init__(self, message: str = "download cancelled") -> None:
+        super().__init__(message, "models.err.cancelled")
 
 
 @dataclass(frozen=True)
@@ -376,13 +398,14 @@ CANDIDATE_MANIFEST: dict[str, ModelGroup] = {
 app nunca los descarga. Solo para repetir la comparativa (``download_models(manifest=...)``)."""
 
 OPTIONAL_GROUPS: tuple[str, ...] = (WHISPER_SMALL_GROUP,)
-HQ_GROUPS: tuple[str, ...] = (WHISPER_LARGE_V3_GROUP, WHISPER_TURBO_GROUP)
-"""Modelos de «Mejorar transcripcion»: solo se descargan al primer uso, nunca en el asistente."""
 """Grupos que no se descargan en el asistente salvo que la configuracion los pida."""
+HQ_GROUPS: tuple[str, ...] = (WHISPER_LARGE_V3_GROUP, WHISPER_TURBO_GROUP)
+"""Modelos de «Mejorar transcripcion»: se descargan al primer uso. ``large-v3-turbo`` es ademas
+el ASR por defecto, asi que ``required_groups`` lo pide y el asistente lo baja."""
 
 
 def whisper_group(model: str) -> str:
-    """Id de grupo para ``processing.whisper_model`` (solo ``small`` esta en el manifiesto)."""
+    """Id de grupo para ``processing.whisper_model`` (small, large-v3-turbo o large-v3)."""
     group = f"faster-whisper-{model}"
     if group not in MANIFEST:
         raise ModelError(
@@ -516,7 +539,10 @@ class _StrictRedirects(urllib.request.HTTPRedirectHandler):
         self, req: Any, fp: Any, code: int, msg: str, headers: Any, newurl: str
     ) -> urllib.request.Request | None:
         if not self._check(newurl):
-            raise ModelError(f"redirect to a disallowed host/scheme blocked: {newurl[:80]}")
+            raise ModelError(
+                f"redirect to a disallowed host/scheme blocked: {newurl[:80]}",
+                "models.err.not_allowed",
+            )
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -524,21 +550,75 @@ def _default_opener(check: Callable[[str], bool]) -> urllib.request.OpenerDirect
     return urllib.request.build_opener(_StrictRedirects(check))
 
 
+RETRY_BACKOFF_S: tuple[float, ...] = (2.0, 5.0, 15.0, 30.0)
+"""Esperas entre reintentos de red de un mismo fichero (el ``.part`` se conserva: reanuda)."""
+DISK_MARGIN = 200 << 20
+"""Espacio libre que se deja ademas de lo que falta por bajar."""
+_RETRY_HTTP = frozenset({408, 425, 429, 500, 502, 503, 504})
+
+
+class _NetworkCut(Exception):
+    """Fallo de red reintentable (interno de ``_download_one``)."""
+
+
+def _announced_size(resp: Any, status: int) -> int | None:
+    """Tamano total del fichero segun las cabeceras (``Content-Range`` en un 206,
+    ``Content-Length`` en un 200), o ``None`` si no lo dicen."""
+    headers = getattr(resp, "headers", None)
+    if headers is None:
+        return None
+    try:
+        if status == 206:
+            rng = headers.get("Content-Range") or ""
+            total = rng.rsplit("/", 1)[1] if "/" in rng else "*"
+            return None if total.strip() == "*" else int(total)
+        length = headers.get("Content-Length")
+        return None if length is None else int(length)
+    except (TypeError, ValueError):
+        return None
+
+
 def _stream_to_part(
-    resp: Any, part: Path, have: int, total: int, on_bytes: Callable[[int, int], None]
+    resp: Any,
+    part: Path,
+    have: int,
+    total: int,
+    on_bytes: Callable[[int, int], None],
+    cancel: threading.Event | None = None,
 ) -> None:
     status = getattr(resp, "status", 200)
     if have and status != 206:  # el servidor ignoro Range: empezar de cero
         have = 0
+    announced = _announced_size(resp, status)
+    if announced is not None and announced != total:  # otro fichero: reintentar no arregla nada
+        raise ModelError(
+            f"size mismatch: server announces {announced} bytes, expected {total}",
+            "models.err.checksum",
+        )
     got = have
     on_bytes(got, total)
     with part.open("ab" if have else "wb") as fh:
-        while block := resp.read(CHUNK):
-            fh.write(block)
+        while True:
+            if cancel is not None and cancel.is_set():
+                raise DownloadCancelled()
+            try:
+                block = resp.read(CHUNK)
+            except (OSError, http.client.HTTPException) as exc:  # corte: reintentable
+                raise _NetworkCut(str(exc) or type(exc).__name__) from exc
+            if not block:
+                break
+            if got + len(block) > total:
+                raise ModelError(f"server sent more than {total} bytes", "models.err.checksum")
+            try:
+                fh.write(block)
+            except OSError as exc:  # disco lleno, permisos: no se arregla reintentando
+                raise ModelError(f"cannot write {part}: {exc}", "models.err.write") from exc
             got += len(block)
             on_bytes(got, total)
         fh.flush()
         os.fsync(fh.fileno())
+    if got < total:
+        raise _NetworkCut(f"connection closed at {got}/{total} bytes")
 
 
 def _download_one(
@@ -547,42 +627,84 @@ def _download_one(
     opener: urllib.request.OpenerDirector,
     check_url: Callable[[str], bool],
     on_bytes: Callable[[int, int], None],
+    *,
+    on_verify: Callable[[], None] | None = None,
+    cancel: threading.Event | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> None:
-    """Descarga ``f`` a ``dest`` (via ``.part``, reanudable), verifica SHA-256 y renombra."""
+    """Descarga ``f`` a ``dest`` (via ``.part``, reanudable), verifica SHA-256 y renombra.
+
+    Cortes de red, *timeouts* y HTTP 5xx/429 se reintentan con espera creciente
+    (``RETRY_BACKOFF_S``), reanudando con ``Range`` desde lo ya escrito. Un ``.part`` que no
+    verifica se borra y se baja una vez mas desde cero."""
     if not check_url(f.url):
-        raise ModelError(f"URL not allowed for {f.rel_path}: {f.url}")
+        raise ModelError(f"URL not allowed for {f.rel_path}: {f.url}", "models.err.not_allowed")
     part = dest.with_name(dest.name + ".part")
     dest.parent.mkdir(parents=True, exist_ok=True)
-    for attempt in (1, 2):
+    corrupt = 0
+    cuts = 0
+    while True:
+        if cancel is not None and cancel.is_set():
+            raise DownloadCancelled()
         have = part.stat().st_size if part.exists() else 0
         if have > f.size:
             part.unlink()
             have = 0
         if have < f.size:
-            headers = {"User-Agent": USER_AGENT}
-            if have:
-                headers["Range"] = f"bytes={have}-"
-            req = urllib.request.Request(f.url, headers=headers)
             try:
-                resp = opener.open(req, timeout=60)
-            except urllib.error.HTTPError as exc:
-                if exc.code == 416 and have:  # el .part ya estaba completo o es invalido
-                    part.unlink(missing_ok=True)
-                    continue
-                raise ModelError(f"HTTP {exc.code} downloading {f.rel_path}") from exc
-            except urllib.error.URLError as exc:
-                raise ModelError(f"network error downloading {f.rel_path}: {exc.reason}") from exc
-            with resp:
-                try:
-                    _stream_to_part(resp, part, have, f.size, on_bytes)
-                except OSError as exc:  # corte de red: el .part queda para reanudar
-                    raise ModelError(f"download of {f.rel_path} interrupted: {exc}") from exc
+                _fetch_into_part(f, part, have, opener, on_bytes, cancel)
+            except _NetworkCut as exc:
+                if cuts >= len(RETRY_BACKOFF_S):
+                    raise ModelError(
+                        f"network error downloading {f.rel_path}: {exc}", "models.err.network"
+                    ) from exc
+                wait = RETRY_BACKOFF_S[cuts]
+                cuts += 1
+                log.info("model %s: %s; retry %d in %.0f s", f.rel_path, exc, cuts, wait)
+                sleep(wait)
+                continue
+        if on_verify is not None:
+            on_verify()
         if part.stat().st_size == f.size and sha256_file(part) == f.sha256:
             os.replace(part, dest)
             return
         part.unlink(missing_ok=True)  # corrupto: reintentar una vez desde cero
-        log.warning("model %s failed verification (attempt %d)", f.rel_path, attempt)
-    raise ModelError(f"SHA-256/size mismatch downloading {f.rel_path}; file discarded")
+        corrupt += 1
+        log.warning("model %s failed verification (attempt %d)", f.rel_path, corrupt)
+        if corrupt >= 2:
+            raise ModelError(
+                f"SHA-256/size mismatch downloading {f.rel_path}; file discarded",
+                "models.err.checksum",
+            )
+
+
+def _fetch_into_part(
+    f: ModelFile,
+    part: Path,
+    have: int,
+    opener: urllib.request.OpenerDirector,
+    on_bytes: Callable[[int, int], None],
+    cancel: threading.Event | None,
+) -> None:
+    headers = {"User-Agent": USER_AGENT}
+    if have:
+        headers["Range"] = f"bytes={have}-"
+    req = urllib.request.Request(f.url, headers=headers)
+    try:
+        resp = opener.open(req, timeout=60)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and have:  # el .part ya estaba completo o es invalido
+            part.unlink(missing_ok=True)
+            raise _NetworkCut("HTTP 416; restarting from zero") from exc
+        if exc.code in _RETRY_HTTP:
+            raise _NetworkCut(f"HTTP {exc.code}") from exc
+        raise ModelError(f"HTTP {exc.code} downloading {f.rel_path}", "models.err.http") from exc
+    except urllib.error.URLError as exc:
+        raise _NetworkCut(f"{exc.reason}") from exc
+    except (OSError, http.client.HTTPException) as exc:
+        raise _NetworkCut(str(exc) or type(exc).__name__) from exc
+    with resp:
+        _stream_to_part(resp, part, have, f.size, on_bytes, cancel)
 
 
 def _byte_cb(
@@ -594,6 +716,40 @@ def _byte_cb(
     return cb
 
 
+def _part_size(dest: Path) -> int:
+    try:
+        return dest.with_name(dest.name + ".part").stat().st_size
+    except OSError:
+        return 0
+
+
+def check_disk_space(folder: Path, need: int, *, margin: int = DISK_MARGIN) -> None:
+    """``ModelError`` (``models.err.disk``, con ``need``/``free``) si no caben ``need`` bytes."""
+    probe = folder
+    while not probe.exists() and probe.parent != probe:
+        probe = probe.parent
+    try:
+        free = shutil.disk_usage(probe).free
+    except OSError:
+        return  # no se sabe: que lo diga la escritura
+    if free < need + margin:
+        raise ModelError(
+            f"not enough disk space in {folder}: need {need + margin} bytes, free {free}",
+            "models.err.disk",
+            need=need + margin,
+            free=free,
+        )
+
+
+_DOWNLOAD_LOCK = threading.Lock()
+"""Una descarga de modelos a la vez por proceso (asistente y Ajustes escribirian el mismo
+``.part``): la segunda espera y luego solo verifica lo que ya bajo la primera."""
+
+
+def download_in_progress() -> bool:
+    return _DOWNLOAD_LOCK.locked()
+
+
 def download_models(
     config: Config,
     progress_cb: ProgressCallback | None = None,
@@ -603,12 +759,44 @@ def download_models(
     manifest: dict[str, ModelGroup] | None = None,
     opener: urllib.request.OpenerDirector | None = None,
     allow_url: Callable[[str], bool] | None = None,
+    cancel: threading.Event | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+) -> list[Path]:
+    """Descarga los modelos que faltan (ver ``_download_models``), de uno en uno por proceso."""
+    with _DOWNLOAD_LOCK:
+        return _download_models(
+            config,
+            progress_cb,
+            groups=groups,
+            include_optional=include_optional,
+            manifest=manifest,
+            opener=opener,
+            allow_url=allow_url,
+            cancel=cancel,
+            sleep=sleep,
+        )
+
+
+def _download_models(
+    config: Config,
+    progress_cb: ProgressCallback | None = None,
+    *,
+    groups: Iterable[str] | None = None,
+    include_optional: bool = False,
+    manifest: dict[str, ModelGroup] | None = None,
+    opener: urllib.request.OpenerDirector | None = None,
+    allow_url: Callable[[str], bool] | None = None,
+    cancel: threading.Event | None = None,
+    sleep: Callable[[float], None] = time.sleep,
 ) -> list[Path]:
     """Descarga los modelos que faltan o estan corruptos. Devuelve las rutas descargadas.
 
-    ``manifest``, ``opener`` y ``allow_url`` existen para los tests (servidor local); en
-    produccion se usan los valores por defecto (solo ``https`` hacia Hugging Face).
-    Los ficheros ya presentes se verifican con SHA-256 antes de saltarlos.
+    ``manifest``, ``opener``, ``allow_url`` y ``sleep`` existen para los tests (servidor local);
+    en produccion se usan los valores por defecto (solo ``https`` hacia Hugging Face).
+    Los ficheros ya presentes se verifican con SHA-256 antes de saltarlos (fase ``verify``).
+    Antes de bajar nada se comprueba que cabe en el disco. ``cancel`` (o una excepcion lanzada
+    desde ``progress_cb``) para la descarga y deja los ``.part`` para reanudar luego, tambien
+    tras reiniciar la app.
     """
     check = allow_url or _host_allowed
     op = opener or _default_opener(check)
@@ -624,17 +812,43 @@ def download_models(
                 DownloadProgress(f.rel_path, d, f.size, done_before + d, overall_total, phase)
             )
 
+    def verifying(f: ModelFile) -> Callable[[], None]:
+        return lambda: emit(f, f.size, "verify")
+
+    need = 0
     for f in files:
         dest = base / f.group / f.name
         with contextlib.suppress(OSError):
-            if dest.is_file() and dest.stat().st_size == f.size and sha256_file(dest) == f.sha256:
-                emit(f, f.size, "skip")
-                done_before += f.size
+            if dest.is_file() and dest.stat().st_size == f.size:
                 continue
+        need += max(0, f.size - _part_size(dest))
+    if need:
+        check_disk_space(base, need)
+
+    for f in files:
+        if cancel is not None and cancel.is_set():
+            raise DownloadCancelled()
+        dest = base / f.group / f.name
+        with contextlib.suppress(OSError):
+            if dest.is_file() and dest.stat().st_size == f.size:
+                emit(f, 0, "verify")
+                if sha256_file(dest) == f.sha256:
+                    emit(f, f.size, "skip")
+                    done_before += f.size
+                    continue
         if dest.exists():  # presente pero corrupto
             log.warning("model %s is corrupt; downloading again", f.rel_path)
             dest.unlink()
-        _download_one(f, dest, op, check, _byte_cb(emit, f))
+        _download_one(
+            f,
+            dest,
+            op,
+            check,
+            _byte_cb(emit, f),
+            on_verify=verifying(f),
+            cancel=cancel,
+            sleep=sleep,
+        )
         emit(f, f.size, "done")
         downloaded.append(dest)
         done_before += f.size

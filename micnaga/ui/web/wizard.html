@@ -22,6 +22,8 @@
   <div class="overall" id="overall">
     <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="overall-bar" data-i18n-aria-label="wizard.progress"><i id="overall-fill"></i></div>
     <p class="status tnum" id="overall-text" data-i18n="wizard.preparing">Preparando</p>
+    <p class="status detail tnum" id="overall-detail" aria-hidden="true"></p>
+    <button class="btn btn-ghost btn-sm cancel" id="cancel" type="button" hidden><span data-i18n="wizard.cancel">Cancelar</span></button>
   </div>
 
   <div class="checks" role="group" data-i18n-aria-label="wizard.audio_label">
@@ -31,7 +33,7 @@
 
   <div class="fail" id="fail" hidden>
     <p class="err" id="dl-error" role="alert"></p>
-    <button class="btn btn-primary" id="retry" type="button" data-icon="refresh"><span data-i18n="wizard.retry">Reintentar</span></button>
+    <button class="btn btn-primary" id="retry" type="button" data-icon="refresh"><span id="retry-label" data-i18n="wizard.retry">Reintentar</span></button>
   </div>
 
   <p class="by"><span data-i18n="wizard.by">Hecho por</span><span class="brand"><img class="on-dark" src="assets/bitnaga-on-dark.svg" alt="Bitnaga"><img class="on-light" src="assets/bitnaga-on-light.svg" alt="Bitnaga"></span></p>

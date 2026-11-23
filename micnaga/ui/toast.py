@@ -156,6 +156,55 @@ class ToastNotifier:
         )
         self._get_toaster().show_toast(toast)
 
+    def show_update(
+        self, version: str, on_install: Callable[[], None], on_open: Callable[[], None]
+    ) -> None:
+        """Aviso discreto (una vez por version): «Hay una versión nueva de Micnaga» ·
+        «Instalar y reiniciar» · «Ver novedades». Nunca se muestra grabando (lo decide la app)."""
+        from windows_toasts import Toast, ToastButton
+
+        def activated(args: Any) -> None:
+            action = (
+                on_install if str(getattr(args, "arguments", "")) == "update:install" else on_open
+            )
+            try:
+                action()
+            except Exception:
+                log.exception("update toast callback failed")
+
+        toast = Toast(
+            text_fields=[
+                i18n.t("toast.update.title", self._language),
+                i18n.t("toast.update.body", self._language, version=version),
+            ],
+            on_activated=activated,
+        )
+        toast.AddAction(
+            ToastButton(i18n.t("toast.update.install", self._language), "update:install")
+        )
+        toast.AddAction(ToastButton(i18n.t("toast.update.details", self._language), "update:open"))
+        self._get_toaster().show_toast(toast)
+
+    def show_updated(self, version: str, on_open: Callable[[], None]) -> None:
+        """Primer arranque tras actualizar: «Micnaga se ha actualizado» · «Ver novedades»."""
+        from windows_toasts import Toast, ToastButton
+
+        def activated(_args: Any) -> None:
+            try:
+                on_open()
+            except Exception:
+                log.exception("updated toast callback failed")
+
+        toast = Toast(
+            text_fields=[
+                i18n.t("toast.updated.title", self._language),
+                i18n.t("toast.updated.body", self._language, version=version),
+            ],
+            on_activated=activated,
+        )
+        toast.AddAction(ToastButton(i18n.t("toast.update.details", self._language), "updated:"))
+        self._get_toaster().show_toast(toast)
+
     def _activated(self, args: Any, default: str | None = None) -> None:
         folder = parse_arguments(str(getattr(args, "arguments", "") or "")) or default
         if folder is None:

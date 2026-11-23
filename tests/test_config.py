@@ -28,8 +28,9 @@ def test_defaults_match_spec_section_10() -> None:
     assert c.detection.undo_s == 8.0 and c.storage.discarded_keep_days == 7
     assert c.capture.sample_rate == 16000
     assert c.capture.chunk_flush_s == 2
-    assert c.processing.asr_engine == "parakeet"
-    assert c.processing.whisper_model == "small"
+    # DECISIONS §32: Whisper large-v3-turbo por defecto (antes Parakeet)
+    assert c.processing.asr_engine == "whisper"
+    assert c.processing.whisper_model == "large-v3-turbo"
     assert c.processing.diarization == "diarize"
     assert c.processing.threads == 6
     assert c.storage.root == "~/Documents/Micnaga"
@@ -55,7 +56,7 @@ def test_load_missing_file_gives_defaults(tmp_home: Path) -> None:
 
 def test_roundtrip(tmp_home: Path) -> None:
     c = Config()
-    c.processing.asr_engine = "whisper"
+    c.processing.asr_engine = "parakeet"
     c.processing.threads = 4
     c.processing.glossary = ["Micnaga", "RGPD"]
     c.ui.theme = "dark"
@@ -223,12 +224,73 @@ def test_v1_file_migrates_old_gate_defaults_but_keeps_user_choices(tmp_path: Pat
     assert path.read_text(encoding="utf-8") == again_text  # idempotente
 
 
-def test_v2_file_is_not_migrated(tmp_path: Path) -> None:
+def test_v2_file_keeps_gates(tmp_path: Path) -> None:
     from micnaga.config import load_config
 
     path = tmp_path / "config.toml"
     path.write_text("[meta]\nversion = 2\n[gates]\nmin_duration_s = 180.0\n", encoding="utf-8")
     assert load_config(path).gates.min_duration_s == 180.0
+
+
+def test_v2_untouched_parakeet_default_moves_to_whisper_turbo(tmp_path: Path) -> None:
+    """Un config.toml v2 guardado con los defectos de ASR de entonces (parakeet + small) pasa al
+    nuevo defecto; ``ensure_config`` lo reescribe una vez y despues ya no se toca."""
+    from micnaga.config import CONFIG_VERSION
+
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[meta]\nversion = 2\n[processing]\nasr_engine = "parakeet"\nwhisper_model = "small"\n'
+        "threads = 4\n",
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert (cfg.processing.asr_engine, cfg.processing.whisper_model) == (
+        "whisper",
+        "large-v3-turbo",
+    )
+    assert cfg.processing.threads == 4
+    ensure_config(path)
+    assert f"version = {CONFIG_VERSION}" in path.read_text(encoding="utf-8")
+    # ya en v3: elegir Parakeet a mano se respeta
+    cfg.processing.asr_engine = "parakeet"
+    save_config(cfg, path)
+    assert load_config(path).processing.asr_engine == "parakeet"
+
+
+@pytest.mark.parametrize(
+    ("engine", "model", "expected"),
+    [
+        ("whisper", "small", ("whisper", "small")),  # Whisper elegido a mano: se respeta
+        ("parakeet", "large-v3", ("parakeet", "large-v3")),  # tamano tocado: no era el defecto
+        ("whisper", "medium", ("whisper", "large-v3-turbo")),  # tamano sin modelo descargable
+        ("parakeet", "tiny", ("parakeet", "large-v3-turbo")),
+    ],
+)
+def test_v2_asr_choices_are_respected(
+    tmp_path: Path, engine: str, model: str, expected: tuple[str, str]
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        f'[meta]\nversion = 2\n[processing]\nasr_engine = "{engine}"\nwhisper_model = "{model}"\n',
+        encoding="utf-8",
+    )
+    cfg = load_config(path)
+    assert (cfg.processing.asr_engine, cfg.processing.whisper_model) == expected
+
+
+def test_v1_without_processing_section_gets_new_asr_default(tmp_path: Path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[gates]\nmin_turns = 2\n", encoding="utf-8")
+    assert load_config(path).processing.asr_engine == "whisper"
+
+
+def test_whisper_model_must_be_in_the_manifest() -> None:
+    with pytest.raises(ConfigError):
+        config_from_dict({"meta": {"version": 3}, "processing": {"whisper_model": 5}})
+    c = Config()
+    c.processing.whisper_model = "medium"
+    with pytest.raises(ConfigError):
+        c.validate()
 
 
 def test_secretaria_defaults_and_mcp_server_lines(tmp_home: Path) -> None:

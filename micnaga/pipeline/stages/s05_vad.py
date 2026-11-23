@@ -2,8 +2,9 @@
 
 Sobre el audio acondicionado de cada pista: ``detect_speech`` (Silero VAD ONNX; 250 ms de voz
 minima, 500 ms de silencio para cortar, 200 ms de margen, valores de ``[vad]``) y
-``group_regions`` (bloques de hasta ``vad.max_block_s`` = 30 s). Un bloque va del inicio del
-primer tramo al fin del ultimo; la transcripcion (etapa 6) trabaja bloque a bloque.
+``group_regions`` (bloques de hasta ``vad.max_block_s`` = 30 s de audio contando cada silencio
+intermedio como mucho ``vad.MAX_GAP_S``: lo que queda de el tras la etapa 6). Un bloque va del
+inicio del primer tramo al fin del ultimo; la transcripcion (etapa 6) trabaja bloque a bloque.
 
 Salida: ``work/05_vad.json``::
 

@@ -342,6 +342,29 @@ def test_hq_models_in_manifest() -> None:
     assert hq.model_group(Config()) == "faster-whisper-large-v3"
 
 
+def test_hq_engine_gets_language_glossary_and_guards(monkeypatch: pytest.MonkeyPatch) -> None:
+    from micnaga import models
+    from micnaga.pipeline.engines.asr import whisper as whisper_mod
+
+    seen: dict[str, Any] = {}
+
+    class Spy:
+        def __init__(self, model_dir: str, size: str, threads: int, **kw: Any) -> None:
+            seen.update(size=size, **kw)
+
+    monkeypatch.setattr(whisper_mod, "WhisperEngine", Spy)
+    monkeypatch.setattr(models, "require_models", lambda _c, g: Path("/m") / g)
+    cfg = Config()
+    cfg.processing.glossary = ["Shodan"]
+    hq.create_engine(cfg)
+    assert seen == {
+        "size": "large-v3",
+        "language": "es",
+        "guards": True,
+        "hotwords": "Glosario: Shodan.",
+    }
+
+
 @pytest.mark.slow
 @pytest.mark.models
 @pytest.mark.timeout(600)

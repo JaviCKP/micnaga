@@ -42,6 +42,9 @@ DEFAULT_PAD_MS = 200
 DEFAULT_MAX_BLOCK_S = 30.0
 DEFAULT_THRESHOLD = 0.5
 NEG_THRESHOLD_DELTA = 0.15
+MAX_GAP_S = 1.0
+"""Silencio maximo entre dos tramos de voz dentro de un bloque una vez acortado
+(``s06_asr.compact``); ``group_regions`` cuenta cada silencio como mucho esto."""
 
 
 @dataclass(frozen=True)
@@ -226,18 +229,28 @@ def _split_long(
 
 
 def group_regions(
-    regions: Sequence[SpeechRegion], max_len_s: float = DEFAULT_MAX_BLOCK_S
+    regions: Sequence[SpeechRegion],
+    max_len_s: float = DEFAULT_MAX_BLOCK_S,
+    *,
+    max_gap_s: float | None = MAX_GAP_S,
 ) -> list[tuple[float, float]]:
     """Agrupa tramos consecutivos en bloques ``(inicio, fin)`` de como mucho ``max_len_s``.
 
     Un bloque va desde el inicio del primer tramo hasta el fin del ultimo (incluye los
     silencios intermedios). Un tramo que por si solo supera ``max_len_s`` se parte en trozos
     iguales (defensa: ``regions_from_probs`` ya los parte por valles).
+
+    Cada silencio intermedio cuenta como mucho ``max_gap_s`` (``None``: entero): es lo que dura
+    el bloque una vez acortados sus silencios (``s06_asr.compact``, que usa el mismo valor), asi
+    que el audio que llega al ASR sigue sin pasar de ``max_len_s`` aunque el bloque abarque mas
+    tiempo de la pista. Whisper cobra cada ventana de 30 s entera, este o no llena: llenarlas de
+    voz ahorra ventanas (DECISIONS §32).
     """
     if max_len_s <= 0:
         raise ValueError("max_len_s must be > 0")
     blocks: list[tuple[float, float]] = []
     cur: tuple[float, float] | None = None
+    cost = 0.0  # duracion del bloque con los silencios acotados a ``max_gap_s``
     for r in sorted(regions, key=lambda r: r.start):
         pieces = [(r.start, r.end)]
         if r.end - r.start > max_len_s:
@@ -246,12 +259,17 @@ def group_regions(
             pieces = [(r.start + k * step, r.start + (k + 1) * step) for k in range(n)]
         for a, b in pieces:
             if cur is None:
-                cur = (a, b)
-            elif b - cur[0] <= max_len_s + 1e-9:
-                cur = (cur[0], max(cur[1], b))
+                cur, cost = (a, b), b - a
+                continue
+            gap = max(0.0, a - cur[1])
+            if max_gap_s is not None:
+                gap = min(gap, max_gap_s)
+            extra = gap + max(0.0, b - max(a, cur[1]))
+            if cost + extra <= max_len_s + 1e-9:
+                cur, cost = (cur[0], max(cur[1], b)), cost + extra
             else:
                 blocks.append(cur)
-                cur = (a, b)
+                cur, cost = (a, b), b - a
     if cur is not None:
         blocks.append(cur)
     return blocks

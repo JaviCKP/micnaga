@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 from PIL import Image
@@ -10,26 +11,39 @@ from PIL import Image
 from micnaga.ui import icons, tray
 from micnaga.ui.contracts import UiCallbacks
 
+
+def _px(img: Image.Image, xy: tuple[int, int]) -> tuple[int, ...]:
+    return cast(tuple[int, ...], img.getpixel(xy))
+
+
+def _pixels(img: Image.Image) -> list[tuple[int, ...]]:
+    w, h = img.size
+    return [_px(img, (x, y)) for y in range(h) for x in range(w)]
+
+
 STATES = ("watching", "recording", "paused", "processing")
 
 
 @pytest.mark.parametrize("state", STATES)
-def test_tray_icon_has_state_color_and_transparent_corners(state: str) -> None:
-    img = icons.tray_icon(state, 64)
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_tray_icon_is_a_ring_in_the_taskbar_ink(state: str, theme: str) -> None:
+    img = icons.tray_icon(state, 64, theme=theme)
     assert img.size == (64, 64) and img.mode == "RGBA"
-    assert img.getpixel((0, 0))[3] == 0  # esquina transparente: es un circulo
-    # el color de estado domina cerca del borde del circulo (lejos del glifo blanco)
-    r, g, b, a = img.getpixel((32, 6))
-    want = icons.STATE_COLORS[state]
-    assert a == 255
-    assert max(abs(r - want[0]), abs(g - want[1]), abs(b - want[2])) < 40
+    assert _px(img, (0, 0))[3] == 0  # sin baldosa: esquinas transparentes
+    # el anillo exterior, en el eje vertical, es tinta opaca del tema de la barra
+    g = icons.tray_geo(64)
+    y = round(32 - g.outer)
+    r, gg, b, a = _px(img, (32, y))
+    assert a == 255 and (r, gg, b) == icons.INK[theme]
 
 
-def test_states_are_distinguishable_by_color() -> None:
-    colors = {icons.STATE_COLORS[s] for s in STATES}
-    assert len(colors) == 4
-    assert icons.STATE_COLORS["recording"][0] > icons.STATE_COLORS["recording"][2]  # rojo
-    assert icons.STATE_COLORS["processing"][2] > icons.STATE_COLORS["processing"][0]  # azul
+def test_only_recording_states_use_the_violet_accent() -> None:
+    def has_violet(state: str) -> bool:
+        img = icons.tray_icon(state, 32, theme="dark")
+        return any(px[:3] == icons.BRAND_VIOLET for px in _pixels(img))
+
+    assert has_violet("recording") and has_violet("provisional")
+    assert not any(has_violet(s) for s in ("watching", "paused", "processing"))
 
 
 def test_glyph_differs_per_state_not_only_color() -> None:
@@ -59,7 +73,7 @@ def test_shipped_ico_exists_and_is_valid() -> None:
 
 def test_menu_has_the_spec_entries_in_order() -> None:
     spec = tray.menu_spec("watching", watching_paused=False)
-    assert [e.label for e in spec] == [
+    assert [e.label for e in spec if e.visible] == [
         "Grabar ahora",
         "Grabar reunión presencial",
         "Pausar vigilancia 1 h",
@@ -116,8 +130,42 @@ def test_dispatch_calls_the_right_callbacks_and_survives_errors() -> None:
     assert seen == ["record", "pause60", "resume", "lib", "quit"]
 
 
-def test_tray_title_reflects_state() -> None:
+def test_tray_title_reflects_state_and_shows_the_version() -> None:
+    from micnaga import __version__
+
     t = tray.Tray(UiCallbacks())
-    assert t.title() == "Micnaga · vigilando"
+    assert t.title() == f"Micnaga {__version__} · vigilando"
     t.set_state("paused")
     assert "en pausa" in t.title()
+
+
+def test_update_entry_is_hidden_until_a_new_version_exists() -> None:
+    hidden = tray.menu_spec("watching", watching_paused=False)
+    entry = next(e for e in hidden if e.key == "install_update")
+    assert not entry.visible
+    # siempre en la misma posicion (el menu se arma por posicion), justo antes de «Salir»
+    shown = tray.menu_spec("watching", watching_paused=False, update="0.2.0")
+    assert [e.key for e in shown] == [e.key for e in hidden]
+    entry = next(e for e in shown if e.key == "install_update")
+    assert entry.visible and entry.label == "Actualizar a la versión 0.2.0"
+    assert shown[-1].key == "quit" and shown[-2] is entry
+
+
+def test_update_entry_starts_the_install(monkeypatch: pytest.MonkeyPatch) -> None:
+    from micnaga import updates
+
+    calls: list[bool] = []
+
+    class Svc:
+        def available(self) -> None:
+            return None
+
+        def request_install(self, *, open_ui: bool = False) -> None:
+            calls.append(open_ui)
+
+        def add_listener(self, fn: object) -> None:
+            pass
+
+    monkeypatch.setattr(updates, "_SERVICE", Svc())
+    tray.Tray(UiCallbacks()).dispatch("install_update")
+    assert calls == [True]

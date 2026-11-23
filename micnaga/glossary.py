@@ -2,7 +2,8 @@
 
 Lista de nombres propios y siglas que el modelo suele escribir mal. Se aplica como correccion
 posterior a la transcripcion (``Glossary.apply_words`` / ``apply_text``) y, si el motor ASR lo
-admite, como palabras clave (``Glossary.hotwords``).
+admite, como palabras clave (``Glossary.hotwords``) o como ``initial_prompt`` de Whisper
+(``Glossary.prompt``).
 
 Fichero ``glossary.txt`` en la carpeta de datos de la app (``paths.app_data_dir()``), una entrada
 por linea::
@@ -54,6 +55,8 @@ if TYPE_CHECKING:
 
 GLOSSARY_FILENAME = "glossary.txt"
 MIN_LENGTH_RATIO = 0.8
+PROMPT_PREFIX = "Glosario:"
+PROMPT_MAX_CHARS = 600
 
 _TOKEN_RE = re.compile(r"^([^\w]*)(.*?)([^\w]*)$", re.UNICODE | re.DOTALL)
 _BREAKING = set(",.;:!?…¿¡")
@@ -177,6 +180,21 @@ class Glossary:
         for e in self.entries:
             seen.setdefault(e.canonical, None)
         return list(seen)
+
+    def prompt(self, max_chars: int = PROMPT_MAX_CHARS) -> str:
+        """Texto para el ``initial_prompt`` de Whisper: ``"Glosario: A, B, C."`` ("" si vacio).
+
+        Solo formas canonicas (las variantes son lo que el ASR oye mal: no se le sugieren), en
+        orden y sin pasar de ``max_chars`` (Whisper admite unos 220 tokens de prompt)."""
+        terms: list[str] = []
+        size = len(PROMPT_PREFIX) + 1
+        for term in self.hotwords():
+            extra = len(term) + 2
+            if terms and size + extra > max_chars:
+                break
+            terms.append(term)
+            size += extra
+        return f"{PROMPT_PREFIX} {', '.join(terms)}." if terms else ""
 
     # ------------------------------------------------------------------ coincidencia
 

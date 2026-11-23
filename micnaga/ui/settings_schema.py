@@ -11,7 +11,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from micnaga.config import Config
+from micnaga.config import ASR_ENGINES, WHISPER_MODELS, Config
 
 Kind = Literal["bool", "int", "float", "text", "choice", "list", "hotkey", "path"]
 
@@ -53,6 +53,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             _f("ui.sound", "bool"),
             _f("hotkeys.marker", "hotkey", restart=True),
             _f("hotkeys.private_pause", "hotkey", restart=True),
+            _f("updates.auto_check", "bool"),
         ),
     ),
     (
@@ -118,8 +119,8 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     (
         "processing",
         (
-            _f("processing.asr_engine", "choice", choices=("parakeet", "whisper")),
-            _f("processing.whisper_model", "choice", choices=("tiny", "base", "small", "medium")),
+            _f("processing.asr_engine", "choice", choices=ASR_ENGINES),
+            _f("processing.whisper_model", "choice", choices=WHISPER_MODELS),
             _f("processing.hq_transcribe", "bool", advanced=True),
             _f(
                 "processing.hq_model",

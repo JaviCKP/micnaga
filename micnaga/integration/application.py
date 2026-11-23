@@ -42,6 +42,7 @@ from micnaga.integration.levels import LevelMonitor
 from micnaga.integration.library_ops import AppLibraryOps
 from micnaga.integration.ports import RecorderFactory, UiPort
 from micnaga.store.db import Database, open_database
+from micnaga.ui.bridge import ACTION_MODEL_DOWNLOADER
 from micnaga.ui.contracts import (
     ACTION_RECORD_IN_PERSON,
     Diagnostic,
@@ -212,6 +213,7 @@ class Application:
         brain: Any = None,
         live_title: Any = None,
         live: Any = None,
+        updates: Any = None,
     ) -> None:
         self.config = config
         try:  # solo congelada: el AUMID debe coincidir con el acceso directo del instalador
@@ -240,10 +242,12 @@ class Application:
         self.boot_queued: list[Path] = []
 
         self.callbacks = self._build_callbacks()
+        self._models_downloading = 0
+        self.model_downloader = self._track_download(make_model_downloader(lambda: self.config))
         self.ui: UiPort = ui_factory(
             self.callbacks,
             self.library_ops,
-            make_model_downloader(lambda: self.config),
+            self.model_downloader,
             self.diagnostics,
         )
         self.finisher = Finisher(self._db_factory, db_key=self._db_key)
@@ -284,6 +288,8 @@ class Application:
         # «Grabar reunión presencial» (bandeja y biblioteca): ``host.py`` arma esas superficies
         # con un juego fijo de callbacks, asi que la accion va por el registro de ``contracts``.
         set_app_action(ACTION_RECORD_IN_PERSON, self._record_in_person)
+        # Ajustes > Transcripcion baja los modelos que falten con el mismo descargador.
+        set_app_action(ACTION_MODEL_DOWNLOADER, lambda: self.model_downloader)
         self.held_ops = AppHeldOps(self)
         set_held = getattr(self.ui, "set_held_ops", None)
         if callable(set_held):
@@ -300,6 +306,72 @@ class Application:
             busy(lambda: bool(self.controller.recording))
         self.live_title = live_title if live_title is not None else self._make_live_title()
         self.google_context = self._make_google_context()
+        # Actualizaciones (GitHub Releases). Solo la app real: los tests inyectan ``spawn``.
+        self.updates = (
+            updates if updates is not None else (self._make_updates() if spawn is None else None)
+        )
+
+    def _track_download(
+        self, download: Callable[[Callable[[ModelProgress], None]], None]
+    ) -> Callable[[Callable[[ModelProgress], None]], None]:
+        """Cuenta las descargas de modelos en curso: con una a medias no se instala nada."""
+
+        def run(callback: Callable[[ModelProgress], None]) -> None:
+            self._models_downloading += 1
+            try:
+                download(callback)
+            finally:
+                self._models_downloading -= 1
+
+        return run
+
+    def _busy_for_update(self) -> bool:
+        """Grabando, procesando (el instalador cierra tambien el worker) o bajando modelos."""
+        return bool(
+            self.controller.recording
+            or self._db_busy
+            or self._active_jobs
+            or self._models_downloading
+        )
+
+    def _make_updates(self) -> Any:
+        try:
+            from micnaga import updates
+            from micnaga.ui.toast import ToastNotifier, default_aumid, is_frozen
+
+            toaster = ToastNotifier(
+                lambda _folder: None, language=self.config.ui.language, aumid=default_aumid()
+            )
+            svc: updates.UpdateService | None = None
+
+            def open_about() -> None:
+                self.ui.open_settings()
+
+            def install() -> None:
+                if svc is not None:
+                    svc.request_install(open_ui=True)
+
+            def on_available(rel: updates.ReleaseInfo) -> None:
+                toaster.show_update(rel.version, install, open_about)
+
+            def on_updated(version: str) -> None:
+                toaster.show_updated(version, open_about)
+
+            hooks = updates.UpdateHooks(
+                # solo la app instalada pregunta sola (en desarrollo, solo el boton de Ajustes)
+                auto_check=lambda: bool(self.config.updates.auto_check and is_frozen()),
+                is_busy=self._busy_for_update,
+                on_available=on_available,
+                on_updated=on_updated,
+                before_install=lambda: self.shutdown(wait_s=30.0, reason="update"),
+                quit_app=lambda: self.ui.quit("update"),
+                open_ui=open_about,
+            )
+            svc = updates.UpdateService(hooks, state_path=updates.default_state_path())
+            return svc
+        except Exception:
+            log.exception("updates unavailable")
+            return None
 
     def _make_brain(self) -> Any:
         try:
@@ -385,7 +457,11 @@ class Application:
                 log.warning("hotkey %s unavailable: %s", name, getattr(result, "error", ""))
         if self._start_watcher:
             self.watcher.start()
-        for extra in (self.brain, self.live_title, self.google_context):
+        if self.updates is not None:
+            from micnaga import updates
+
+            updates.set_service(self.updates)
+        for extra in (self.brain, self.live_title, self.google_context, self.updates):
             if extra is not None:
                 try:
                     extra.start()
@@ -411,6 +487,13 @@ class Application:
         log.info("shutting down (reason: %s)", reason)
         if app_action(ACTION_RECORD_IN_PERSON) == self._record_in_person:
             set_app_action(ACTION_RECORD_IN_PERSON, None)
+        set_app_action(ACTION_MODEL_DOWNLOADER, None)
+        if self.updates is not None:
+            from micnaga import updates
+
+            self.updates.stop()
+            if updates.service() is self.updates:
+                updates.set_service(None)
         for step in (
             self.hotkeys.stop,
             self.watcher.stop,

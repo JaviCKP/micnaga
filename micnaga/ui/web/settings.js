@@ -220,6 +220,7 @@
     if (g.id === "secretaria" && S.hasSec) secretariaExtras(pane, cards);
     if (g.id === "privacy" && S.hasVp) pane.append(voiceprintCard());
     if (g.id === "privacy") pane.append(legalCard());
+    if (g.id === "processing") pane.append(modelsCard());
     if (adv.length) {
       const c = group("");
       const t = el("button", "adv-toggle");
@@ -632,6 +633,163 @@
     }
   }
 
+  // ------------------------------------------------------------------ models (Transcripción)
+  const pct = (x) => Math.max(0, Math.min(100, Math.round(x * 100)));
+  function etaText(s) {
+    if (s === null || s === undefined) return "";
+    return s >= 90 ? mic.t("wizard.eta_min", { n: Math.round(s / 60) }) : mic.t("wizard.eta_sec", { n: Math.max(1, Math.round(s)) });
+  }
+  function errText(key, args, fallback) {
+    const t = key ? mic.t(key, args || {}) : "";
+    return t && t !== key ? t : fallback;
+  }
+
+  /** What the saved configuration needs on disk, and a resumable download with live progress. */
+  function modelsCard() {
+    const c = group(mic.t("settings.cards.models"));
+    const row = el("div", "frow sec-status models-row");
+    const info = el("div", "finfo models-info");
+    const dot = el("span", "sig");
+    dot.dataset.s = "off";
+    const text = el("span", "sec-st-text");
+    const bar = el("div", "progress models-bar");
+    bar.setAttribute("role", "progressbar");
+    bar.setAttribute("aria-valuemin", "0");
+    bar.setAttribute("aria-valuemax", "100");
+    bar.append(el("i"));
+    bar.hidden = true;
+    const detail = el("span", "models-detail tnum");
+    info.append(dot, text);
+    const ctl = el("div", "ctl");
+    const go = el("button", "btn btn-sm", mic.t("settings.models.download"));
+    go.type = "button";
+    const stop = el("button", "btn btn-sm btn-ghost", mic.t("wizard.cancel"));
+    stop.type = "button";
+    ctl.append(stop, go);
+    const col = el("div", "models-col");
+    col.append(info, bar, detail);
+    row.append(col, ctl);
+    c.append(row);
+    let timer = 0;
+    async function load() {
+      const r = await mic.call("models_status");
+      clearTimeout(timer);
+      if (!r) return;
+      const j = r.job || {};
+      const running = j.state === "running";
+      bar.hidden = !running;
+      stop.hidden = !running;
+      go.hidden = running || (r.ready && j.state !== "failed");
+      go.disabled = !r.can_download;
+      detail.textContent = "";
+      if (running) {
+        dot.dataset.s = "warn";
+        bar.style.setProperty("--p", (j.overall || 0).toFixed(3));
+        bar.setAttribute("aria-valuenow", String(pct(j.overall || 0)));
+        text.textContent = j.verifying ? mic.t("wizard.verifying") : mic.t("settings.models.downloading", { pct: pct(j.overall || 0), done: j.done_text, total: j.total_text });
+        if (j.speed_text && !j.verifying) detail.textContent = j.speed_text + "/s · " + etaText(j.eta_s);
+        timer = setTimeout(load, 700);
+      } else if (j.state === "failed") {
+        dot.dataset.s = "fail";
+        text.textContent = errText(j.error_key, j.error_args, mic.t("models.err.generic"));
+        go.textContent = mic.t("wizard.retry");
+      } else if (j.state === "cancelled") {
+        dot.dataset.s = "warn";
+        text.textContent = mic.t("wizard.cancelled");
+        go.textContent = mic.t("wizard.resume");
+      } else if (r.ready) {
+        dot.dataset.s = "ok";
+        text.textContent = j.state === "done" ? mic.t("settings.models.done") : mic.t("settings.models.ready", { size: r.total_text });
+      } else {
+        dot.dataset.s = "warn";
+        text.textContent = mic.t("settings.models.missing", { size: r.need_text });
+        go.textContent = mic.t("settings.models.download");
+      }
+    }
+    go.addEventListener("click", async () => { go.disabled = true; await mic.call("models_download"); load(); });
+    stop.addEventListener("click", async () => { await mic.call("models_cancel"); setTimeout(load, 300); });
+    document.addEventListener("mic:saved", load);
+    load();
+    return c.parentElement;
+  }
+
+  // ------------------------------------------------------------------ about: version + updates
+  function shortTime(sec) {
+    return sec ? shortWhen(new Date(sec * 1000).toISOString()) : "";
+  }
+
+  /** «Buscar actualizaciones», the status line and, with a new version, its notes + install. */
+  function updatesCard(onStatus) {
+    const c = group(mic.t("settings.cards.updates"));
+    const row = el("div", "frow sec-status upd-row");
+    const col = el("div", "models-col");
+    const info = el("div", "finfo");
+    const dot = el("span", "sig");
+    dot.dataset.s = "off";
+    const text = el("span", "sec-st-text");
+    text.setAttribute("role", "status");
+    text.setAttribute("aria-live", "polite");
+    info.append(dot, text);
+    const bar = el("div", "progress models-bar");
+    bar.append(el("i"));
+    bar.hidden = true;
+    col.append(info, bar);
+    const ctl = el("div", "ctl");
+    const check = el("button", "btn btn-sm", mic.t("updates.check"));
+    check.type = "button";
+    const skip = el("button", "btn btn-sm btn-ghost", mic.t("updates.skip"));
+    skip.type = "button";
+    const install = el("button", "btn btn-sm btn-primary", mic.t("updates.install"));
+    install.type = "button";
+    ctl.append(check, skip, install);
+    row.append(col, ctl);
+    const notes = el("div", "upd-notes");
+    const notesTitle = el("h4", "caps");
+    const notesBody = el("p", "upd-text");
+    notes.append(notesTitle, notesBody);
+    notes.hidden = true;
+    c.append(row, notes);
+    let timer = 0;
+    const ACTIVE = ["checking", "downloading", "verifying", "waiting", "installing"];
+    function paint(st) {
+      if (!st) return;
+      onStatus(st);
+      clearTimeout(timer);
+      const s = st.state;
+      const busy = ACTIVE.includes(s);
+      c.parentElement.hidden = s === "unavailable";   // no app behind (demo): just the version
+      check.hidden = st.available || s === "skipped" || busy || s === "unavailable" || s === "disabled";
+      check.disabled = busy;
+      install.hidden = !(st.available || s === "skipped") || busy;
+      install.disabled = !st.can_install;
+      skip.hidden = !st.available || busy;
+      bar.hidden = s !== "downloading";
+      if (s === "downloading" && st.total) {
+        const p = st.done / st.total;
+        bar.style.setProperty("--p", p.toFixed(3));
+        text.textContent = mic.t("updates.downloading", { version: st.latest, pct: pct(p) });
+      } else if (s === "checking") text.textContent = mic.t("updates.checking");
+      else if (s === "verifying") text.textContent = mic.t("updates.verifying");
+      else if (s === "waiting") text.textContent = mic.t("updates.waiting");
+      else if (s === "installing") text.textContent = mic.t("updates.installing");
+      else if (s === "error") text.textContent = errText(st.error, {}, mic.t("updates.err.generic"));
+      else if (st.available) text.textContent = mic.t("updates.available", { version: st.latest });
+      else if (s === "skipped") text.textContent = mic.t("updates.skipped", { version: st.latest });
+      else if (s === "uptodate") text.textContent = mic.t("updates.uptodate") + (st.checked_at ? " · " + mic.t("updates.checked_at", { t: shortTime(st.checked_at) }) : "");
+      else text.textContent = st.checked_at ? mic.t("updates.checked_at", { t: shortTime(st.checked_at) }) : "";
+      dot.dataset.s = s === "error" ? "warn" : st.available || busy ? "warn" : s === "uptodate" ? "ok" : "off";
+      if (st.error && s !== "error" && st.available) dot.dataset.s = "warn";
+      notes.hidden = !(st.notes && (st.available || s === "skipped" || busy));
+      notesTitle.textContent = mic.t("updates.notes_title", { version: st.latest });
+      notesBody.textContent = st.notes || "";
+      if (busy) timer = setTimeout(async () => paint(await mic.call("update_status")), 700);
+    }
+    check.addEventListener("click", async () => { check.disabled = true; text.textContent = mic.t("updates.checking"); paint(await mic.call("update_check")); });
+    skip.addEventListener("click", async () => paint(await mic.call("update_skip")));
+    install.addEventListener("click", async () => { install.disabled = true; paint(await mic.call("update_install")); });
+    return { card: c.parentElement, paint };
+  }
+
   function aboutPane() {
     const pane = el("section", "pane");
     pane.id = "pane-about";
@@ -641,12 +799,36 @@
     pane.append(el("h2", "display", mic.t("settings.groups.about")));
     const hero = el("div", "card about-hero");
     hero.append(el("div", "word display", "Micnaga"));
+    const ver = el("div", "about-ver tnum");
+    hero.append(ver);
     const by = el("div", "by");
     const brand = el("span", "brand");
     brand.innerHTML = '<img class="on-dark" src="assets/bitnaga-on-dark.svg" alt="Bitnaga"><img class="on-light" src="assets/bitnaga-on-light.svg" alt="Bitnaga">';
     by.append(el("span", "", mic.t("settings.about.by")), brand);
     hero.append(by);
     pane.append(hero);
+    // «Novedades de la X»: once, right after an update (the notes of the version now running)
+    const news = group("");
+    const newsTitle = el("h4", "caps");
+    const newsBody = el("p", "upd-text");
+    news.classList.add("upd-news");
+    news.append(newsTitle, newsBody);
+    news.parentElement.hidden = true;
+    pane.append(news.parentElement);
+    const upd = updatesCard((st) => {
+      const b = st.build || {};
+      const bits = [mic.t("updates.version", { version: st.current })];
+      if (b.commit || b.date) bits.push(mic.t("updates.build", { commit: b.commit || "—", date: b.date || "—" }));
+      ver.textContent = bits.join(" · ");
+      const wn = st.whats_new;
+      news.parentElement.hidden = !(wn && wn.notes);
+      if (wn && wn.notes) {
+        newsTitle.textContent = mic.t("updates.whats_new_title", { version: wn.version });
+        newsBody.textContent = wn.notes;
+      }
+    });
+    pane.append(upd.card);
+    S.updates = upd;
     const c = group(mic.t("settings.cards.licenses"));
     c.classList.add("about");
     const ICON = { "settings.about.license": "feather", "settings.about.models": "cpu", "settings.about.privacy": "lock" };
@@ -656,6 +838,10 @@
       line.append(el("span", "", mic.t(k)));
       c.append(line);
     }
+    const updLine = el("p", "line");
+    updLine.innerHTML = mic.icon("refresh");
+    updLine.append(el("span", "", mic.t("settings.about.updates")));
+    c.append(updLine);
     pane.append(c.parentElement);
     return pane;
   }
@@ -677,6 +863,7 @@
       S.orig = clone(S.cur);
       $("savebar").dataset.dirty = "false";
       setMsg(mic.t("settings.saved"), "ok");
+      document.dispatchEvent(new CustomEvent("mic:saved"));   // the models card re-checks
       setTimeout(() => { if ($("savebar").dataset.dirty === "false") delete $("savebar").dataset.visible; }, 2200);
     } else {
       const detail = r && r.detail ? " (" + r.detail + ")" : "";
@@ -722,6 +909,17 @@
     let start = new URLSearchParams(location.search).get("tab");
     try { start = start || sessionStorage.getItem("mic.settings.tab"); } catch (e) { /* ignore */ }
     select(ids.includes(start) ? start : ids[0]);
+    // version + updates: just updated («Novedades», once) or an update under way -> «Acerca de»
+    mic.call("update_status").then((st) => {
+      if (!st || !S.updates) return;
+      S.updates.paint(st);
+      const wn = st.whats_new;
+      const active = ["downloading", "verifying", "waiting", "installing"].includes(st.state);
+      if ((wn && !wn.seen) || active) {
+        select("about");
+        if (wn && !wn.seen) mic.call("update_seen");
+      }
+    });
     $("save").addEventListener("click", save);
     $("discard").addEventListener("click", () => location.reload());
     document.addEventListener("keydown", (e) => {

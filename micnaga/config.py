@@ -72,8 +72,8 @@ class VadConfig:
 
 @dataclass
 class ProcessingConfig:
-    asr_engine: str = "parakeet"  # parakeet | whisper
-    whisper_model: str = "small"
+    asr_engine: str = "whisper"  # whisper | parakeet (DECISIONS §32)
+    whisper_model: str = "large-v3-turbo"  # large-v3-turbo | large-v3 | small
     hq_model: str = "large-v3"  # «Mejorar transcripcion»: large-v3 | large-v3-turbo
     hq_transcribe: bool = True  # boton «Mejorar transcripcion» en la biblioteca
     diarization: str = "diarize"  # unico motor: diarize (WeSpeaker ResNet34 + torch)
@@ -118,7 +118,14 @@ class StartupConfig:
     run_at_login: bool = True
 
 
-CONFIG_VERSION = 2
+@dataclass
+class UpdatesConfig:
+    # Comprobar versiones nuevas en GitHub (al minuto de arrancar y cada 12 h; ``micnaga.updates``).
+    # El estado (version omitida, ultima comprobacion) vive en ``updates.json``, no aqui.
+    auto_check: bool = True
+
+
+CONFIG_VERSION = 3
 
 
 @dataclass
@@ -168,6 +175,7 @@ class Config:
     startup: StartupConfig = field(default_factory=StartupConfig)
     meta: MetaConfig = field(default_factory=MetaConfig)
     secretaria: SecretariaConfig = field(default_factory=SecretariaConfig)
+    updates: UpdatesConfig = field(default_factory=UpdatesConfig)
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)
@@ -175,7 +183,8 @@ class Config:
     def validate(self) -> None:
         """Comprueba los valores enumerados y los rangos; lanza ``ConfigError``."""
         _check_choice("detection.on_timeout", self.detection.on_timeout, ("provisional", "discard"))
-        _check_choice("processing.asr_engine", self.processing.asr_engine, ("parakeet", "whisper"))
+        _check_choice("processing.asr_engine", self.processing.asr_engine, ASR_ENGINES)
+        _check_choice("processing.whisper_model", self.processing.whisper_model, WHISPER_MODELS)
         _check_choice("processing.diarization", self.processing.diarization, DIARIZERS)
         _check_choice("processing.aec", self.processing.aec, ("auto", "webrtc", "speex", "off"))
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
@@ -311,12 +320,22 @@ DIARIZERS: tuple[str, ...] = ("diarize",)
 
 _V1_GATES: dict[str, float] = {"min_duration_s": 180.0, "min_remote_speech_s": 30.0, "min_turns": 6}
 
+ASR_ENGINES: tuple[str, ...] = ("whisper", "parakeet")
+WHISPER_MODELS: tuple[str, ...] = ("large-v3-turbo", "large-v3", "small")
+"""Tamanos de Whisper con entrada en el manifiesto de modelos (``micnaga.models``)."""
+_V2_ASR: dict[str, str] = {"asr_engine": "parakeet", "whisper_model": "small"}
+"""Defectos de ASR hasta la v2 (Parakeet). La v3 pasa a Whisper large-v3-turbo (DECISIONS §32)."""
+
 
 def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
     """Sube un ``config.toml`` antiguo al formato actual.
 
     v1 -> v2: las compuertas por defecto pasan a ``30 s / 0 / 0`` (decide el usuario con el
-    popup). Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
+    popup). v2 -> v3: el motor ASR pasa de Parakeet a Whisper ``large-v3-turbo``; solo si los
+    dos valores de ASR seguian en el defecto antiguo (``parakeet`` + ``small``): quien eligio
+    Whisper, u otro tamano, se queda como estaba. Un ``whisper_model`` sin modelo en el manifiesto
+    (``tiny``, ``base``, ``medium``: la interfaz los ofrecia pero nunca funcionaron) pasa al de por
+    defecto. Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
     el usuario se respeta. ``save_config`` escribe todas las claves, asi que sin esto un fichero
     guardado una vez fijaria para siempre los defectos viejos.
     """
@@ -332,6 +351,14 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
                 if key in gates and gates[key] == old:
                     gates[key] = getattr(GatesConfig(), key)
     processing = out.get("processing")
+    if version < 3 and isinstance(processing, dict):
+        asr = {k: processing.get(k, old) for k, old in _V2_ASR.items()}
+        if asr == _V2_ASR:
+            processing["asr_engine"] = ProcessingConfig().asr_engine
+            processing["whisper_model"] = ProcessingConfig().whisper_model
+    size = processing.get("whisper_model") if isinstance(processing, dict) else None
+    if isinstance(processing, dict) and isinstance(size, str) and size not in WHISPER_MODELS:
+        processing["whisper_model"] = WHISPER_MODELS[0]  # tamano sin modelo descargable
     diar = processing.get("diarization") if isinstance(processing, dict) else None
     if isinstance(processing, dict) and diar is not None and diar not in DIARIZERS:
         processing["diarization"] = DIARIZERS[0]  # motores retirados -> el unico que queda

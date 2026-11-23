@@ -135,7 +135,7 @@ def test_tray_entry_sits_after_record_now_and_follows_the_state() -> None:
         for p in (False, True)
         for i in (False, True)
     }
-    assert sizes == {7}
+    assert sizes == {8}  # 8: «Actualizar a la versión X», siempre presente (oculta sin version)
 
 
 def test_tray_dispatch_uses_the_registered_action() -> None:

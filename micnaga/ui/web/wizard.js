@@ -36,6 +36,11 @@
     poll();
   }
 
+  function eta(s) {
+    if (s === null || s === undefined) return "";
+    return s >= 90 ? mic.t("wizard.eta_min", { n: Math.round(s / 60) }) : mic.t("wizard.eta_sec", { n: Math.max(1, Math.round(s)) });
+  }
+
   async function poll() {
     let st;
     try { st = await mic.call("download_status"); } catch (e) { return; }
@@ -43,25 +48,41 @@
     setProgress(st.overall || 0);
     const busy = (st.models || []).find((m) => m.state === "downloading" || m.state === "verifying");
     const total = st.models && st.models.length ? st.models.length : "?";
-    $("overall-text").textContent = busy && busy.total
-      ? mic.t("wizard.status", { pct: Math.round(st.overall * 100), size: mb(st.models.reduce((a, m) => a + (m.done || 0), 0)), n: st.verified, total })
-      : mic.t("wizard.verified", { n: st.verified, total });
+    $("overall-text").textContent = st.verifying
+      ? mic.t("wizard.verifying")
+      : busy && busy.total
+        ? mic.t("wizard.status", { pct: Math.round(st.overall * 100), size: st.done_text || mb(st.models.reduce((a, m) => a + (m.done || 0), 0)), n: st.verified, total })
+        : mic.t("wizard.verified", { n: st.verified, total });
+    // «1,2 GB de 1,7 GB · 11 MB/s · quedan 1 min» once the speed is known
+    $("overall-detail").textContent = st.state === "running" && st.speed_text && !st.verifying
+      ? mic.t("wizard.detail", { done: st.done_text, total: st.total_text, speed: st.speed_text, eta: eta(st.eta_s) })
+      : "";
+    $("cancel").hidden = st.state !== "running";
     if (st.state === "done") {
       clearInterval(S.timer);
       done();
     } else if (st.state === "failed") {
       clearInterval(S.timer);
-      fail(mic.t("wizard.failed", { detail: st.error || "" }));
+      const key = st.error_key || "";
+      const said = key ? mic.t(key, st.error_args || {}) : "";
+      fail(said && said !== key ? said : mic.t("wizard.failed", { detail: st.error || "" }));
+    } else if (st.state === "cancelled") {
+      clearInterval(S.timer);
+      fail(mic.t("wizard.cancelled"), true);
     }
   }
 
-  function fail(text) {
+  function fail(text, resume) {
     setState("failed");
+    $("cancel").hidden = true;
+    $("overall-detail").textContent = "";
     $("dl-error").textContent = text;
+    $("retry-label").textContent = resume ? mic.t("wizard.resume") : mic.t("wizard.retry");
     $("fail").hidden = false;
     $("retry").focus({ preventScroll: true });
   }
   $("retry").addEventListener("click", startDownload);
+  $("cancel").addEventListener("click", () => { $("cancel").hidden = true; mic.send("cancel_download"); });
 
   function done() {
     if (S.finished) return;

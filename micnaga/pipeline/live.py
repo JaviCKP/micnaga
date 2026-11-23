@@ -76,7 +76,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 LIVE_DIRNAME = "live"
-FORMAT = 1
+FORMAT = 2
+"""2: los bloques de ASR se transcriben con los silencios largos acortados (DECISIONS §32)."""
 SLICE_S = 60.0
 """Multiplo de los bloques de 60 s del paso alto de la etapa 4 (mismo filtrado)."""
 HP_MARGIN_S = 2.0
@@ -643,6 +644,13 @@ class LiveProcessor:
 
     # -------------------------------------------------------------- bloques de ASR
 
+    def speech_regions(self, probs: NDArray[np.float32], length: int) -> list[tuple[float, float]]:
+        """Tramos de voz de la pista (como la etapa 5) sobre las probabilidades acumuladas."""
+        from micnaga.pipeline.vad import region_params, regions_with
+
+        regions = regions_with(probs, length / self.sr, region_params(self.config))
+        return [(r.start, r.end) for r in regions]
+
     def asr_blocks(
         self, probs: NDArray[np.float32], length: int, final: bool
     ) -> list[tuple[float, float]]:
@@ -670,8 +678,17 @@ class LiveProcessor:
                 atomic_write_json(self.dir / "asr_engine.json", {"name": self._asr.name})
             return self._asr
 
-    def transcribe_blocks(self, track: str, blocks: Sequence[tuple[float, float]]) -> list[Word]:
-        """Transcribe (o reutiliza) cada bloque; devuelve las palabras unidas de la pista."""
+    def transcribe_blocks(
+        self,
+        track: str,
+        blocks: Sequence[tuple[float, float]],
+        regions: Sequence[tuple[float, float]] | None = None,
+    ) -> list[Word]:
+        """Transcribe (o reutiliza) cada bloque; devuelve las palabras unidas de la pista.
+
+        ``regions`` (tramos de voz) acortan los silencios largos del bloque como en la etapa 6
+        (``s06_asr.compact``): un bloque estable ya no cambia de tramos, asi que el resultado es
+        el mismo que el del lote."""
         from micnaga.pipeline.stages.s06_asr import MIN_CHUNK_S, transcribe_piece
 
         pieces: list[tuple[float, float, Sequence[Word]]] = []
@@ -691,7 +708,7 @@ class LiveProcessor:
                     i0, i1 = max(0, int(a * self.sr)), int(b * self.sr)
                     piece = self.read_conditioned(track, i0, i1)
                     t0 = time.perf_counter()
-                    words = transcribe_piece(self._asr_engine(), piece, a, self.sr)
+                    words = transcribe_piece(self._asr_engine(), piece, a, self.sr, regions)
                     self.stats.add_time("asr", time.perf_counter() - t0)
                 atomic_write_json(file, [w.to_dict() for w in words])
                 self.stats.blocks_done += 1
@@ -704,7 +721,10 @@ class LiveProcessor:
         """Transcribe (o reutiliza) los bloques estables de las dos pistas."""
         plan = {t: self.asr_blocks(probs[t], length, final) for t in TRACKS}
         (self.dir / "asr").mkdir(parents=True, exist_ok=True)
-        return {t: (plan[t], self.transcribe_blocks(t, plan[t])) for t in TRACKS}
+        return {
+            t: (plan[t], self.transcribe_blocks(t, plan[t], self.speech_regions(probs[t], length)))
+            for t in TRACKS
+        }
 
     # -------------------------------------------------------------- un paso en vivo
 
