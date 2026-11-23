@@ -14,7 +14,6 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import logging
-import math
 import sys
 import time
 from collections.abc import Callable
@@ -46,6 +45,7 @@ SPI_GETCLIENTAREAANIMATION = 0x1042
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMSBT_NONE = 1  # sin fondo de sistema
 DWMSBT_MAINWINDOW = 2  # Mica
 DWMSBT_TRANSIENTWINDOW = 3  # acrilico
 MICA_MIN_BUILD = 22621  # Windows 11 22H2
@@ -114,19 +114,19 @@ class Win32:
     def set_foreground(self, hwnd: int) -> bool:
         return bool(ctypes.windll.user32.SetForegroundWindow(wintypes.HWND(hwnd)))
 
-    def set_window_region(self, hwnd: int, rect: Rect | None) -> bool:
-        """``SetWindowRgn`` con un rectangulo (coordenadas de la ventana) o ``None`` (sin recorte).
+    def set_window_region(self, hwnd: int, rect: Rect | None, radius: int = 0) -> bool:
+        """``SetWindowRgn`` con un rectangulo (coordenadas de la ventana, esquinas redondeadas de
+        ``radius`` px fisicos) o ``None`` (sin recorte).
 
-        Recorta pintado Y clics: fuera del rectangulo los clics llegan a la ventana de debajo."""
-        user32 = ctypes.windll.user32
+        Recorta pintado Y clics: fuera de la region los clics llegan a la ventana de debajo.
+        OJO: NO recorta el fondo de sistema de DWM (Mica/acrilico), ver ``clear_backdrop``."""
+        user32, gdi32 = _user32(), _gdi32()
         if rect is None:
-            return bool(user32.SetWindowRgn(wintypes.HWND(hwnd), None, True))
-        x, y, w, h = rect
-        gdi32 = ctypes.windll.gdi32
-        rgn = gdi32.CreateRectRgn(x, y, x + w, y + h)
+            return bool(user32.SetWindowRgn(hwnd, None, True))
+        rgn = create_region(rect, radius)
         if not rgn:
             return False
-        if user32.SetWindowRgn(wintypes.HWND(hwnd), rgn, True):
+        if user32.SetWindowRgn(hwnd, rgn, True):
             return True  # el sistema es ahora el dueno de la region
         gdi32.DeleteObject(rgn)
         return False
@@ -218,6 +218,50 @@ class Win32:
         return int(sys.getwindowsversion().build)  # type: ignore[attr-defined,unused-ignore]
 
 
+_libs: dict[str, ctypes.WinDLL] = {}
+
+
+def _lib(name: str) -> ctypes.WinDLL:
+    """Copia propia de la DLL: los ``argtypes`` de aqui no tocan ``ctypes.windll`` (global)."""
+    lib = _libs.get(name)
+    if lib is None:
+        lib = _libs[name] = ctypes.WinDLL(name, use_last_error=True)
+        if name == "gdi32":
+            lib.CreateRectRgn.argtypes = (ctypes.c_int,) * 4
+            lib.CreateRectRgn.restype = wintypes.HRGN
+            lib.CreateRoundRectRgn.argtypes = (ctypes.c_int,) * 6
+            lib.CreateRoundRectRgn.restype = wintypes.HRGN
+            lib.DeleteObject.argtypes = (wintypes.HGDIOBJ,)
+            lib.DeleteObject.restype = wintypes.BOOL
+            lib.PtInRegion.argtypes = (wintypes.HRGN, ctypes.c_int, ctypes.c_int)
+            lib.PtInRegion.restype = wintypes.BOOL
+        elif name == "user32":
+            lib.SetWindowRgn.argtypes = (wintypes.HWND, wintypes.HRGN, wintypes.BOOL)
+            lib.SetWindowRgn.restype = ctypes.c_int
+    return lib
+
+
+def _gdi32() -> ctypes.WinDLL:
+    return _lib("gdi32")
+
+
+def _user32() -> ctypes.WinDLL:
+    return _lib("user32")
+
+
+def create_region(rect: Rect, radius: int = 0) -> int | None:
+    """HRGN de ``rect`` (``x, y, ancho, alto``). Con esquinas redondeadas ``CreateRoundRectRgn``
+    se queda 1 px corto por la derecha y por abajo (medido): se compensa con +1."""
+    x, y, w, h = rect
+    gdi32 = _gdi32()
+    if radius > 0:
+        d = 2 * radius
+        rgn = gdi32.CreateRoundRectRgn(x, y, x + w + 1, y + h + 1, d, d)
+    else:
+        rgn = gdi32.CreateRectRgn(x, y, x + w, y + h)
+    return int(rgn) if rgn else None
+
+
 _default: Win32 | None = None
 
 
@@ -268,9 +312,9 @@ def place(hwnd: int, rect: Rect, api: Win32 | None = None, *, topmost: bool = Tr
     )
 
 
-def set_region(hwnd: int, rect: Rect | None, api: Win32 | None = None) -> bool:
-    """Zona visible y clicable de la ventana (``None`` = toda)."""
-    return (api or default_api()).set_window_region(hwnd, rect)
+def set_region(hwnd: int, rect: Rect | None, api: Win32 | None = None, *, radius: int = 0) -> bool:
+    """Zona visible y clicable de la ventana (``None`` = toda), con esquinas de ``radius`` px."""
+    return (api or default_api()).set_window_region(hwnd, rect, radius)
 
 
 def is_topmost(hwnd: int, api: Win32 | None = None) -> bool:
@@ -283,11 +327,10 @@ POPUP_SIZE = (372, 112)
 PILL_SIZE = (200, 40)
 PILL_HOVER_WIDTH = 296
 CARD_SIZE = POPUP_SIZE
-STAGE_SIZE = (420, 112)
-"""Lienzo de la superficie unica (pastilla <-> tarjeta): cabe la tarjeta (372 x 112) y la
-pastilla ancha con titulo (420). La ventana tiene siempre este tamano; lo que se ve y se pulsa
-lo marca la region (``SetWindowRgn``)."""
 UNDO_WIDTH = 236
+SURFACE_RADIUS = 6
+"""``border-radius`` (px CSS) de la pastilla y de la tarjeta (``pill.css``): la region de la
+ventana (que mide la forma) lleva las mismas esquinas, escaladas al DPI."""
 POPUP_MARGIN = 24
 PILL_TOP_MARGIN = 12
 
@@ -318,35 +361,24 @@ def pill_rect(
     return (left + (right - left - w) // 2, top + _px(top_margin, mon.scale), w, h)
 
 
-def stage_rect(pill: Rect, mon: MonitorInfo, size: tuple[int, int] = STAGE_SIZE) -> Rect:
-    """Lienzo centrado sobre la pastilla y pegado a su borde superior, dentro del area visible."""
+def shape_rect(
+    pill: Rect,
+    size: tuple[int, int],
+    mon: MonitorInfo,
+    *,
+    anchor: Literal["center", "left"] = "center",
+) -> Rect:
+    """Ventana de la superficie con la forma ``size`` (px CSS: pastilla, pastilla ancha, aviso o
+    tarjeta): centrada en la pastilla (o desde su borde izquierdo), pegada a su borde superior y
+    dentro del area de trabajo. ``(x, y, w, h)`` fisicos."""
     w, h = _px(size[0], mon.scale), _px(size[1], mon.scale)
-    x = pill[0] + pill[2] // 2 - w // 2
+    x = pill[0] if anchor == "left" else pill[0] + pill[2] // 2 - w // 2
     return clamp_to_work_area((x, pill[1], w, h), mon.work)
 
 
-def stage_layout(
-    pill: Rect, stage: Rect, scale: float, size: tuple[int, int] = STAGE_SIZE
-) -> dict[str, float]:
-    """Donde va cada forma dentro del lienzo, en px CSS: centro x y borde superior de la
-    pastilla (``px``, ``py``) e izquierda de la tarjeta (``cardL``, centrada en la pastilla)."""
-    px = (pill[0] + pill[2] / 2 - stage[0]) / scale
-    py = max(0.0, min(size[1] - PILL_SIZE[1], (pill[1] - stage[1]) / scale))
-    card_l = max(0.0, min(size[0] - CARD_SIZE[0], px - CARD_SIZE[0] / 2))
-    return {"px": round(px, 2), "py": round(py, 2), "cardL": round(card_l, 2)}
-
-
-def css_region(
-    box: tuple[float, float, float, float], scale: float, size: tuple[int, int] = STAGE_SIZE
-) -> Rect:
-    """Rectangulo CSS ``(izq, arriba, ancho, alto)`` del lienzo -> region en pixeles fisicos
-    (redondeada hacia fuera y recortada al lienzo)."""
-    left, top, w, h = box
-    x0 = max(0, math.floor(max(0.0, left) * scale))
-    y0 = max(0, math.floor(max(0.0, top) * scale))
-    x1 = min(_px(size[0], scale), math.ceil((left + w) * scale))
-    y1 = min(_px(size[1], scale), math.ceil((top + h) * scale))
-    return (x0, y0, max(0, x1 - x0), max(0, y1 - y0))
+def region_radius(scale: float) -> int:
+    """Radio (px fisicos) de las esquinas de la region para ``SURFACE_RADIUS`` CSS."""
+    return max(0, _px(SURFACE_RADIUS, scale))
 
 
 def clamp_to_work_area(rect: Rect, work: Rect) -> Rect:
@@ -505,9 +537,20 @@ def acrylic_supported(api: Win32 | None = None) -> bool:
     return (api or default_api()).windows_build() >= MICA_MIN_BUILD
 
 
-def make_overlay_transparent(hwnd: int, api: Win32 | None = None) -> bool:
-    """Marco extendido al cliente (junto con ``BackColor = Black`` del formulario)."""
-    return (api or default_api()).extend_frame(hwnd)
+def clear_backdrop(hwnd: int, api: Win32 | None = None) -> bool:
+    """Quita el fondo de sistema de DWM (``DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_NONE``).
+
+    pywebview (``BrowserForm.update_title_bar_theme``) pone Mica (``DWMSBT_MAINWINDOW``) en TODA
+    ventana cuando las apps usan el tema oscuro. Con el marco extendido al cliente (la antigua
+    superficie transparente) DWM pintaba ese Mica (gris liso: la ventana nunca esta activa) en el
+    rectangulo ENTERO de la ventana sin que la region lo recortase: era el recuadro gris (medido,
+    DECISIONS §29). La superficie ya es opaca y sin marco extendido; se quita igualmente. Antes
+    de Windows 11 22H2 el atributo no existe (no hay Mica que quitar): ``True``.
+    """
+    w = api or default_api()
+    if w.windows_build() < MICA_MIN_BUILD:
+        return True
+    return w.dwm_set(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, DWMSBT_NONE)
 
 
 def ensure_dpi_aware() -> None:

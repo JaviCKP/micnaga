@@ -51,7 +51,10 @@ class SurfaceSim(FakeWindow):
         h = self.host
         if h is None:
             return
-        if script in ("micnaga.popup.end()", "micnaga.popup.dismiss()") or script.startswith(
+        if script.startswith(("micnaga.popup.show(", "micnaga.popup.showEnd(")):
+            # el JS funde la pastilla y pide la talla de tarjeta (sin efecto si ya la tiene)
+            self.pending.append(lambda: h.handle_surface_resize("card"))
+        elif script in ("micnaga.popup.end()", "micnaga.popup.dismiss()") or script.startswith(
             "micnaga.popup.endClose("
         ):
             kind = "fading" if "end" in script else "leaving"

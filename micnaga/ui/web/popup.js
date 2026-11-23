@@ -3,7 +3,7 @@
  * and gets events back through api.popup_* (see micnaga/ui/bridge.py:PopupApi).
  *
  *  show      -> rise 16 px + fade, 220 ms
- *  Grabar    -> check for 300 ms, then the card shrinks into the pill (400 ms)
+ *  Grabar    -> check for 300 ms, then the card fades back to the pill (no morph, pill.js)
  *  Ahora no  -> down + fade, 180 ms
  *  timeout   -> morphs into the pill labelled «provisional» (or leaves, if on_timeout=discard)
  *  end       -> fade, 180 ms (meeting ended before an answer)

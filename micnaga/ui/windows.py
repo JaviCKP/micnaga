@@ -68,8 +68,9 @@ class UiWindow(Protocol):
 
     def rect(self) -> Rect: ...
 
-    def set_region(self, rect: Rect | None) -> None:
-        """Zona visible y clicable (coordenadas de la ventana, px fisicos); ``None`` = toda."""
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
+        """Zona visible y clicable (coordenadas de la ventana, px fisicos, esquinas de
+        ``radius`` px); ``None`` = toda. ``False`` si Windows no la aplico."""
         ...
 
     def destroy(self) -> None: ...
@@ -82,9 +83,9 @@ class UiWindow(Protocol):
 
     def pick_folder(self, current: str) -> str | None: ...
 
-    def make_transparent(self) -> bool:
-        """Transparencia real de una ventana sin marco (popup/pastilla): formulario negro +
-        marco DWM extendido al cliente. ``False`` si no se pudo."""
+    def prepare_overlay(self) -> bool:
+        """Ventana superpuesta (pastilla/tarjeta) OPACA: sin fondo de sistema de DWM (Mica, que
+        pywebview pone con el tema oscuro). Idempotente. ``False`` si no se pudo."""
         ...
 
 
@@ -109,11 +110,20 @@ class PywebviewWindow:
 
     @property
     def hwnd(self) -> int:
+        """El ``Handle`` ACTUAL del formulario (WinForms puede recrearlo: un hwnd guardado
+        apuntaria a una ventana muerta). Nunca lo crea: ``Handle`` sin crear lo crearia en este
+        hilo, que no es el de la interfaz."""
+        try:
+            native = self._win.native
+            if native is not None and native.IsHandleCreated:
+                handle = int(native.Handle.ToInt64())
+                if handle:
+                    self._hwnd = handle
+                    return handle
+        except Exception:
+            log.debug("no native handle for %s", self.key, exc_info=True)
         if not self._hwnd:
-            try:
-                self._hwnd = int(self._win.native.Handle.ToInt32())
-            except Exception:
-                self._hwnd = self._w32.find_window(self._spec.title)
+            self._hwnd = self._w32.find_window(self._spec.title)
         return self._hwnd
 
     def wait_loaded(self, timeout: float = 10.0) -> bool:
@@ -145,9 +155,9 @@ class PywebviewWindow:
     def rect(self) -> Rect:
         return self._w32.get_window_rect(self.hwnd)
 
-    def set_region(self, rect: Rect | None) -> None:
-        if self.hwnd:
-            winapi.set_region(self.hwnd, rect, self._w32)
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
+        hwnd = self.hwnd
+        return bool(hwnd) and winapi.set_region(hwnd, rect, self._w32, radius=radius)
 
     def destroy(self) -> None:
         try:
@@ -165,31 +175,9 @@ class PywebviewWindow:
         with contextlib.suppress(Exception):
             self._win.set_title(title)
 
-    def make_transparent(self) -> bool:  # pragma: no cover - necesita una ventana real
-        """``BackColor = Black`` en el formulario WinForms + ``DwmExtendFrameIntoClientArea``.
-
-        Sin esto pywebview deja el recuadro gris del formulario detras del WebView2 transparente.
-        """
-        ok = False
-        try:
-            native = self._win.native
-            from System import Action  # type: ignore[import-not-found,unused-ignore]
-            from System.Drawing import Color  # type: ignore[import-not-found,unused-ignore]
-
-            def set_back() -> None:
-                native.BackColor = Color.Black
-
-            if getattr(native, "InvokeRequired", False):
-                native.Invoke(Action(set_back))
-            else:
-                set_back()
-            ok = True
-        except Exception:
-            log.debug("BackColor not set on %s", self.key, exc_info=True)
+    def prepare_overlay(self) -> bool:
         hwnd = self.hwnd
-        if hwnd:
-            ok = winapi.make_overlay_transparent(hwnd, self._w32) and ok
-        return ok
+        return bool(hwnd) and winapi.clear_backdrop(hwnd, self._w32)
 
     def pick_folder(self, current: str) -> str | None:  # pragma: no cover - dialogo nativo
         import webview
@@ -220,7 +208,8 @@ class PywebviewFactory:
             resizable=spec.resizable,
             frameless=spec.frameless,
             easy_drag=False,  # la pastilla usa .pywebview-drag-region
-            shadow=not spec.transparent,
+            # sin sombra en la pastilla/tarjeta: pywebview la hace extendiendo el marco de DWM
+            shadow=not spec.transparent and not spec.overlay,
             focus=spec.focus,  # focus=False => WS_EX_NOACTIVATE (pywebview 6)
             hidden=spec.hidden,
             on_top=spec.on_top,
@@ -261,6 +250,9 @@ class FakeWindow:
         self.alive = True
         self.current_rect: Rect = (0, 0, spec.width, spec.height)
         self.region: Rect | None = None
+        self.region_radius = 0
+        self.region_ok = True
+        self.overlay_ok = True
         self._closed: list[Callable[[], None]] = []
         self._moved: list[Callable[[int, int], None]] = []
 
@@ -293,9 +285,11 @@ class FakeWindow:
         x, y, w, h = self.current_rect
         return (x, y, x + w, y + h)
 
-    def set_region(self, rect: Rect | None) -> None:
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
         self.region = rect
+        self.region_radius = radius
         self.log.append(("region", rect))
+        return self.region_ok
 
     def destroy(self) -> None:
         self.alive = False
@@ -313,9 +307,9 @@ class FakeWindow:
     def set_title(self, title: str) -> None:
         self.log.append(("title", title))
 
-    def make_transparent(self) -> bool:
-        self.log.append(("make_transparent", None))
-        return True
+    def prepare_overlay(self) -> bool:
+        self.log.append(("prepare_overlay", None))
+        return self.overlay_ok
 
     def pick_folder(self, current: str) -> str | None:
         self.log.append(("pick_folder", current))
@@ -326,6 +320,8 @@ class FakeWindow:
         return [str(a) for k, a in self.log if k == "js"]
 
     def fire_moved(self, x: int, y: int) -> None:
+        """El usuario arrastro la ventana: su esquina queda en ``x, y`` (px fisicos)."""
+        self.current_rect = (x, y, *self.current_rect[2:])
         for cb in self._moved:
             cb(x, y)
 

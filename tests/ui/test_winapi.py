@@ -172,3 +172,51 @@ def test_real_system_queries_are_read_only_and_sane() -> None:
     assert isinstance(winapi.do_not_disturb(api), bool)
     mon = api.monitor_info(None)
     assert mon.scale > 0 and mon.work[2] > mon.work[0]
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+def test_rounded_region_covers_the_whole_window_minus_the_corners(scale: float) -> None:
+    """``CreateRoundRectRgn`` se queda 1 px corto por la derecha y por abajo: ``create_region``
+    lo compensa. La region llega justo hasta el borde de la ventana (ni falta ni sobra)."""
+    import ctypes
+
+    w, h = round(200 * scale), round(40 * scale)
+    radius = winapi.region_radius(scale)
+    rgn = winapi.create_region((0, 0, w, h), radius)
+    assert rgn
+    gdi = winapi._gdi32()
+    try:
+        inside = [(w - 1, h // 2), (w // 2, h - 1), (0, h // 2), (w // 2, 0), (radius, radius)]
+        outside = [(w, h // 2), (w // 2, h), (0, 0), (w - 1, h - 1), (w - 1, 0), (0, h - 1)]
+        assert all(gdi.PtInRegion(rgn, x, y) for x, y in inside)
+        assert not any(gdi.PtInRegion(rgn, x, y) for x, y in outside)
+    finally:
+        gdi.DeleteObject(ctypes.c_void_p(rgn))
+
+
+def test_clear_backdrop_removes_mica_on_windows_11_only() -> None:
+    w = FakeWin32()
+    assert winapi.clear_backdrop(9, w)
+    assert w.dwm == [(9, winapi.DWMWA_SYSTEMBACKDROP_TYPE, winapi.DWMSBT_NONE)]
+    w = FakeWin32()
+    w.build = 19045  # Windows 10: no hay Mica que quitar
+    assert winapi.clear_backdrop(9, w) and w.dwm == []
+    w = FakeWin32()
+    w.dwm_ok = False
+    assert not winapi.clear_backdrop(9, w)
+
+
+@pytest.mark.parametrize(
+    ("scale", "pill", "card"),
+    [
+        (1.0, (860, 12, 200, 40), (774, 12, 372, 112)),
+        (1.25, (835, 15, 250, 50), (728, 15, 465, 140)),
+        (1.5, (810, 18, 300, 60), (681, 18, 558, 168)),
+    ],
+)
+def test_shape_rects_scale_with_dpi(
+    scale: float, pill: tuple[int, int, int, int], card: tuple[int, int, int, int]
+) -> None:
+    mon = winapi.MonitorInfo((0, 0, 1920, 1040), scale)
+    assert winapi.pill_rect(mon) == pill
+    assert winapi.shape_rect(pill, winapi.CARD_SIZE, mon) == card

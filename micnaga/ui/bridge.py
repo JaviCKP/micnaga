@@ -182,6 +182,22 @@ class SurfaceApi(PillApi, PopupApi):
             if handler is not None:
                 handler(phase)
 
+    def surface_resize(self, kind: str) -> None:
+        """El JS ya oculto el contenido: la ventana puede tomar la talla de ``kind``."""
+        handler = getattr(self._c, "handle_surface_resize", None)
+        if kind == "card" and handler is not None:
+            handler(kind)
+
+    def surface_metrics(self, width: float, height: float, dpr: float) -> None:
+        """Tamano CSS de la pagina y ``devicePixelRatio`` (diagnostico de DPI, al log)."""
+        handler = getattr(self._c, "handle_surface_metrics", None)
+        try:
+            values = (float(width), float(height), float(dpr))
+        except (TypeError, ValueError):
+            return
+        if handler is not None:
+            handler(*values)
+
 
 # ============================================================================ secretaria
 

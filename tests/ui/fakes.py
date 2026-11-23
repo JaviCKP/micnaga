@@ -21,6 +21,7 @@ class FakeWin32(winapi.Win32):
         self.dwm: list[tuple[int, int, int]] = []
         self.dwm_ok = True
         self.foreground: list[int] = []
+        self.dpi = 120
 
     def get_ex_style(self, hwnd: int) -> int:
         return self.styles.get(hwnd, 0)
@@ -43,8 +44,8 @@ class FakeWin32(winapi.Win32):
     def get_window_rect(self, hwnd: int) -> Rect:
         return self.rects.get(hwnd, (0, 0, 0, 0))
 
-    def set_window_region(self, hwnd: int, rect: Rect | None) -> bool:
-        self.calls.append(("set_window_region", (hwnd, rect)))
+    def set_window_region(self, hwnd: int, rect: Rect | None, radius: int = 0) -> bool:
+        self.calls.append(("set_window_region", (hwnd, rect, radius)))
         return True
 
     def find_window(self, title: str) -> int:
@@ -55,7 +56,7 @@ class FakeWin32(winapi.Win32):
         return True
 
     def window_dpi(self, hwnd: int) -> int:
-        return 120
+        return self.dpi
 
     def monitor_info(self, hint: MonitorHint) -> winapi.MonitorInfo:
         self.calls.append(("monitor_info", (hint,)))
