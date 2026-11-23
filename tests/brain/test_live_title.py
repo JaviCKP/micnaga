@@ -25,6 +25,7 @@ class Rig:
     def __init__(self, path: Path | None, *, enabled: bool = True) -> None:
         self.cfg = Config()
         self.cfg.secretaria.enabled = enabled
+        self.cfg.processing.live = False  # sin vivo: transcribe el hijo (``asr``)
         self.path = path
         self.titles: list[str] = []
         self.asr_calls = 0
@@ -97,3 +98,31 @@ def test_child_command_runs_this_package(tmp_path: Path) -> None:
     ]
     env = lt.child_env(2)
     assert env["OMP_NUM_THREADS"] == "2" and env["PYTHONPATH"]
+
+
+def live_block(s: Path, track: str, a_ms: int, b_ms: int, text: str) -> None:
+    folder = paths.work_dir(s) / "live" / "asr"
+    folder.mkdir(parents=True, exist_ok=True)
+    data = [{"w": w, "s": 0.0, "e": 0.1, "p": 1.0} for w in text.split(" ")]
+    (folder / f"{track}_{a_ms}_{b_ms}.json").write_text(json.dumps(data), encoding="utf-8")
+
+
+def test_with_live_processing_reuses_live_text_and_never_loads_a_second_model(
+    tmp_path: Path,
+) -> None:
+    s = session(tmp_path, 130.0, confirmed=True)
+    rig = Rig(s)
+    rig.cfg.processing.live = True
+    asked: list[str] = []
+    rig.titler._ask_title = lambda text: asked.append(text) or "Presupuesto CRM"  # type: ignore[method-assign]
+    assert rig.titler.check() is None  # el vivo aun no tiene texto: espera, sin ASR propio
+    assert rig.asr_calls == 0
+    live_block(s, "mic", 1000, 9000, "hola Carlos revisamos el presupuesto del CRM")
+    live_block(s, "system", 9500, 20000, "si la clinica quiere tres sedes conectadas")
+    live_block(s, "mic", 95000, 99000, "fuera")  # empieza despues de SECONDS: no entra
+    assert rig.titler.check() == "Presupuesto CRM"
+    assert rig.asr_calls == 0
+    assert asked == [
+        "[00:01] Yo: hola Carlos revisamos el presupuesto del CRM\n"
+        "[00:09] Otros: si la clinica quiere tres sedes conectadas"
+    ]

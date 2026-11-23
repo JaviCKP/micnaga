@@ -4,9 +4,11 @@ Se aparta de SPEC §1.2 («nada de IA en directo»), con estas salvaguardas:
 
 * una sola vez por grabacion, solo si esta confirmada (``capture.json -> confirmed``) y
   ``secretaria.enabled`` y ``secretaria.live_title``;
-* la transcripcion de los primeros ``SECONDS`` s (ya escritos en disco) corre en **otro
-  proceso** (``micnaga brain live-asr``) con prioridad BELOW_NORMAL y ``THREADS`` hilos; la
-  captura (otro hilo del proceso de la app) no comparte CPU con modelos;
+* el texto de los primeros ``SECONDS`` s sale de la **transcripcion en vivo** que ya esta
+  en disco (``work/live/asr/``): sin cargar un segundo modelo (Whisper turbo pesa ~2 GB). Con
+  el vivo activo se espera a que haya texto (hasta ``GIVE_UP_S``); solo sin vivo se transcribe
+  en **otro proceso** (``micnaga brain live-asr``) con prioridad BELOW_NORMAL y ``THREADS``
+  hilos; la captura (otro hilo del proceso de la app) no comparte CPU con modelos;
 * se salta con el ahorro de bateria activo o la CPU ocupada (> ``CPU_BUSY`` %), reintentando
   hasta ``GIVE_UP_S``;
 * si algo falla no pasa nada: queda el titulo de hoy.
@@ -46,6 +48,38 @@ CHILD_TIMEOUT_S = 180.0
 BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
 CREATE_NO_WINDOW = 0x08000000
 BYTES_PER_S = 16000 * 2
+
+
+def live_text(session: Path, seconds: float = SECONDS) -> str:
+    """Texto de los bloques de la transcripcion en vivo que empiezan antes de ``seconds``.
+
+    Los bloques son ``work/live/asr/<pista>_<ini_ms>_<fin_ms>.json`` (listas de palabras). Vacio
+    si no hay vivo o aun no hay bloques estables."""
+    folder = paths.work_dir(session) / "live" / "asr"
+    pieces: list[tuple[float, str, str]] = []
+    try:
+        files = sorted(folder.glob("*.json"))
+    except OSError:
+        return ""
+    for file in files:
+        track, _, rest = file.stem.partition("_")
+        start_ms = rest.split("_", 1)[0]
+        if track not in ("mic", "system") or not start_ms.isdigit():
+            continue
+        start = int(start_ms) / 1000.0
+        if start >= seconds:
+            continue
+        try:
+            words = json.loads(file.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        text = " ".join(str(w.get("w", "")).strip() for w in words if isinstance(w, dict))
+        text = " ".join(text.split())
+        if text:
+            pieces.append((start, "Yo" if track == "mic" else "Otros", text))
+    pieces.sort()
+    lines = [f"[{int(a) // 60:02d}:{int(a) % 60:02d}] {who}: {t}" for a, who, t in pieces]
+    return "\n".join(lines)
 
 
 def recorded_seconds(session: Path) -> float:
@@ -284,8 +318,11 @@ class LiveTitler:
         if self._battery_saver() or self._busy():
             log.info("live title postponed (battery saver or busy CPU)")
             return None
+        live = live_text(session) if self._config().processing.live else ""
+        if self._config().processing.live and len(live) < 40:
+            return None  # el vivo aun no tiene texto: se espera (sin cargar otro modelo)
         self._done.add(session.name)
-        stats = self._asr(session)
+        stats = {"text": live, "source": "live"} if live else self._asr(session)
         self.last_stats = {k: v for k, v in stats.items() if k != "text"}
         log.info("live title ASR: %s", self.last_stats)
         text = str(stats.get("text") or "").strip()
