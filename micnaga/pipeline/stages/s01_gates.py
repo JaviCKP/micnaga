@@ -6,7 +6,9 @@ las tres compuertas (``micnaga.gates``; la compuerta 3 se calcula con el micro *
 el eco, de ahi la sombra de eco de ``gates.turn_spells``). Si no pasa se lanza
 ``SessionDiscarded``: el ``runner`` aparta la carpeta en «Descartadas» (``micnaga.holding``) y
 anota solo fecha + motivo. Con ``gates.require_confirmed`` (defecto) una sesion sin confirmar
-no se transcribe nunca.
+no se transcribe nunca. Una reunion presencial (``extra.in_person`` o su marca en la carpeta,
+``capture.session.is_in_person``) cuenta como confirmada: la empezo el usuario a proposito y no
+hay voz remota ni turnos que medir; solo se exige la duracion.
 
 Salida: ``work/01_gates.json``.
 """
@@ -16,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from micnaga import gates
+from micnaga.capture.session import is_in_person
 from micnaga.pipeline.stages.base import (
     SessionDiscarded,
     StageContext,
@@ -30,7 +33,8 @@ USER_RESTORED = "recuperada por el usuario"
 
 def run(ctx: StageContext) -> StageResult:
     cfg = ctx.config.gates
-    confirmed = ctx.meta.confirmed
+    in_person = is_in_person(ctx.session, ctx.meta.extra)
+    confirmed = ctx.meta.confirmed or in_person
     if cfg.require_confirmed and not confirmed:
         # Red de seguridad: sin «Si» del usuario nunca se transcribe (se aparta, DECISIONS §18).
         ctx.write_json(OUTPUT, {"passed": False, "reason": UNCONFIRMED, "confirmed": False})
@@ -72,6 +76,7 @@ def run(ctx: StageContext) -> StageResult:
             "reason": result.reason,
             "gate": result.gate,
             "confirmed": confirmed,
+            "in_person": in_person,
             "metrics": metrics.to_dict(),
         },
     )

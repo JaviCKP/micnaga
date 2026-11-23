@@ -43,10 +43,13 @@ from micnaga.integration.library_ops import AppLibraryOps
 from micnaga.integration.ports import RecorderFactory, UiPort
 from micnaga.store.db import Database, open_database
 from micnaga.ui.contracts import (
+    ACTION_RECORD_IN_PERSON,
     Diagnostic,
     LibraryOps,
     ModelProgress,
     UiCallbacks,
+    app_action,
+    set_app_action,
 )
 
 if TYPE_CHECKING:
@@ -278,6 +281,9 @@ class Application:
         self.ui.set_levels_provider(self._levels)
         self.watcher = watcher_factory(config, self.controller, self._on_watcher_state)
         self.controller.bind_watcher(self.watcher)
+        # «Grabar reunión presencial» (bandeja y biblioteca): ``host.py`` arma esas superficies
+        # con un juego fijo de callbacks, asi que la accion va por el registro de ``contracts``.
+        set_app_action(ACTION_RECORD_IN_PERSON, self._record_in_person)
         self.held_ops = AppHeldOps(self)
         set_held = getattr(self.ui, "set_held_ops", None)
         if callable(set_held):
@@ -403,6 +409,8 @@ class Application:
                 return
             self._stopped.set()
         log.info("shutting down (reason: %s)", reason)
+        if app_action(ACTION_RECORD_IN_PERSON) == self._record_in_person:
+            set_app_action(ACTION_RECORD_IN_PERSON, None)
         for step in (
             self.hotkeys.stop,
             self.watcher.stop,
@@ -449,6 +457,12 @@ class Application:
 
     def _marker(self) -> None:
         self.controller.add_marker()
+
+    def _record_in_person(self) -> bool:
+        """«Grabar reunión presencial»: ``True`` si empezo a grabar (``False``: ya se grababa)."""
+        if self._stopped.is_set():
+            return False
+        return bool(self.watcher.record_in_person())
 
     def _on_popup_decision(self, decision: str) -> None:
         # La cuenta atras es la del vigilante: el "timeout" de la UI se ignora.

@@ -28,9 +28,10 @@ from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
 from micnaga.store.locate import meeting_dir
-from micnaga.types import SPEAKER_ME, Transcript
+from micnaga.types import SPEAKER_ME, Transcript, is_mic_speaker
 from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
+    ACTION_RECORD_IN_PERSON,
     BrainPort,
     ConfigStore,
     Diagnostic,
@@ -42,6 +43,7 @@ from micnaga.ui.contracts import (
     ModelProgress,
     UiCallbacks,
     Voiceprint,
+    app_action,
     normalize_levels,
 )
 from micnaga.ui.media import valid_folder_name
@@ -323,6 +325,7 @@ class LibraryApi:
             has_held=self._held is not None,
             secretaria=self._brain is not None,
             hq=cfg.processing.hq_transcribe and self._ops is not None,
+            in_person=app_action(ACTION_RECORD_IN_PERSON) is not None,
         )
 
     def open_settings(self) -> Result:
@@ -335,6 +338,19 @@ class LibraryApi:
             log.exception("open_settings failed")
             return fail("library.err.not_found")
         return ok()
+
+    def record_in_person(self) -> Result:
+        """«Grabar reunión presencial» desde la biblioteca. ``started`` es ``False`` si ya habia
+        una grabacion en marcha (no se hace nada)."""
+        action = app_action(ACTION_RECORD_IN_PERSON)
+        if action is None:
+            return fail("library.err.not_found")
+        try:
+            started = action()
+        except Exception:
+            log.exception("record_in_person failed")
+            return fail("library.err.op_failed")
+        return ok(started=started is not False)
 
     def settings_call(self, name: str, args: list[Any] | None = None) -> Any:
         """Ajustes embebido en esta ventana: delega en ``SettingsApi`` (solo metodos publicos)."""
@@ -518,7 +534,9 @@ class LibraryApi:
 
     def merge_speakers(self, folder: str, keep_id: str, merge_id: str) -> Result:
         keep_id, merge_id = str(keep_id), str(merge_id)
-        if keep_id == merge_id or SPEAKER_ME in (keep_id, merge_id):
+        # «Yo» nunca se funde en otro; solo una persona de la sala (mismo micro) se funde en «Yo»
+        into_me = keep_id == SPEAKER_ME and is_mic_speaker(merge_id)
+        if keep_id == merge_id or merge_id == SPEAKER_ME or (keep_id == SPEAKER_ME and not into_me):
             return fail("library.err.cannot_merge")
         guard = self._guard(folder, keep_id) or self._guard(folder, merge_id)
         if guard is not None:

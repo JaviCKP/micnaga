@@ -67,6 +67,7 @@ class MeetingInfo:
     monitor: MonitorHint | None = None
     manual: bool = False
     generic_app: str | None = None  # clave "app:..." si la sesion nacio de la ruta generica
+    in_person: bool = False  # «Grabar reunion presencial»: sesion manual, sin llamada detras
 
     @property
     def key(self) -> str:

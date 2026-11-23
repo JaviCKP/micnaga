@@ -63,6 +63,48 @@ def read_capture_json(session_dir: Path) -> CaptureMeta:
     return CaptureMeta.from_json(capture_json_path(session_dir).read_text(encoding="utf-8"))
 
 
+IN_PERSON_MARKER = ".micnaga-in-person.json"
+"""Marca de «reunion presencial» escrita al empezar a grabar. ``capture.json`` no sirve mientras
+graba (el grabador lo reescribe entero, ``extra`` incluido): tras parar, ``apply_in_person`` la
+pasa a ``extra.in_person``. Si la app muere grabando, la marca sigue ahi (``is_in_person``)."""
+
+
+def mark_in_person(session_dir: Path) -> bool:
+    """Escribe la marca de reunion presencial (``False`` si no se pudo; nunca lanza)."""
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        (session_dir / IN_PERSON_MARKER).write_text('{"in_person": true}', encoding="utf-8")
+        return True
+    except OSError:
+        log.exception("could not persist the in-person marker")
+        return False
+
+
+def apply_in_person(session_dir: Path) -> bool:
+    """``capture.json -> extra.in_person = true`` (con el grabador ya parado). Tolerante: sin
+    ``capture.json`` legible devuelve ``False`` sin lanzar."""
+    import dataclasses
+
+    from micnaga.gates import IN_PERSON_KEY
+
+    try:
+        meta = read_capture_json(session_dir)
+    except (OSError, ValueError, KeyError):
+        log.warning("in-person session has no readable capture.json")
+        return False
+    if meta.extra.get(IN_PERSON_KEY) is True:
+        return True
+    extra = {**meta.extra, IN_PERSON_KEY: True}
+    return write_capture_json(session_dir, dataclasses.replace(meta, extra=extra))
+
+
+def is_in_person(session_dir: Path, extra: object = None) -> bool:
+    """Reunion presencial: ``extra.in_person`` de ``capture.json`` o la marca en la carpeta."""
+    from micnaga.gates import in_person
+
+    return in_person(extra) or (session_dir / IN_PERSON_MARKER).is_file()
+
+
 def read_state(session_dir: Path) -> str | None:
     """``extra["state"]`` de la sesion, o ``None`` si no hay ``capture.json`` legible."""
     try:

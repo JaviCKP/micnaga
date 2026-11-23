@@ -10,6 +10,8 @@ aqui los embeddings de cada hablante (el modelo solo esta cargado ahora) para la
   «Yo» (``me``) y el resto, si de verdad son otra voz (ni eco de un remoto, ni la misma voz, ni
   casi sin voz; ``engines.diar.room``), pasan a ser ``P<n>``. Con una sola persona en el micro
   todo sigue siendo «Yo», como antes. Sale en ``work/07_turns_mic.json`` (vacio = todo «Yo»).
+  Si la sesion es una reunion presencial declarada («Grabar reunión presencial»,
+  ``capture.session.is_in_person``) el umbral baja a ``IN_PERSON_MIN_MIC_SPEECH_S`` (5 s).
 
 Post-filtro de hablantes fantasma (``engines.diar.postfilter``), igual en las dos pistas: un
 hablante con < 3 s de voz o un solo turno de < 4 s se absorbe en el mas parecido (embeddings, si
@@ -44,6 +46,7 @@ from typing import Any
 import numpy as np
 from numpy.typing import NDArray
 
+from micnaga.capture.session import is_in_person
 from micnaga.pipeline.engines.diar import postfilter, room
 from micnaga.pipeline.engines.diar.base import Diarizer, SpeakerEmbedder
 from micnaga.pipeline.stages.base import StageContext, StageResult, engine_scope
@@ -58,6 +61,9 @@ WORDS_ME = "06_words_me.json"
 EMBEDDINGS = "07_embeddings.dpapi"
 LEGACY_EMBEDDINGS = "07_embeddings.json"
 """Embeddings en claro de versiones antiguas: nunca se leen, solo se borran."""
+IN_PERSON_MIN_MIC_SPEECH_S = 5.0
+"""Voz minima del micro para diarizarlo en una reunion presencial declarada (en el resto,
+``room.MIN_MIC_SPEECH_S``): el usuario dijo que habia gente en la sala."""
 
 
 def remove_legacy_embeddings(work: Path) -> bool:
@@ -166,7 +172,9 @@ def run(ctx: StageContext) -> StageResult:
         ctx.path(EMBEDDINGS).unlink(missing_ok=True)
     words: list[Any] = ctx.read_json("06_words_remote.json")
     mic_words: list[Any] = ctx.read_json(WORDS_ME) if ctx.exists(WORDS_ME) else []
-    want_room = mic_speech_s(mic_words) >= room.MIN_MIC_SPEECH_S
+    in_person = is_in_person(ctx.session, ctx.meta.extra)
+    min_mic_s = IN_PERSON_MIN_MIC_SPEECH_S if in_person else room.MIN_MIC_SPEECH_S
+    want_room = mic_speech_s(mic_words) >= min_mic_s
     ctx.write_json(MIC_TURNS, [])
     outputs = [TURNS, MIC_TURNS]
     if not words and not want_room:
@@ -230,5 +238,6 @@ def run(ctx: StageContext) -> StageResult:
             "absorbed": minor,
             "has_embeddings": has_embeddings,
             "mic": mic_info,
+            "in_person": in_person,
         },
     )

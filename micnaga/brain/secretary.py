@@ -57,7 +57,7 @@ log = logging.getLogger(__name__)
 
 MCP_SERVER = "micnaga"
 _GENERIC = re.compile(
-    r"^(reuni[oó]n|meet|meeting|llamada|google meet|sin t[ií]tulo|untitled|navegador|"
+    r"^(reuni[oó]n|reuni[oó]n presencial|meet|meeting|llamada|google meet|sin t[ií]tulo|untitled|navegador|"
     r"(microsoft )?teams|whatsapp|zoom|discord|slack|skype|webex|[\w.-]+\.exe|"
     r"meet\s*[–-]\s*[a-z]{3}-[a-z]{4}-[a-z]{3}|[a-z]{3}-[a-z]{4}-[a-z]{3})$",
     re.IGNORECASE,

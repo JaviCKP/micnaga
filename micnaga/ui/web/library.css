@@ -28,6 +28,11 @@
 .side-head .settings-btn { margin-left: auto; }
 .side-head .horas-btn:not([hidden]) + .settings-btn { margin-left: 0; }
 .side-head .settings-btn .ico { width: 17px; height: 17px; }
+/* «Grabar reunión presencial»: el primero de los botones de la derecha cuando se ve */
+.side-head .in-person-btn { margin-left: auto; }
+.side-head .in-person-btn .ico { width: 17px; height: 17px; }
+.side-head .in-person-btn:not([hidden]) ~ .horas-btn,
+.side-head .in-person-btn:not([hidden]) ~ .settings-btn { margin-left: 0; }
 .count { font: 700 26px/1 var(--display); color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 .search {

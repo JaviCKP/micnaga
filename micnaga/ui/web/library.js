@@ -257,6 +257,7 @@
     const meta = $("m-meta");
     meta.replaceChildren();
     meta.append(el("span", "", mic.fmtDate(tr.meeting.start)), el("span", "sep", "·"), el("span", "", mic.fmtDuration(tr.meeting.duration_s)));
+    if (tr.meeting.source === "presencial") meta.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
     if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
     renderSpeakers();
     renderMarkers();
@@ -772,6 +773,18 @@
   });
   $("q").addEventListener("input", onQuery);
   $("settings-btn").addEventListener("click", () => showSettings());
+  // «Grabar reunión presencial»: graba el micro (y el sistema) hasta que la pares en la pastilla
+  $("in-person-btn").addEventListener("click", async () => {
+    const btn = $("in-person-btn");
+    btn.disabled = true;
+    try {
+      const r = await mic.call("record_in_person");
+      if (!r || !r.ok) snack(errText(r));
+      else snack(r.started ? mic.t("library.in_person_started") : mic.t("library.in_person_busy"));
+    } finally {
+      btn.disabled = false;
+    }
+  });
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
   // ------------------------------------------------------------------ «Descartadas»
@@ -900,6 +913,7 @@
     await mic.i18nReady;
     const boot = await mic.call("bootstrap");
     if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; S.hq = !!boot.hq; }
+    $("in-person-btn").hidden = !(boot && boot.in_person);
     if (S.vpEnabled && S.canEdit) {
       const vps = await mic.call("list_voiceprints");
       S.vpNames = new Set((vps || []).map((v) => v.name));

@@ -60,6 +60,8 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 DEFAULT_POPUP_TITLE = "Reunión"
+IN_PERSON_TITLE = "Reunión presencial"
+"""Titulo por defecto de «Grabar reunión presencial» (la IA puede renombrarla despues)."""
 LONG_TIMEOUT_S = 86400.0
 """Timeout que se pasa al JS del popup: la cuenta atras real es la del vigilante."""
 
@@ -193,6 +195,8 @@ class AppController:
                 log.warning("start_recording while a session is open; ignored")
                 return
             title = (meeting.title or "").strip() or None
+            if title is None and meeting.in_person:
+                title = IN_PERSON_TITLE
             when = self._now()
             error_key = "capture_failed"
             try:
@@ -222,13 +226,17 @@ class AppController:
             else:
                 failed = False
                 self.last_start_error = None
+                if meeting.in_person:  # en disco ya: sobrevive a un cierre brusco
+                    from micnaga.capture.session import mark_in_person
+
+                    mark_in_person(directory)
                 session = _Session(directory, meeting, recorder, db_path=db_path)
                 session.confirmed = not provisional
                 self._session = session
         if failed:
             self._report_start_failure(error_key)
             return
-        log.info("recording started (provisional=%s)", provisional)
+        log.info("recording started (provisional=%s, in_person=%s)", provisional, meeting.in_person)
         self._start_live(directory)
         self._wake_ticker()
 
@@ -553,10 +561,14 @@ class AppController:
     def _safe_stop(s: _Session) -> bool:
         try:
             s.recorder.stop()
-            return True
         except Exception:
             log.exception("stopping the recorder failed")
             return False
+        if s.meeting.in_person:  # con el grabador parado ya nadie reescribe capture.json
+            from micnaga.capture.session import apply_in_person
+
+            apply_in_person(s.directory)
+        return True
 
     def _spawn_stopper(self, fn: Callable[[], None]) -> None:
         thread = threading.Thread(target=fn, name="micnaga-stop", daemon=True)

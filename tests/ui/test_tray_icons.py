@@ -61,6 +61,7 @@ def test_menu_has_the_spec_entries_in_order() -> None:
     spec = tray.menu_spec("watching", watching_paused=False)
     assert [e.label for e in spec] == [
         "Grabar ahora",
+        "Grabar reunión presencial",
         "Pausar vigilancia 1 h",
         "Abrir biblioteca",
         "Rellenar partes de horas",
@@ -69,8 +70,8 @@ def test_menu_has_the_spec_entries_in_order() -> None:
     ]
     assert [e.key for e in spec if e.default] == ["open_library"]
     # siempre presente (el menu se arma por posicion); activo solo con Odoo y permiso de horas
-    assert not spec[3].enabled
-    assert tray.menu_spec("watching", watching_paused=False, timesheets=True)[3].enabled
+    assert not spec[4].enabled
+    assert tray.menu_spec("watching", watching_paused=False, timesheets=True)[4].enabled
 
 
 def test_fill_timesheets_entry_opens_the_panel() -> None:
@@ -82,9 +83,9 @@ def test_fill_timesheets_entry_opens_the_panel() -> None:
 
 def test_menu_disables_record_and_pause_while_recording_and_flips_resume() -> None:
     rec = tray.menu_spec("recording", watching_paused=False)
-    assert not rec[0].enabled and not rec[1].enabled
+    assert not rec[0].enabled and not rec[1].enabled and not rec[2].enabled
     paused = tray.menu_spec("watching", watching_paused=True)
-    assert paused[1].key == "resume_watching" and paused[1].label == "Reanudar vigilancia"
+    assert paused[2].key == "resume_watching" and paused[2].label == "Reanudar vigilancia"
 
 
 def test_dispatch_calls_the_right_callbacks_and_survives_errors() -> None:

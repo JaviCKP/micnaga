@@ -75,6 +75,7 @@ stateDiagram-v2
 
     RECORDING_CONFIRMED --> IDLE: parar (pastilla) [stop_and_finalize(confirmed)]
     IDLE --> RECORDING_CONFIRMED: «Grabar ahora» [start_recording(confirmed) + show_pill]
+    IDLE --> RECORDING_CONFIRMED: «Grabar reunión presencial»<br/>[start_recording(confirmed, in_person) + show_pill]
     IDLE --> SUSPENDED: «Pausar vigilancia 1 h»
     SUSPENDED --> IDLE: pasa 1 h o «Reanudar»
 ```
@@ -131,6 +132,16 @@ compuertas: la etapa 1 del pipeline aparta (no borra) lo que no las pasa.
   o con una reunión visible adopta esa reunión (la termina la señal); sin reunión es una sesión
   **manual** que solo termina el usuario (no hay señales que la cierren) y a la que Meet no
   molesta con popups.
+* **«Grabar reunión presencial»** (bandeja y botón de la biblioteca; evento `RecordInPerson`):
+  en `IDLE` / `CANDIDATE` / `SUSPENDED` abre siempre una sesión **manual** confirmada con
+  `MeetingInfo(manual=True, in_person=True)`, sin popup y **sin adoptar** una pestaña de Meet
+  visible. Como toda sesión manual, no la cierran las señales (no hay llamada) ni la molesta un
+  Meet o una app que empiece mientras tanto; la para el usuario (pastilla). En cualquier fase de
+  grabación es un no-op (`Watcher.record_in_person()` devuelve `False`). No hay tope de duración
+  (tampoco lo tiene «Grabar ahora»). El controlador la titula «Reunión presencial», marca la
+  carpeta (`.micnaga-in-person.json`) y, al parar, escribe `extra.in_person = true` en
+  `capture.json`; el pipeline no le exige voz remota ni turnos y la etapa 7 diariza siempre el
+  micro (umbral 5 s). Ver `DECISIONS.md` §30.
 * **Suspender**: en `IDLE/CANDIDATE` → `SUSPENDED` y olvida lo ignorado; en `PROMPTING` retira el
   popup y aparta la sesión (`suspended`, recuperable); **grabando no interrumpe** (rige al terminar la sesión). Al expirar con las señales ya
   activas, los 5 s de estabilidad empiezan de cero.
@@ -169,5 +180,6 @@ lock, en orden, tolerando excepciones y reentradas.
 
 Entradas hacia el vigilante (hilo-seguras): `Watcher.popup_answer(accept)`, `popup_hover(bool)`,
 `end_answer(finish|keep|save|discard)`, `undo()`, `recording_failed()`,
-`record_now()`, `user_stop()`, `toggle_private_pause()`, `set_private_pause(bool)`,
+`record_now()`, `record_in_person() -> bool`, `user_stop()`, `toggle_private_pause()`,
+`set_private_pause(bool)`,
 `suspend(duration_s=3600)`, `resume_watching()`.

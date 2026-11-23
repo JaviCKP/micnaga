@@ -10,7 +10,8 @@ Una sesion pasa a la cola solo si cumple las tres compuertas (configurables en `
 2. voz remota >= ``min_remote_speech_s`` (VAD sobre la pista del sistema);
 3. cambios de turno micro <-> sistema >= ``min_turns``.
 
-Una sesion confirmada con «Grabar» solo exige la primera.
+Una sesion confirmada con «Grabar» solo exige la primera; una reunion presencial
+(``extra.in_person``) tambien: no hay voz remota ni turnos micro <-> sistema que medir.
 
 Cambio de turno (definicion precisa)
 ------------------------------------
@@ -85,21 +86,36 @@ def user_restored(extra: Any) -> bool:
     return isinstance(extra, dict) and extra.get(USER_RESTORED_KEY) is True
 
 
+IN_PERSON_KEY = "in_person"
+"""``capture.json -> extra.in_person``: «Grabar reunion presencial». La empezo el usuario a
+proposito y no hay llamada: no se exige voz remota ni cambios de turno (todos hablan por el
+micro); solo la duracion minima. La etapa 7 diariza siempre el micro."""
+
+SOURCE_IN_PERSON = "presencial"
+"""``transcripcion.json -> meeting.source`` de una reunion presencial (el resto, ``"meet"``)."""
+
+
+def in_person(extra: Any) -> bool:
+    return isinstance(extra, dict) and extra.get(IN_PERSON_KEY) is True
+
+
 def evaluate_gates(
     duration_s_effective: float,
     remote_speech_s: float,
     turn_changes: int,
     confirmed: bool,
     cfg: GatesConfig,
+    *,
+    in_person: bool = False,
 ) -> GateResult:
-    """Aplica las tres compuertas (solo la 1 si ``confirmed``)."""
+    """Aplica las tres compuertas (solo la 1 si ``confirmed`` o ``in_person``)."""
     if duration_s_effective < cfg.min_duration_s:
         return GateResult(
             False,
             f"duracion {duration_s_effective:.0f} s < {cfg.min_duration_s:.0f} s",
             "duration",
         )
-    if confirmed:
+    if confirmed or in_person:
         return GateResult(True, "ok")
     if remote_speech_s < cfg.min_remote_speech_s:
         return GateResult(

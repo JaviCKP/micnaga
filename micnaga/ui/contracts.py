@@ -101,6 +101,30 @@ class UiCallbacks:
     """El asistente (paso 3) pide abrir/cerrar los dispositivos solo para medir niveles."""
 
 
+ACTION_RECORD_IN_PERSON = "record_in_person"
+"""«Grabar reunión presencial» (bandeja y biblioteca). La accion devuelve ``True`` si empezo a
+grabar y ``False`` si ya habia una grabacion en marcha."""
+
+_APP_ACTIONS: dict[str, Callable[[], object]] = {}
+
+
+def set_app_action(name: str, action: Callable[[], object] | None) -> None:
+    """Registra (o quita, con ``None``) una accion de la app que la UI puede lanzar.
+
+    Canal para acciones que no pasan por ``UiCallbacks``: la bandeja y la API de la biblioteca
+    las construye ``host.py`` con un juego fijo de callbacks/argumentos. Lo registra la
+    integracion (``application.py``) al arrancar y lo quita al cerrar."""
+    if action is None:
+        _APP_ACTIONS.pop(name, None)
+    else:
+        _APP_ACTIONS[name] = action
+
+
+def app_action(name: str) -> Callable[[], object] | None:
+    """La accion registrada con ``name`` o ``None`` (sin app detras: modo demo, pruebas)."""
+    return _APP_ACTIONS.get(name)
+
+
 @dataclass(frozen=True)
 class Voiceprint:
     """Huella de voz guardada (MIC-11). Se identifica por nombre de persona."""

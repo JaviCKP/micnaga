@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from micnaga.ui import i18n
-from micnaga.ui.contracts import TrayState, UiCallbacks
+from micnaga.ui.contracts import ACTION_RECORD_IN_PERSON, TrayState, UiCallbacks, app_action
 from micnaga.ui.icons import tray_icon
 
 log = logging.getLogger(__name__)
@@ -39,15 +39,26 @@ STATE_LABEL_KEYS: dict[str, str] = {
 
 
 def menu_spec(
-    state: TrayState, *, watching_paused: bool, language: str = "es", timesheets: bool = False
+    state: TrayState,
+    *,
+    watching_paused: bool,
+    language: str = "es",
+    timesheets: bool = False,
+    in_person: bool = True,
 ) -> list[MenuEntry]:
-    """Entradas del menu en orden. «Grabar ahora» se desactiva mientras se graba.
+    """Entradas del menu en orden. «Grabar ahora» y «Grabar reunión presencial» se desactivan
+    mientras se graba (la segunda tambien si no hay app detras, ``in_person``).
 
     «Rellenar partes de horas» esta siempre (el menu se construye por posicion) y solo se activa
     si la Secretaria tiene Odoo con permiso para registrar horas (``timesheets``)."""
     recording = state in ("recording", "paused")
     return [
         MenuEntry("record_now", i18n.t("tray.record_now", language), enabled=not recording),
+        MenuEntry(
+            "record_in_person",
+            i18n.t("tray.record_in_person", language),
+            enabled=in_person and not recording,
+        ),
         MenuEntry(
             "resume_watching" if watching_paused else "pause_watching",
             i18n.t("tray.resume_watching" if watching_paused else "tray.pause_watching", language),
@@ -110,6 +121,15 @@ class Tray:
         icon.title = self.title()
         icon.update_menu()
 
+    @staticmethod
+    def _in_person_on() -> bool:
+        return app_action(ACTION_RECORD_IN_PERSON) is not None
+
+    def _record_in_person(self) -> None:
+        action = app_action(ACTION_RECORD_IN_PERSON)
+        if action is not None:
+            action()
+
     def _timesheets_on(self) -> bool:
         try:
             return bool(self._timesheets())
@@ -121,6 +141,7 @@ class Tray:
         cb = self._cb
         actions = {
             "record_now": cb.on_record_now,
+            "record_in_person": self._record_in_person,
             "pause_watching": lambda: cb.on_pause_watching(PAUSE_MINUTES),
             "resume_watching": cb.on_resume_watching,
             "open_library": cb.on_open_library,
@@ -156,6 +177,7 @@ class Tray:
                     watching_paused=self._watching_paused,
                     language=self._language,
                     timesheets=self._timesheets_on(),
+                    in_person=self._in_person_on(),
                 )[i]
 
             def action(i: int = idx) -> Callable[[Any, Any], None]:
