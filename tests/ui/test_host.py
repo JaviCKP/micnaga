@@ -89,66 +89,61 @@ def test_run_creates_one_hidden_surface_applies_noactivate_and_calls_on_ready() 
     assert ready == [r.host]
     assert set(r.fac.windows) == {"pill"}, "una sola superficie: la tarjeta nace de la pastilla"
     spec = r.pill.spec
-    assert spec.frameless and spec.on_top and spec.hidden and not spec.focus
-    # opaca (decision del usuario, DECISIONS §29): nada transparente que Windows pueda pintar gris
-    assert not spec.transparent and spec.background == host_mod.SURFACE_BG == "#0a090f"
-    assert spec.params["fit"] == "1", "la pagina llena la ventana: la ventana ES la forma"
+    assert spec.transparent and spec.frameless and spec.on_top and spec.hidden and not spec.focus
+    assert spec.background == "#000000"  # negro = transparente con el marco DWM extendido
     assert spec.min_size[1] <= 40, "min_size por defecto (200x100) deformaria la pastilla"
     style = r.w32.styles[r.pill.hwnd]
     assert style & winapi.WS_EX_NOACTIVATE and style & winapi.WS_EX_TOOLWINDOW
-    assert (spec.width, spec.height) == winapi.PILL_SIZE == (200, 40)
-    assert ("prepare_overlay", None) in r.pill.log
+    assert (spec.width, spec.height) == winapi.STAGE_SIZE == (420, 112)
+    assert ("prepare_overlay", True) in r.pill.log and r.host.surface_mode == "transparent"
     assert r.host._popup is r.host._pillwin
-    assert not r.host.acrylic
+    assert not r.host.acrylic, "el acrilico pintaria el lienzo entero, no la forma"
     r.host._stopping.set()
 
 
-# geometria del monitor falso (1920 x 1040 a 125 %): la ventana mide la forma visible
+# geometria del monitor falso (1920 x 1040 a 125 %): pastilla 250 x 50 centrada arriba
 PILL = ((1920 - 250) // 2, 15, 250, 50)
-CARD = (PILL[0] + 125 - 232, 15, 465, 140)  # 372 x 112 centrada en la pastilla
-HOVER = (PILL[0], 15, 370, 50)  # 296 x 40, crece hacia la derecha (el contenido no salta)
-UNDO = (PILL[0], 15, 295, 50)  # 236 x 40
-RADIUS = 8  # 6 px CSS a 125 %
+STAGE = (PILL[0] + 125 - 262, 15, 525, 140)  # 420 x 112 centrado sobre la pastilla
+# regiones: la forma (redondeada hacia fuera) + 2 px de margen para el antialias de las esquinas
+PILL_REGION = (135, -2, 254, 54)
+CARD_REGION = (27, -2, 470, 144)
+HOVER_REGION = (75, -2, 374, 54)  # 296 x 40, simetrica
+UNDO_REGION = (112, -2, 300, 54)  # 236 x 40
+RADIUS = 27  # 20 px CSS a 125 % + 2
 
 
-def full(rect: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
-    """Region = toda la ventana (con las esquinas redondeadas del CSS)."""
-    return (0, 0, rect[2], rect[3])
-
-
-def test_shape_rects_follow_the_pill() -> None:
+def test_stage_geometry_and_regions_follow_the_pill() -> None:
     mon = winapi.MonitorInfo((0, 0, 1920, 1040), 1.25)
     pill = winapi.pill_rect(mon)
     assert pill == PILL
-    assert winapi.shape_rect(pill, winapi.CARD_SIZE, mon) == CARD
-    assert winapi.shape_rect(pill, (296, 40), mon, anchor="left") == HOVER
-    assert winapi.shape_rect(pill, (236, 40), mon, anchor="left") == UNDO
-    assert winapi.region_radius(1.0) == 6 and winapi.region_radius(1.25) == RADIUS
-    assert winapi.region_radius(1.5) == 9
-    # pastilla arrastrada al borde izquierdo / abajo: la tarjeta no sale de la pantalla
-    assert winapi.shape_rect((0, 300, 250, 50), winapi.CARD_SIZE, mon)[0] == 0
-    assert winapi.shape_rect((800, 1000, 250, 50), winapi.CARD_SIZE, mon)[1] == 1040 - 140
+    stage = winapi.stage_rect(pill, mon)
+    assert stage == STAGE
+    lay = winapi.stage_layout(pill, stage, mon.scale)
+    assert lay == {"px": 209.6, "py": 0.0, "cardL": 23.6}  # tarjeta centrada en la pastilla
+    assert winapi.css_region((lay["px"] - 100, 0, 200, 40), 1.25) == PILL_REGION
+    assert winapi.css_region((lay["cardL"], 0, 372, 112), 1.25) == CARD_REGION
+    assert winapi.region_radius(1.25) == RADIUS and winapi.region_radius(1.0) == 22
+    # pastilla arrastrada al borde izquierdo: el lienzo no sale de la pantalla y la tarjeta
+    # sigue conteniendo la pastilla
+    edge = (0, 300, 250, 50)
+    stage = winapi.stage_rect(edge, mon)
+    lay = winapi.stage_layout(edge, stage, mon.scale)
+    assert stage[0] == 0 and lay["px"] == 100 and lay["cardL"] == 0
 
 
 def test_show_popup_grows_the_card_out_of_the_visible_pill() -> None:
     r = Rig()
     r.host.show_pill(elapsed_s=21.0, provisional=True)
-    assert r.pill.current_rect == PILL and r.pill.region == full(PILL)
-    assert r.pill.region_radius == RADIUS
+    assert r.pill.current_rect == STAGE and r.pill.region == PILL_REGION
     assert r.host.surface_phase == "pill"
     r.w32.calls.clear()
     r.pill.log.clear()
     r.host.show_popup("Revisión semanal", "abc-defg-hij", monitor_hint=(10, 10, 900, 700))
-    # nace donde esta la pastilla: ni otro monitor ni otra ventana
+    # nace donde esta la pastilla: ni otro monitor ni otra ventana ni otro tamano
     assert not any(c[0] == "monitor_info" for c in r.w32.calls)
-    # sin morfosis: la ventana NO cambia hasta que el JS ha fundido el contenido de la pastilla
-    assert not any(k == "place" for k, _ in r.pill.log)
-    assert "micnaga.surface.prepare(false)" in r.pill.js_calls()
-    r.host.handle_surface_resize("card")  # el JS: contenido oculto, ya puede cambiar la talla
-    assert [a for k, a in r.pill.log if k == "place"] == [CARD], "la ventana mide la tarjeta"
-    assert r.pill.region == full(CARD) and r.pill.region_radius == RADIUS
-    calls = r.pill.js_calls()
-    assert calls[-1] == "micnaga.surface.resized()"  # y entonces la tarjeta se funde dentro
+    assert not any(k == "place" for k, _ in r.pill.log), "la ventana no se mueve ni redimensiona"
+    assert r.pill.region == CARD_REGION, "la region se abre a la tarjeta ANTES de crecer"
+    assert r.pill.region_radius == RADIUS
     p = payload(r.popup, "micnaga.popup.show")
     assert p == {
         "title": "Revisión semanal",
@@ -158,7 +153,7 @@ def test_show_popup_grows_the_card_out_of_the_visible_pill() -> None:
         "remindNotice": True,
     }
     kinds = [k for k, _ in r.pill.log]
-    assert kinds.index("place") < kinds.index("region")
+    assert kinds.index("region") < kinds.index("show")
     assert not any(js.startswith("micnaga.pill.show(") for js in r.pill.js_calls())
     assert ("show", False) in r.pill.log  # activate=False
     assert r.host.popup_visible and r.host.surface_phase == "expanding"
@@ -172,11 +167,10 @@ def test_show_popup_without_a_pill_materialises_it_first_on_the_browser_monitor(
     r = Rig()
     r.host.show_popup("Revisión semanal", "abc-defg-hij", monitor_hint=(10, 10, 900, 700))
     assert ("monitor_info", ((10, 10, 900, 700),)) in r.w32.calls
-    assert r.pill.current_rect == CARD and r.pill.region == full(CARD)
+    assert r.pill.current_rect == STAGE and r.pill.region == CARD_REGION
     born = payload(r.pill, "micnaga.pill.show")
-    assert born["provisional"] is True and "layout" not in born
-    # oculta: ya con la talla de tarjeta, y el JS lo sabe (no pide otra)
-    assert "micnaga.surface.prepare(true)" in r.pill.js_calls()
+    assert born["enter"] is True and born["provisional"] is True
+    assert born["layout"] == {"px": 209.6, "py": 0.0, "cardL": 23.6}
     calls = r.pill.js_calls()
     first_show = next(i for i, js in enumerate(calls) if js.startswith("micnaga.pill.show("))
     first_popup = next(i for i, js in enumerate(calls) if js.startswith("micnaga.popup.show("))
@@ -228,7 +222,6 @@ def test_record_collapses_the_card_back_into_the_pill() -> None:
     r = Rig()
     r.host.show_pill(elapsed_s=21.0, provisional=True)
     r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
     r.host.handle_surface_phase("card")
     r.host.handle_popup_decide("record")
     r.host.handle_popup_morph(False)
@@ -237,11 +230,8 @@ def test_record_collapses_the_card_back_into_the_pill() -> None:
     shows = sum(1 for js in r.pill.js_calls() if js.startswith("micnaga.pill.show("))
     r.host.show_pill(elapsed_s=42.0, provisional=False)  # el controlador, durante el encogido
     assert sum(1 for js in r.pill.js_calls() if js.startswith("micnaga.pill.show(")) == shows
-    assert r.pill.current_rect == CARD, "mientras encoge el contenido, la ventana sigue"
     r.host.handle_popup_closed("morphed")
-    assert r.host.surface_phase == "pill"
-    # nada sobra: la ventana vuelve a medir exactamente la pastilla
-    assert r.pill.current_rect == PILL and r.pill.region == full(PILL)
+    assert r.host.surface_phase == "pill" and r.pill.region == PILL_REGION
     assert r.pill.visible and ("hide", None) not in r.pill.log
     assert not r.host.popup_visible
     assert ("decision", "record") in r.events and ("closed", "morphed") in r.events
@@ -288,7 +278,6 @@ def test_no_collapses_into_the_pill_and_then_the_undo_chip() -> None:
     r = Rig()
     r.host.show_pill(provisional=True)
     r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
     r.host.handle_popup_decide("dismiss")
     r.host.handle_surface_phase("collapsing")
     r.host.hide_pill()
@@ -297,8 +286,7 @@ def test_no_collapses_into_the_pill_and_then_the_undo_chip() -> None:
     assert not any(js.startswith("micnaga.pill.undo(") for js in r.pill.js_calls())
     r.host.handle_popup_closed("leaving")
     assert payload(r.pill, "micnaga.pill.undo") == {"seconds": 8.0}
-    assert r.host.surface_phase == "undo" and r.pill.current_rect == UNDO
-    assert r.pill.region == full(UNDO)
+    assert r.host.surface_phase == "undo" and r.pill.region == UNDO_REGION
     r.host.hide_undo()
     assert not r.pill.visible and r.host.surface_phase == "hidden"
 
@@ -307,8 +295,7 @@ def test_end_card_finish_shrinks_then_the_pill_fades_away() -> None:
     r = Rig()
     r.host.show_pill(elapsed_s=600.0)
     r.host.show_end_popup("Reunión", duration_s=600.0, confirmed=True)
-    r.host.handle_surface_resize("card")
-    assert r.host.surface_phase == "expanding" and r.pill.current_rect == CARD
+    assert r.host.surface_phase == "expanding" and r.pill.region == CARD_REGION
     assert payload(r.pill, "micnaga.popup.showEnd")["confirmed"] is True
     r.host.handle_end_decide("finish")
     r.host.hide_pill()  # la grabacion termina mientras la tarjeta encoge
@@ -325,14 +312,13 @@ def test_end_card_keep_recording_returns_to_the_pill() -> None:
     r.host.show_end_popup("Reunión", duration_s=600.0, confirmed=True)
     r.host.handle_end_decide("keep")
     r.host.handle_popup_closed("leaving")
-    assert r.host.surface_phase == "pill" and r.pill.visible and r.pill.current_rect == PILL
-    assert r.pill.region == full(PILL)
+    assert r.host.surface_phase == "pill" and r.pill.visible and r.pill.region == PILL_REGION
 
 
 def test_pill_standalone_show_hide_and_pause_state() -> None:
     r = Rig()
     r.host.show_pill(elapsed_s=12.0)
-    assert r.pill.current_rect == PILL and r.pill.region == full(PILL) and r.host.pill_visible
+    assert r.pill.current_rect == STAGE and r.pill.region == PILL_REGION and r.host.pill_visible
     r.host.set_pill_paused(True)
     assert "micnaga.pill.setPaused(true)" in r.pill.js_calls()
     assert r.host.tray_state() == "paused"
@@ -343,27 +329,25 @@ def test_pill_standalone_show_hide_and_pause_state() -> None:
     assert "micnaga.pill.stop()" in r.pill.js_calls() and ("hide", None) in r.pill.log
 
 
-def test_pill_hover_widens_the_window_to_the_right_and_restores() -> None:
-    """Al pasar el raton la ventana se ensancha hacia la derecha: el contenido, anclado a la
-    izquierda, no salta mientras WebView2 se redimensiona."""
+def test_pill_hover_widens_the_region_symmetrically_and_restores() -> None:
+    """La ventana no se redimensiona al pasar el raton: solo su region (sin tirones)."""
     r = Rig()
     r.host.show_pill()
+    places = len(r.w32.places(r.pill.hwnd))
     r.host.handle_pill_hover(True)
-    assert r.pill.current_rect == HOVER and r.pill.region == full(HOVER)
-    places = sum(1 for k, _ in r.pill.log if k == "place")
+    assert r.pill.region == HOVER_REGION
     r.host.handle_pill_hover(True)  # idempotente
-    assert sum(1 for k, _ in r.pill.log if k == "place") == places
     r.host.handle_pill_hover(False)
-    assert r.pill.current_rect == PILL and r.pill.region == full(PILL)
+    assert r.pill.region == PILL_REGION
+    assert len(r.w32.places(r.pill.hwnd)) == places
 
 
 def test_hover_is_ignored_while_the_card_is_open() -> None:
     r = Rig()
     r.host.show_pill()
     r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
     r.host.handle_pill_hover(True)
-    assert r.pill.current_rect == CARD and r.pill.region == full(CARD)
+    assert r.pill.region == CARD_REGION
 
 
 def test_pill_buttons_route_to_callbacks_and_pause_is_confirmed_in_the_ui() -> None:
@@ -394,8 +378,9 @@ def test_dragged_pill_position_is_remembered_and_programmatic_moves_ignored() ->
     r.pill.fire_moved(5, 5)  # eco de nuestro propio place(): ignorado
     assert not any(e[0] == "moved" for e in r.events if isinstance(e, tuple))
     r.host._pill.ignore_moves_until = 0.0
-    r.pill.fire_moved(300, 200)  # la ventana es la pastilla: su esquina es la de la pastilla
-    assert ("moved", 300, 200) in r.events
+    r.pill.fire_moved(300, 200)  # esquina del lienzo; la pastilla esta desplazada dentro
+    dx = PILL[0] - STAGE[0]
+    assert ("moved", 300 + dx, 200) in r.events
     r.host.hide_pill()
     r.host.show_pill()
     assert r.pill.current_rect[:2] == (300, 200)  # vuelve donde el usuario la dejo
@@ -664,30 +649,53 @@ def test_verify_does_not_re_present_an_answered_or_quitting_popup() -> None:
         assert pop.shows == 1, finish
 
 
-# ------------------------------------------------------------- ventana = forma (opaca, §29)
+# ------------------------------------------------- lienzo transparente, region y fondo (§29)
+
+
+def _boot(r: Rig) -> None:
+    r.host._factory.start(lambda: r.host._bootstrap(None), icon=None)
+
+
+def _wait(cond: Any, timeout: float = 2.0) -> bool:
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if cond():
+            return True
+        time.sleep(0.01)
+    return bool(cond())
+
+
+def regions(win: FakeWindow) -> list[Any]:
+    return [a for k, a in win.log if k == "region"]
 
 
 @pytest.mark.parametrize("dpi", [96, 120, 144])
-def test_after_collapsing_only_the_pill_is_on_screen_at_any_dpi(dpi: int) -> None:
-    """El recuadro gris de otro PC: tras encoger la tarjeta no debe quedar NADA fuera de la
-    pastilla. La ventana (opaca) mide exactamente la pastilla, en px fisicos de cada DPI."""
+def test_after_collapsing_only_the_pill_is_clickable_at_any_dpi(dpi: int) -> None:
+    """El recuadro gris de otro PC: tras encoger la tarjeta, la region vuelve a la pastilla
+    (con su margen de antialias) en px fisicos de cada DPI y la ventana no se ha movido."""
     r = Rig()
     scale = dpi / 96
     r.w32.monitor = winapi.MonitorInfo((0, 0, 1920, 1040), scale)
     r.w32.dpi = dpi
-    r.host._factory.start(lambda: r.host._bootstrap(None), icon=None)
+    _boot(r)
     r.host.show_pill(elapsed_s=5.0)
+    stage = r.pill.current_rect
+    pill_region = r.pill.region
+    assert pill_region is not None
     pill = winapi.pill_rect(r.w32.monitor)
-    assert pill[2:] == (round(200 * scale), round(40 * scale))
+    assert pill_region[2:] == (round(200 * scale) + 4, round(40 * scale) + 4)
     r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
-    card = winapi.shape_rect(pill, winapi.CARD_SIZE, r.w32.monitor)
-    assert r.pill.current_rect == card and r.pill.region == full(card)
+    assert r.pill.region is not None and r.pill.region[2] > pill_region[2]
     r.host.handle_popup_decide("record")
     r.host.handle_popup_morph(False)
     r.host.handle_popup_closed("morphed")
-    assert r.pill.current_rect == pill and r.pill.region == full(pill)
-    assert r.pill.region_radius == round(6 * scale)
+    assert r.pill.current_rect == stage and r.pill.region == pill_region
+    assert r.pill.region_radius == round(20 * scale) + 2
+    # la pastilla ocupa su sitio dentro del lienzo: la region la cubre entera
+    x0 = pill[0] - stage[0]
+    assert pill_region[0] <= x0 and pill_region[0] + pill_region[2] >= x0 + pill[2]
     r.host._stopping.set()
 
 
@@ -697,47 +705,110 @@ def test_drag_position_is_read_from_the_window_in_physical_pixels() -> None:
     r = Rig()
     r.w32.monitor = winapi.MonitorInfo((0, 0, 2880, 1560), 1.5)
     r.host.show_pill()
+    stage = r.pill.current_rect
+    pill = winapi.pill_rect(r.w32.monitor)
     r.host._pill.ignore_moves_until = 0.0
-    r.pill.current_rect = (900, 300, *r.pill.current_rect[2:])
+    r.pill.current_rect = (900, 300, *stage[2:])
     for cb in r.pill._moved:
         cb(600, 200)  # lo que pywebview manda: 900 / 1.5, 300 / 1.5
-    assert ("moved", 900, 300) in r.events
+    assert ("moved", 900 + pill[0] - stage[0], 300 + pill[1] - stage[1]) in r.events
 
 
-def test_overlay_preparation_failure_is_logged_and_the_window_still_follows_the_shape(
+def test_surface_without_transparency_falls_back_to_an_opaque_window(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
+    """Si el equipo no da transparencia (``DwmExtendFrameIntoClientArea`` falla...), la ventana
+    es opaca y la region se anima con la forma, fotograma a fotograma."""
     r = Rig()
     r.pill.overlay_ok = False
     with caplog.at_level("INFO", logger="micnaga.ui.host"):
-        r.host._factory.start(lambda: r.host._bootstrap(None), icon=None)
+        _boot(r)
         r.host.show_pill()
-        r.host.show_popup("x")
-        r.host.handle_surface_resize("card")
-        r.host.handle_popup_closed("leaving")
+    assert [a for k, a in r.pill.log if k == "prepare_overlay"] == [True, False]
+    assert r.host.surface_mode == "opaque"
     assert any(
-        rec.levelname == "WARNING" and "backdrop not cleared" in rec.getMessage()
+        rec.levelname == "WARNING" and "no transparency" in rec.getMessage()
         for rec in caplog.records
     )
-    assert r.pill.current_rect == PILL and r.pill.region == full(PILL)
     msgs = [rec.getMessage() for rec in caplog.records]
     assert any("surface geometry: monitor work" in m and "window dpi 120" in m for m in msgs)
-    assert any(m.startswith("surface pill: window") for m in msgs)
-    assert any(m.startswith("surface card: window") for m in msgs)
+    assert any(m.startswith("surface pill: region") and "opaque" in m for m in msgs)
     r.host._stopping.set()
 
 
-def test_a_recreated_window_handle_gets_styles_and_shape_again() -> None:
+def test_opaque_surface_forced_by_env(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setenv(host_mod.ENV_SURFACE, "opaque")
     r = Rig()
-    r.host._factory.start(lambda: r.host._bootstrap(None), icon=None)
+    _boot(r)
+    assert [a for k, a in r.pill.log if k == "prepare_overlay"] == [False]
+    assert r.host.surface_mode == "opaque"
+    r.host._stopping.set()
+
+
+def test_opaque_region_follows_the_shape_frame_by_frame(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    monkeypatch.setattr(host_mod, "GROW_S", 0.12)
+    r = Rig()
+    r.w32.animation = True
+    r.pill.overlay_ok = False
+    _boot(r)
+    r.host.show_pill()
+    pill_region, card_region = (137, 0, 250, 50), (29, 0, 466, 140)  # opaca: sin margen
+    assert r.pill.region == pill_region and r.pill.region_radius == 25
+    r.host.show_popup("x")
+    assert r.pill.region == pill_region, "opaca: la region espera a que la forma empiece"
+    r.pill.log.clear()
+    r.host.handle_surface_phase("expanding")
+    assert _wait(lambda: r.pill.region == card_region)
+    steps = regions(r.pill)
+    assert len(steps) >= 4, "la region crece por pasos, no de golpe"
+    widths = [s[2] for s in steps]
+    assert widths == sorted(widths) and widths[0] < card_region[2]
+    r.host._stopping.set()
+
+
+def test_transparent_region_grows_before_and_shrinks_after_the_shape(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    """Sin idas y vueltas a Python durante la animacion: la region crece YA y se recoge
+    cuando la forma ya encogio (o ya se estrecho al quitar el raton)."""
+    monkeypatch.setattr(host_mod, "HOVER_S", 0.08)
+    r = Rig()
+    r.w32.animation = True
+    r.host.show_pill()
+    r.host.handle_pill_hover(True)
+    assert r.pill.region == HOVER_REGION
+    r.host.handle_pill_hover(False)
+    assert r.pill.region == HOVER_REGION, "aun estrechandose: la region no la recorta"
+    assert _wait(lambda: r.pill.region == PILL_REGION)
+    r.host.handle_pill_hover(True)
+    r.host.handle_pill_hover(False)
+    r.host.handle_pill_hover(True)  # vuelve antes de que se recoja: la recogida se anula
+    assert _wait(lambda: False, 0.2) is False and r.pill.region == HOVER_REGION
+
+
+def test_backdrop_is_cleared_on_every_show_and_on_the_theme_poll() -> None:
+    """pywebview reaplica Mica con el tema oscuro: se quita al mostrar y periodicamente."""
+    r = Rig()
+    _boot(r)
+    mica_off = (r.pill.hwnd, winapi.DWMWA_SYSTEMBACKDROP_TYPE, winapi.DWMSBT_NONE)
+    r.w32.dwm.clear()
+    r.host.show_pill()
+    r.host.show_popup("x")
+    assert r.w32.dwm.count(mica_off) >= 2
+    r.w32.dwm.clear()
+    r.host._clear_surface_backdrop()
+    assert r.w32.dwm == [mica_off]
+    r.host._stopping.set()
+
+
+def test_a_recreated_window_handle_gets_styles_and_transparency_again() -> None:
+    r = Rig()
+    _boot(r)
     r.host.show_pill()
     r.pill._hwnd = 4242  # WinForms recreo el formulario
     r.pill.log.clear()
     r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
     assert r.w32.styles[4242] & winapi.WS_EX_NOACTIVATE
-    assert ("prepare_overlay", None) in r.pill.log
-    assert ("place", CARD) in r.pill.log
+    assert ("prepare_overlay", True) in r.pill.log
+    assert ("place", STAGE) in r.pill.log
     r.host._stopping.set()
 
 
@@ -748,45 +819,9 @@ def test_region_failure_and_css_scale_mismatch_are_logged(
     r.pill.region_ok = False
     with caplog.at_level("INFO", logger="micnaga.ui.host"):
         r.host.show_pill()
-        r.host.handle_surface_metrics(200, 40, 1.25)  # 250 x 50 px / 200 x 40 css = 1,25: ok
-        r.host.handle_surface_metrics(250, 50, 1.0)  # WebView2 a 1,0 con geometria a 1,25
+        r.host.handle_surface_metrics(420, 112, 1.25)  # 525 x 140 px / 420 x 112 css = 1,25
+        r.host.handle_surface_metrics(525, 140, 1.0)  # WebView2 a 1,0 con geometria a 1,25
     warnings = [rec.getMessage() for rec in caplog.records if rec.levelname == "WARNING"]
     assert any("SetWindowRgn failed" in m for m in warnings)
     assert sum("css scale" in m for m in warnings) == 1
     assert any("devicePixelRatio 1.250" in rec.getMessage() for rec in caplog.records)
-
-
-def test_resize_guard_gives_the_card_its_size_if_the_js_never_asks(monkeypatch) -> None:  # type: ignore[no-untyped-def]
-    monkeypatch.setattr(host_mod, "RESIZE_GUARD_S", 0.05)
-    r = Rig()
-    r.host.show_pill()
-    r.host.show_popup("x")
-    assert r.pill.current_rect == PILL
-    import time
-
-    deadline = time.monotonic() + 3
-    while r.pill.current_rect != CARD and time.monotonic() < deadline:
-        time.sleep(0.02)
-    assert r.pill.current_rect == CARD and "micnaga.surface.resized()" in r.pill.js_calls()
-
-
-def test_resize_requests_are_ignored_without_an_open_card() -> None:
-    r = Rig()
-    r.host.show_pill()
-    r.host.handle_surface_resize("card")  # tarde: la tarjeta ya se fue
-    assert r.pill.current_rect == PILL
-
-
-def test_collapsing_reveals_the_pill_only_after_the_window_shrank() -> None:
-    """Sin fotogramas intermedios: la pastilla entra (``resized``) DESPUES de que la ventana
-    vuelva a medir la pastilla."""
-    r = Rig()
-    r.host.show_pill()
-    r.host.show_popup("x")
-    r.host.handle_surface_resize("card")
-    r.pill.log.clear()
-    r.host.handle_popup_decide("record")
-    r.host.handle_popup_morph(False)
-    r.host.handle_popup_closed("morphed")
-    order = [(k, a) for k, a in r.pill.log if k == "place" or a == "micnaga.surface.resized()"]
-    assert order == [("place", PILL), ("js", "micnaga.surface.resized()")]

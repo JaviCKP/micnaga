@@ -72,7 +72,7 @@ def test_show_pill_while_the_card_is_open_is_never_hidden() -> None:
     assert rig.pill.visible and host.surface_phase == "pill"
 
 
-# ------------------------------------------------------------------ superficie opaca
+# ------------------------------------------------------------------ transparencia
 
 
 def _boot(rig: Rig) -> None:
@@ -82,15 +82,16 @@ def _boot(rig: Rig) -> None:
     host._factory.start(lambda: host._bootstrap(None), icon=None)  # type: ignore[arg-type]
 
 
-def test_surface_is_opaque_without_acrylic() -> None:
-    """Sin transparencia (decision del usuario, DECISIONS §29): ventana opaca del color de la
-    pastilla, sin acrilico ni Mica de DWM."""
+def test_surface_gets_real_transparency_and_no_backdrop() -> None:
+    """La superficie es un lienzo mayor que la forma visible: el acrilico (o el Mica que
+    pywebview pone con el tema oscuro) pintaria el lienzo entero, asi que la forma la dibuja el
+    CSS, la recorta la region y el fondo de sistema se quita (DECISIONS §29)."""
     rig = Rig()
     _boot(rig)
     host = rig.host
     assert host is not None and not host.acrylic
-    assert not rig.pill.spec.transparent and rig.pill.spec.background == host_mod.SURFACE_BG
-    assert ("prepare_overlay", None) in rig.pill.log
+    assert rig.pill.spec.transparent and host.surface_mode == "transparent"
+    assert ("prepare_overlay", True) in rig.pill.log
     assert not any("setBackdrop" in js for js in rig.js(rig.pill))
 
 
@@ -117,26 +118,22 @@ def test_acrylic_can_be_disabled_by_env(monkeypatch) -> None:  # type: ignore[no
     assert rig.host is not None and not rig.host.acrylic
 
 
-def test_the_window_is_the_shape_and_nothing_is_left_after_collapsing() -> None:
-    """La ventana mide la pastilla, crece a la tarjeta y vuelve a medir la pastilla al
-    encoger: fuera de la forma no queda nada en pantalla."""
+def test_the_morph_never_moves_or_resizes_the_window() -> None:
+    """Crecer y encoger es CSS dentro de un lienzo fijo: Win32 solo cambia la region."""
     rig = Rig()
     _boot(rig)
     host = rig.host
     assert host is not None
     host.show_pill(elapsed_s=21.0, provisional=True)
-    pill = rig.pill.current_rect
+    places = list(rig.w32.places(rig.pill.hwnd))
     host.show_popup("x")
-    assert rig.pill.current_rect == pill, "sin morfosis: primero se funde el contenido"
-    rig.pill.flush()  # el JS ya oculto la pastilla y pide la talla de tarjeta
-    card = rig.pill.current_rect
-    assert card[2] > pill[2] and card[3] > pill[3]
     host.handle_surface_phase("card")
     host.handle_popup_decide("record")
     host.handle_popup_morph(False)
     host.handle_popup_closed("morphed")
-    assert [a for k, a in rig.pill.log if k == "place"] == [pill, card, pill]
-    assert rig.pill.current_rect == pill and rig.pill.region == (0, 0, pill[2], pill[3])
+    assert rig.w32.places(rig.pill.hwnd) == places
+    regions = [a for k, a in rig.pill.log if k == "region"]
+    assert len(regions) >= 3 and regions[-1] == regions[0] != regions[-2]  # pill, card, pill
 
 
 def test_popup_state_is_not_authoritative_without_a_provider() -> None:

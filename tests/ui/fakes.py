@@ -66,6 +66,11 @@ class FakeWin32(winapi.Win32):
         self.dwm.append((hwnd, attr, value))
         return self.dwm_ok
 
+    def dwm_flush(self) -> None:
+        import time
+
+        time.sleep(0.004)
+
     def extend_frame(self, hwnd: int) -> bool:
         self.calls.append(("extend_frame", (hwnd,)))
         return True

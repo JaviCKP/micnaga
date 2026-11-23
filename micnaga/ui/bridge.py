@@ -175,20 +175,15 @@ class SurfaceApi(PillApi, PopupApi):
     """``pywebview.api`` de la superficie unica: la pastilla que crece hasta la tarjeta
     «¿Estás en una reu?» / «Reunión terminada» y vuelve a encogerse (``pill.html``)."""
 
-    _PHASES = frozenset({"card", "collapsing"})
+    _PHASES = frozenset({"expanding", "card", "collapsing"})
 
     def surface_phase(self, phase: str) -> None:
-        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
+        """El JS empezo a abrir la tarjeta (``expanding``), termino (``card``) o empezo a
+        encogerla (``collapsing``)."""
         if phase in self._PHASES:
             handler = getattr(self._c, "handle_surface_phase", None)
             if handler is not None:
                 handler(phase)
-
-    def surface_resize(self, kind: str) -> None:
-        """El JS ya oculto el contenido: la ventana puede tomar la talla de ``kind``."""
-        handler = getattr(self._c, "handle_surface_resize", None)
-        if kind == "card" and handler is not None:
-            handler(kind)
 
     def surface_metrics(self, width: float, height: float, dpr: float) -> None:
         """Tamano CSS de la pagina y ``devicePixelRatio`` (diagnostico de DPI, al log)."""

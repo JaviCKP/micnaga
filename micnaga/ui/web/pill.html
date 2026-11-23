@@ -9,8 +9,8 @@
 <link rel="stylesheet" href="pill.css">
 </head>
 <body class="transparent pill-page">
-<!-- ONE surface: the recording pill, which becomes the «¿Estás en una reu?» / «Reunión
-     terminada» card and back. In the app (?fit=1) the opaque window is resized to the shape. -->
+<!-- ONE surface: the recording pill, which grows into the «¿Estás en una reu?» / «Reunión
+     terminada» card and shrinks back (one CSS clip; the window never resizes, Python clips it). -->
 <div class="pill pywebview-drag-region" id="pill" role="group" data-i18n-aria-label="pill.label"
      data-state="recording" data-hover="false" data-provisional="false" data-surface="pill">
   <div class="pill-row">

@@ -25,6 +25,46 @@ from micnaga.ui.media import LocalServer
 
 log = logging.getLogger(__name__)
 
+OVERLAY_OPAQUE_BG = "#0a090f"
+"""Formulario de la superficie cuando no hay transparencia: el color de noche de ``.pill``."""
+
+_overlay_hwnds: set[int] = set()
+_theme_hooked: set[type] = set()
+_hook_lock = threading.Lock()
+
+
+def _keep_backdrop_clear(win: Any, hwnd: int, w32: winapi.Win32) -> None:
+    """pywebview reaplica Mica en ``BrowserForm.update_title_bar_theme`` al crear la ventana y
+    en cada ``SystemEvents.UserPreferenceChanged`` (cambio de tema, de colores...). Se envuelve
+    ese metodo (una vez por clase) para que, justo despues, las superficies vuelvan a quedarse
+    sin fondo de sistema: el recuadro gris no puede volver (DECISIONS §29)."""
+    with _hook_lock:
+        _overlay_hwnds.add(hwnd)
+        try:
+            cls = type(win.native)
+        except Exception:
+            return
+        if cls in _theme_hooked:
+            return
+        original = getattr(cls, "update_title_bar_theme", None)
+        if original is None:
+            return
+
+        def update_title_bar_theme(self: Any) -> None:
+            original(self)
+            try:
+                handle = int(self.Handle.ToInt64())
+            except Exception:
+                return
+            if handle in _overlay_hwnds:
+                winapi.clear_backdrop(handle, w32)
+
+        try:
+            cls.update_title_bar_theme = update_title_bar_theme
+            _theme_hooked.add(cls)
+        except Exception:
+            log.warning("cannot hook pywebview's theme update; backdrop cleared on show only")
+
 
 @dataclass
 class WindowSpec:
@@ -83,9 +123,12 @@ class UiWindow(Protocol):
 
     def pick_folder(self, current: str) -> str | None: ...
 
-    def prepare_overlay(self) -> bool:
-        """Ventana superpuesta (pastilla/tarjeta) OPACA: sin fondo de sistema de DWM (Mica, que
-        pywebview pone con el tema oscuro). Idempotente. ``False`` si no se pudo."""
+    def prepare_overlay(self, transparent: bool = True) -> bool:
+        """Ventana superpuesta (pastilla/tarjeta). ``transparent``: formulario negro + marco DWM
+        extendido al cliente (transparencia real; el CSS dibuja la forma). Si no, formulario
+        opaco del color de la pastilla. En los dos casos sin fondo de sistema de DWM (Mica, que
+        pywebview pone con el tema oscuro), tambien cuando pywebview lo reaplique. Idempotente.
+        ``False`` si no se pudo (con ``transparent``: no hay transparencia en este equipo)."""
         ...
 
 
@@ -175,9 +218,38 @@ class PywebviewWindow:
         with contextlib.suppress(Exception):
             self._win.set_title(title)
 
-    def prepare_overlay(self) -> bool:
+    def prepare_overlay(self, transparent: bool = True) -> bool:
         hwnd = self.hwnd
-        return bool(hwnd) and winapi.clear_backdrop(hwnd, self._w32)
+        if not hwnd:
+            return False
+        _keep_backdrop_clear(self._win, hwnd, self._w32)
+        ok = self._set_back_color("#000000" if transparent else OVERLAY_OPAQUE_BG)
+        if transparent:
+            ok = winapi.make_overlay_transparent(hwnd, self._w32) and ok
+        winapi.clear_backdrop(hwnd, self._w32)
+        return ok
+
+    def _set_back_color(self, color: str) -> bool:  # pragma: no cover - necesita WinForms
+        """``BackColor`` del formulario: negro = transparente con el marco DWM extendido; sin
+        el, pywebview deja un recuadro gris detras del WebView2 transparente."""
+        try:
+            native = self._win.native
+            from System import Action  # type: ignore[import-not-found,unused-ignore]
+            from System.Drawing import (  # type: ignore[import-not-found,unused-ignore]
+                ColorTranslator,
+            )
+
+            def set_back() -> None:
+                native.BackColor = ColorTranslator.FromHtml(color)
+
+            if getattr(native, "InvokeRequired", False):
+                native.Invoke(Action(set_back))
+            else:
+                set_back()
+            return True
+        except Exception:
+            log.debug("BackColor not set on %s", self.key, exc_info=True)
+            return False
 
     def pick_folder(self, current: str) -> str | None:  # pragma: no cover - dialogo nativo
         import webview
@@ -253,6 +325,7 @@ class FakeWindow:
         self.region_radius = 0
         self.region_ok = True
         self.overlay_ok = True
+        """``prepare_overlay(transparent=True)`` funciona (hay transparencia)."""
         self._closed: list[Callable[[], None]] = []
         self._moved: list[Callable[[int, int], None]] = []
 
@@ -307,9 +380,9 @@ class FakeWindow:
     def set_title(self, title: str) -> None:
         self.log.append(("title", title))
 
-    def prepare_overlay(self) -> bool:
-        self.log.append(("prepare_overlay", None))
-        return self.overlay_ok
+    def prepare_overlay(self, transparent: bool = True) -> bool:
+        self.log.append(("prepare_overlay", transparent))
+        return self.overlay_ok or not transparent
 
     def pick_folder(self, current: str) -> str | None:
         self.log.append(("pick_folder", current))

@@ -14,6 +14,7 @@ from __future__ import annotations
 import contextlib
 import ctypes
 import logging
+import math
 import sys
 import time
 from collections.abc import Callable
@@ -191,6 +192,13 @@ class Win32:
         hr = ctypes.windll.dwmapi.DwmExtendFrameIntoClientArea(wintypes.HWND(hwnd), ctypes.byref(m))
         return bool(hr == 0)
 
+    def dwm_flush(self) -> None:
+        """Espera a la siguiente composicion de DWM (el refresco de la pantalla)."""
+        try:
+            ctypes.windll.dwmapi.DwmFlush()
+        except (AttributeError, OSError):
+            time.sleep(1 / 60)
+
     def client_area_animation(self) -> bool:
         flag = ctypes.c_int(1)
         ok = ctypes.windll.user32.SystemParametersInfoW(
@@ -328,9 +336,17 @@ PILL_SIZE = (200, 40)
 PILL_HOVER_WIDTH = 296
 CARD_SIZE = POPUP_SIZE
 UNDO_WIDTH = 236
-SURFACE_RADIUS = 6
-"""``border-radius`` (px CSS) de la pastilla y de la tarjeta (``pill.css``): la region de la
-ventana (que mide la forma) lleva las mismas esquinas, escaladas al DPI."""
+STAGE_SIZE = (420, 112)
+"""Lienzo de la superficie unica (pastilla <-> tarjeta): cabe la tarjeta (372 x 112) y la
+pastilla ancha con titulo (420). La ventana tiene siempre este tamano; lo que se ve y se pulsa
+lo marca la region (``SetWindowRgn``), y lo que se dibuja, el CSS (``clip-path``)."""
+SURFACE_RADIUS = 20
+"""Radio (px CSS) de la forma en todos sus estados (``--surface-r`` en ``pill.css``): la pastilla
+de 40 px de alto es redonda del todo y la tarjeta lleva el mismo radio, asi que en la morfosis
+solo cambian los bordes, nunca el radio."""
+REGION_OUTSET = 2
+"""La region (px fisicos) sobresale este margen de la forma: su borde duro de GDI cae sobre
+pixeles transparentes y no corta el antialias de las esquinas que pinta el CSS."""
 POPUP_MARGIN = 24
 PILL_TOP_MARGIN = 12
 
@@ -361,24 +377,68 @@ def pill_rect(
     return (left + (right - left - w) // 2, top + _px(top_margin, mon.scale), w, h)
 
 
-def shape_rect(
-    pill: Rect,
-    size: tuple[int, int],
-    mon: MonitorInfo,
-    *,
-    anchor: Literal["center", "left"] = "center",
-) -> Rect:
-    """Ventana de la superficie con la forma ``size`` (px CSS: pastilla, pastilla ancha, aviso o
-    tarjeta): centrada en la pastilla (o desde su borde izquierdo), pegada a su borde superior y
-    dentro del area de trabajo. ``(x, y, w, h)`` fisicos."""
+def stage_rect(pill: Rect, mon: MonitorInfo, size: tuple[int, int] = STAGE_SIZE) -> Rect:
+    """Lienzo centrado sobre la pastilla y pegado a su borde superior, dentro del area visible."""
     w, h = _px(size[0], mon.scale), _px(size[1], mon.scale)
-    x = pill[0] if anchor == "left" else pill[0] + pill[2] // 2 - w // 2
+    x = pill[0] + pill[2] // 2 - w // 2
     return clamp_to_work_area((x, pill[1], w, h), mon.work)
 
 
-def region_radius(scale: float) -> int:
-    """Radio (px fisicos) de las esquinas de la region para ``SURFACE_RADIUS`` CSS."""
-    return max(0, _px(SURFACE_RADIUS, scale))
+def stage_layout(
+    pill: Rect, stage: Rect, scale: float, size: tuple[int, int] = STAGE_SIZE
+) -> dict[str, float]:
+    """Donde va cada forma dentro del lienzo, en px CSS: centro x y borde superior de la
+    pastilla (``px``, ``py``) e izquierda de la tarjeta (``cardL``, centrada en la pastilla)."""
+    px = (pill[0] + pill[2] / 2 - stage[0]) / scale
+    py = max(0.0, min(size[1] - PILL_SIZE[1], (pill[1] - stage[1]) / scale))
+    card_l = max(0.0, min(size[0] - CARD_SIZE[0], px - CARD_SIZE[0] / 2))
+    return {"px": round(px, 2), "py": round(py, 2), "cardL": round(card_l, 2)}
+
+
+CssBox = tuple[float, float, float, float]
+"""``(izquierda, arriba, ancho, alto)`` en px CSS dentro del lienzo."""
+
+
+def css_region(box: CssBox, scale: float, outset: int = REGION_OUTSET) -> Rect:
+    """Forma CSS del lienzo -> rectangulo de la region en px fisicos, redondeado hacia fuera y
+    con ``outset`` px de margen. Puede salirse del lienzo: Windows recorta la region a la
+    ventana, y asi las esquinas redondeadas pegadas al borde no se estrechan."""
+    left, top, w, h = box
+    x0 = math.floor(left * scale) - outset
+    y0 = math.floor(top * scale) - outset
+    x1 = math.ceil((left + w) * scale) + outset
+    y1 = math.ceil((top + h) * scale) + outset
+    return (x0, y0, max(0, x1 - x0), max(0, y1 - y0))
+
+
+def css_union(a: CssBox, b: CssBox) -> CssBox:
+    """Caja que contiene ``a`` y ``b`` (la region mientras una forma pasa a la otra)."""
+    left, top = min(a[0], b[0]), min(a[1], b[1])
+    right, bottom = max(a[0] + a[2], b[0] + b[2]), max(a[1] + a[3], b[1] + b[3])
+    return (left, top, right - left, bottom - top)
+
+
+def css_contains(outer: CssBox, inner: CssBox) -> bool:
+    return (
+        outer[0] <= inner[0]
+        and outer[1] <= inner[1]
+        and outer[0] + outer[2] >= inner[0] + inner[2]
+        and outer[1] + outer[3] >= inner[1] + inner[3]
+    )
+
+
+def lerp_box(a: CssBox, b: CssBox, p: float) -> CssBox:
+    return (
+        a[0] + (b[0] - a[0]) * p,
+        a[1] + (b[1] - a[1]) * p,
+        a[2] + (b[2] - a[2]) * p,
+        a[3] + (b[3] - a[3]) * p,
+    )
+
+
+def region_radius(scale: float, outset: int = REGION_OUTSET) -> int:
+    """Radio (px fisicos) de las esquinas de la region: el de la forma mas el margen."""
+    return max(0, _px(SURFACE_RADIUS, scale) + outset)
 
 
 def clamp_to_work_area(rect: Rect, work: Rect) -> Rect:
@@ -537,15 +597,21 @@ def acrylic_supported(api: Win32 | None = None) -> bool:
     return (api or default_api()).windows_build() >= MICA_MIN_BUILD
 
 
+def make_overlay_transparent(hwnd: int, api: Win32 | None = None) -> bool:
+    """Marco extendido al cliente (junto con ``BackColor = Black`` del formulario)."""
+    return (api or default_api()).extend_frame(hwnd)
+
+
 def clear_backdrop(hwnd: int, api: Win32 | None = None) -> bool:
     """Quita el fondo de sistema de DWM (``DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_NONE``).
 
     pywebview (``BrowserForm.update_title_bar_theme``) pone Mica (``DWMSBT_MAINWINDOW``) en TODA
-    ventana cuando las apps usan el tema oscuro. Con el marco extendido al cliente (la antigua
-    superficie transparente) DWM pintaba ese Mica (gris liso: la ventana nunca esta activa) en el
-    rectangulo ENTERO de la ventana sin que la region lo recortase: era el recuadro gris (medido,
-    DECISIONS §29). La superficie ya es opaca y sin marco extendido; se quita igualmente. Antes
-    de Windows 11 22H2 el atributo no existe (no hay Mica que quitar): ``True``.
+    ventana cuando las apps usan el tema oscuro, al crearla y en cada cambio de preferencias del
+    sistema. Con el marco extendido al cliente (la superficie transparente) DWM pinta ese Mica
+    (gris liso: la ventana nunca esta activa) en el rectangulo ENTERO de la ventana y la region
+    NO lo recorta: era el recuadro gris (medido, DECISIONS §29). Por eso se quita al prepararla,
+    en cada aparicion y cada vez que pywebview lo reaplica. Antes de Windows 11 22H2 el atributo
+    no existe (no hay Mica que quitar): ``True``.
     """
     w = api or default_api()
     if w.windows_build() < MICA_MIN_BUILD:

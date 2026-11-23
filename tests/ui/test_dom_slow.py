@@ -314,15 +314,16 @@ def test_pill_hover_expands_and_buttons_route(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
     p = page(world, "pill.html", "pill", 320, 48, elapsed=65)
-    assert p.eval("document.getElementById('pill').getBoundingClientRect().width") == 200
+    assert p.eval("micnaga.surface.box().width") == 200
     assert p.eval("getComputedStyle(document.getElementById('pill')).opacity") == "0.6"
     assert p.eval("document.getElementById('time').textContent") in ("01:05", "01:06")
     p.mouse_move(150, 20)
-    assert p.wait_for("document.getElementById('pill').getBoundingClientRect().width > 290", 2)
+    assert p.wait_for("micnaga.surface.box().width > 290", 2)
     assert p.wait_for(
         "parseFloat(getComputedStyle(document.getElementById('pill')).opacity) > 0.95", 2
     )
     assert ("handle_pill_hover", (True,)) in spy.calls
+    time.sleep(0.35)  # the shape and the bar finish widening before clicking its buttons
     p.click(*p.center("#b-marker"))
     p.click(*p.center("#b-stop"))
     deadline = time.time() + 2  # the bridge calls are async HTTP posts in this harness
@@ -362,9 +363,12 @@ def test_pill_provisional_variant_shows_label(world: dict[str, Any]) -> None:
 
 def test_pill_is_200_by_40_with_pulsing_dot(world: dict[str, Any]) -> None:
     p = page(world, "pill.html", "pill", 320, 48)
-    assert p.eval(
-        "(() => { const r = document.getElementById('pill').getBoundingClientRect(); return [r.width, r.height]; })()"  # noqa: E501
-    ) == [200, 40]
+    assert p.eval("(() => { const b = micnaga.surface.box(); return [b.width, b.height]; })()") == [
+        200,
+        40,
+    ]
+    # a fully round capsule: radius = height / 2
+    assert "round 20px" in str(p.eval("getComputedStyle(document.getElementById('pill')).clipPath"))
     assert (
         p.eval("getComputedStyle(document.querySelector('.rec-dot'), '::after').animationDuration")
         == "1.2s"
@@ -470,46 +474,116 @@ def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any
 
 
 def _rect(p: Page) -> list[float]:
+    """La forma a la que va el CSS (caja del ``clip-path``), en px CSS del lienzo."""
     return p.eval(  # type: ignore[no-any-return]
-        "(() => { const r = document.getElementById('pill').getBoundingClientRect();"
-        " return [r.left, r.top, r.width, r.height].map(Math.round); })()"
+        "(() => { const b = micnaga.surface.box();"
+        " return [b.left, b.top, b.width, b.height].map(Math.round); })()"
     )
 
 
-def test_pill_becomes_the_card_with_a_fade_and_no_morph(world: dict[str, Any]) -> None:
-    """Dos estados, sin morfosis (DECISIONS §29): la forma salta de pastilla a tarjeta con el
-    contenido oculto y el contenido entra con un fundido; nada anima ancho/alto/radio. El punto
-    y el cronometro guardan la distancia a la esquina (son la cabecera de la tarjeta)."""
+def _settled(p: Page) -> None:
+    """Espera a que no quede ninguna transicion en marcha en la superficie."""
+    assert p.wait_for(
+        "document.getAnimations().filter(a => a.playState === 'running'"
+        " && !(a.effect && a.effect.target && a.effect.target.closest"
+        " && a.effect.target.closest('.rec-dot'))).length === 0",
+        2,
+    )
+
+
+def test_pill_grows_into_the_card_and_shrinks_back(world: dict[str, Any]) -> None:
+    """La tarjeta nace de la pastilla: pill -> expanding -> card -> collapsing -> pill, con el
+    punto y el cronometro anclados a la esquina de la forma (son la cabecera de la tarjeta).
+    La forma es un ``clip-path`` redondo (20 px): la pastilla es una capsula y la tarjeta lleva
+    el mismo radio, asi que solo se mueven los bordes."""
     spy = world["spy"]
     spy.calls.clear()
     p = page(world, "pill.html", "surface", 420, 112, levels="0.3,0.1")
     p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
     assert _rect(p) == [110, 0, 200, 40] and p.eval("micnaga.surface.phase") == "pill"
+    clip = str(p.eval("getComputedStyle(document.getElementById('pill')).clipPath"))
+    assert clip.startswith("inset(") and "round 20px" in clip
+    _settled(p)
     dot0 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
     p.eval("micnaga.popup.show({title: 'Revisión semanal', code: 'abc-defg-hij', timeoutS: 40})")
-    # la forma ya es la tarjeta al instante (sin pasos intermedios), con el contenido velado
+    assert p.wait_for("micnaga.surface.phase === 'expanding'", 1)
+    assert p.eval("document.getElementById('pill').dataset.moving") == "true"
+    assert ("handle_surface_phase", ("expanding",)) in spy.calls
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
     assert _rect(p) == [24, 0, 372, 112]
-    props = str(p.eval("getComputedStyle(document.getElementById('pill')).transitionProperty"))
-    assert "width" not in props and "height" not in props and "left" not in props
-    assert p.wait_for("micnaga.surface.phase === 'card'", 1)
-    assert p.wait_for("document.getElementById('pill').dataset.veil === 'off'", 1)
-    assert p.wait_for("getComputedStyle(document.getElementById('card')).opacity === '1'", 1)
+    _settled(p)
+    # the dot rode the left edge: same offset from the shape's corner as in the pill
     dot1 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
-    assert dot0 - 110 == dot1 - 24
+    assert round(dot0 - 110) == round(dot1 - 24)
+    assert p.eval("getComputedStyle(document.getElementById('lift')).opacity") == "1"
+    assert p.eval("document.getElementById('pill').dataset.moving") == "false"
     assert ("handle_surface_phase", ("card",)) in spy.calls
     assert not p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
     p.eval("micnaga.popup.dismiss()")
-    assert p.eval("document.getElementById('pill').dataset.veil") == "on"  # se funde fuera
-    assert _rect(p) == [24, 0, 372, 112]  # ...con la talla de tarjeta mientras se va
+    assert p.wait_for("micnaga.surface.phase === 'collapsing'", 1)
     assert p.wait_for("micnaga.surface.phase === 'pill' && micnaga.popup.phase === 'done'", 2)
     assert _rect(p) == [110, 0, 200, 40]
-    assert p.wait_for("document.getElementById('pill').dataset.veil === 'off'", 1)
     assert ("handle_surface_phase", ("collapsing",)) in spy.calls
     assert ("handle_popup_closed", ("leaving",)) in spy.calls
     assert p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
 
 
-def test_reduced_motion_swaps_instantly(world: dict[str, Any]) -> None:
+def test_the_morph_animates_only_clip_and_transform(world: dict[str, Any]) -> None:
+    """Fluida: durante la morfosis solo cambian ``clip-path``, ``transform`` y ``opacity``
+    (nada de layout ni de radio), y la caja de la pastilla no cambia de tamano."""
+    p = page(world, "pill.html", "surface", 420, 112)
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    _settled(p)
+    p.eval(
+        "window.__props = new Set(); window.__boxes = new Set();"
+        "document.addEventListener('transitionrun', e => __props.add(e.propertyName));"
+        "document.addEventListener('animationstart', e => __props.add('@' + e.animationName));"
+        "(function f() { const r = document.getElementById('pill').getBoundingClientRect();"
+        " __boxes.add([r.width, r.height].join('x'));"
+        " if (!window.__stop) requestAnimationFrame(f); })();"
+    )
+    p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
+    p.eval("micnaga.popup.dismiss()")
+    assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    props = set(p.eval("(window.__stop = true, [...__props])"))
+    moving = {x for x in props if not x.startswith("@")}
+    assert {"clip-path", "transform"} <= moving
+    assert moving <= {"clip-path", "transform", "opacity", "visibility"}, moving
+    assert p.eval("[...__boxes]") == ["420x112"], "la caja nunca cambia: sin layout por fotograma"
+
+
+def test_morph_frame_timing_in_chromium(world: dict[str, Any]) -> None:
+    """Mide los fotogramas (``requestAnimationFrame``) de crecer y encoger. En headless la
+    cadencia la marca el navegador, asi que se exige poco: que anime (varios fotogramas, no un
+    salto) y que ningun fotograma se atasque."""
+    p = page(world, "pill.html", "surface", 420, 112)
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    _settled(p)
+    p.eval(
+        "window.__t = []; window.__loaf = [];"
+        "try { new PerformanceObserver(l => l.getEntries().forEach(e => __loaf.push(e.duration)))"
+        ".observe({type: 'long-animation-frame', buffered: false}); } catch (e) {}"
+        "(function f(t) { __t.push(t); if (!window.__stop) requestAnimationFrame(f); })"
+        "(performance.now());"
+    )
+    p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
+    p.eval("micnaga.popup.dismiss()")
+    assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    stats = p.eval(
+        "(() => { window.__stop = true; const d = [];"
+        " for (let i = 1; i < __t.length; i++) d.push(__t[i] - __t[i - 1]);"
+        " d.sort((a, b) => a - b);"
+        " return {n: d.length, p50: d[Math.floor(d.length / 2)], max: d[d.length - 1],"
+        " loaf: __loaf.length}; })()"
+    )
+    print("chromium morph frames:", stats)
+    assert stats["n"] >= 20, stats
+    assert stats["max"] < 100, stats
+
+
+def test_reduced_motion_cross_fades_instead_of_morphing(world: dict[str, Any]) -> None:
     p = page(world, "pill.html", "surface", 420, 112, motion="off")
     p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
     p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
@@ -517,42 +591,5 @@ def test_reduced_motion_swaps_instantly(world: dict[str, Any]) -> None:
     for sel in ("pill", "card"):
         duration = p.eval(f"getComputedStyle(document.getElementById('{sel}')).transitionDuration")
         assert set(str(duration).replace(" ", "").split(",")) == {"0s"}, (sel, duration)
-
-
-def test_in_the_app_the_window_is_resized_while_the_content_is_hidden(
-    world: dict[str, Any],
-) -> None:
-    """``?fit=1`` (la app): ventana opaca que Python redimensiona a la forma; la pagina la llena
-    y pinta el fondo de noche. La talla cambia SOLO con el contenido oculto: el JS funde la
-    pastilla, pide la talla (``surface_resize``) y no muestra la tarjeta hasta ``resized()``."""
-    spy = world["spy"]
-    spy.calls.clear()
-    p = page(world, "pill.html", "surface", 200, 40, fit=1)
-    assert p.eval("document.documentElement.dataset.fit") == "window"
-    assert _rect(p) == [0, 0, 200, 40]
-    assert p.eval("getComputedStyle(document.body).backgroundColor") == "rgb(10, 9, 15)"
-    p.eval("micnaga.popup.show({title: 'Revisión semanal', code: 'abc-defg-hij', timeoutS: 40})")
-    assert p.eval("document.getElementById('pill').dataset.veil") == "on"
-    assert p.wait_for("micnaga.surface.phase === 'expanding'", 1)
-    deadline = time.time() + 2
-    while time.time() < deadline and ("handle_surface_resize", ("card",)) not in spy.calls:
-        time.sleep(0.05)
-    assert ("handle_surface_resize", ("card",)) in spy.calls
-    assert p.eval("micnaga.surface.phase") == "expanding"  # espera a Python: sigue oculta
-    p.eval("micnaga.surface.resized()")  # Python: la ventana ya mide la tarjeta
-    assert p.wait_for("micnaga.surface.phase === 'card'", 1)
-    assert p.wait_for("document.getElementById('pill').dataset.veil === 'off'", 1)
-    assert _rect(p) == [0, 0, 200, 40]  # la forma llena la ventana, sea cual sea su talla
-    p.eval("micnaga.popup.dismiss()")
-    assert p.wait_for("micnaga.surface.phase === 'pill' && micnaga.popup.phase === 'done'", 1)
-    assert p.eval("document.getElementById('pill').dataset.veil") == "on"  # hasta encoger
-    p.eval("micnaga.surface.resized()")
-    assert p.wait_for("document.getElementById('pill').dataset.veil === 'off'", 1)
-    # una ventana que estaba oculta ya tiene la talla: no pide otra
-    p2 = page(world, "pill.html", "surface", 372, 112, fit=1)
-    spy.calls.clear()
-    p2.eval("micnaga.surface.prepare(true)")
-    p2.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
-    assert p2.wait_for("micnaga.surface.phase === 'card'", 1)
-    assert p2.wait_for("document.getElementById('pill').dataset.veil === 'off'", 1)
-    assert ("handle_surface_resize", ("card",)) not in spy.calls
+    row = p.eval("getComputedStyle(document.querySelector('.pill-row')).transitionDuration")
+    assert set(str(row).replace(" ", "").split(",")) == {"0s"}, row

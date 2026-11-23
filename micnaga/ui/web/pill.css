@@ -1,53 +1,98 @@
 /*
- * Recording pill (MIC-10/12/13) — 200 x 40 bar, 296 wide on hover — and the card it becomes.
+ * Recording pill (MIC-10/12/13) — 200 x 40 capsule, 296 wide on hover — and the card it grows into.
  * Always night (color-scheme: dark): it floats over arbitrary content (Meet light or dark) and
- * must stay legible — yet quiet — at the 60 % resting opacity.
- * The promo's flat card, small: near-black, a hairline, radius 6. Warm only for recording.
+ * must stay legible — yet quiet — at the 60 % resting opacity. Warm only for recording.
  *
- * ONE surface, TWO states, no morph (DECISIONS §29, after user testing): the pill and the
- * 372 x 112 card. The content fades out (160 ms), the shape takes the other size while hidden,
- * and the content fades back in (opacity + 4 px). Nothing animates width/height/radius.
- * In the app (:root[data-fit="window"], end of file) the window is OPAQUE and IS the shape:
- * Python sizes it to the pill / wide pill / undo chip / card and the shape fills it.
- * Standalone (screenshots, dev) the pill is a bar centred on --px and the card sits at --card-l.
- * The pill's dot + timer are the card's header (same corner offset).
+ * ONE surface (DECISIONS §28-29). The window is a fixed transparent stage (420 x 112,
+ * winapi.STAGE_SIZE); Python clips it (SetWindowRgn) a little OUTSIDE whatever is visible, so
+ * the antialiased corners drawn here are never cut. `.pill` covers the whole stage and the shape
+ * is its `clip-path: inset(... round 20px)`: a fully round capsule at rest (radius = height / 2)
+ * that grows into the 372 x 112 card with the same radius, so only the four edges move.
+ *
+ * Fluid on purpose: nothing in the morph touches layout or the border-radius. Each frame only
+ * changes the clip (the shape and, inset by 1 px, its fill: the hairline is the gap between
+ * them) and a translate (the dot + timer ride the shape's corner and become the card's header).
+ * The card content is a fixed 372 x 112 layer that fades and rises in, staggered, while the
+ * shape opens. Grow 300 ms, shrink 240 ms, ease .2,.9,.25,1 (fast out, settles without bounce).
  */
+@property --sl { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --st { syntax: "<length>"; inherits: true; initial-value: 0px; }
+@property --sw { syntax: "<length>"; inherits: true; initial-value: 200px; }
+@property --sh { syntax: "<length>"; inherits: true; initial-value: 40px; }
+
 .pill {
   --w: 200px;
   --px: 50vw;            /* pill centre x inside the stage (Python: micnaga.pill.layout) */
   --py: 0px;             /* pill top inside the stage */
   --card-l: 0px;         /* card left inside the stage */
-  --fade: 160ms;         /* the content's fade between pill and card (pill.js FADE_MS) */
+  --surface-r: 20px;     /* winapi.SURFACE_RADIUS: round capsule, same radius on the card */
+  --surface-ease: cubic-bezier(0.2, 0.9, 0.25, 1);
+  --grow: 300ms;         /* host.GROW_S */
+  --shrink: 240ms;       /* host.SHRINK_S, after --shrink-delay (the content leaves first) */
+  --shrink-delay: 40ms;
+  /* the shape, in stage CSS px: the pill by default, the card while open */
+  --sl: calc(var(--px) - var(--w) / 2);
+  --st: var(--py);
+  --sw: var(--w);
+  --sh: 40px;
+  --g-dur: var(--dur);
+  --g-ease: var(--ease-out);
+  --g-delay: 0ms;
   --pill-text: #f4f4f7;
   --pill-dim: #9a9aa6;
-  --pill-ring: rgb(244 244 247 / 0.16);
+  --pill-fill: #0a090f;
+  --pill-ring: #2f2f34;  /* rgb(244 244 247 / 0.16) over the fill */
   color-scheme: dark;
-  position: absolute; top: var(--py); left: calc(var(--px) - var(--w) / 2);
-  width: var(--w); height: 40px; margin: 0; padding: 0;
-  border-radius: 6px;
+  position: absolute; inset: 0; margin: 0; padding: 0;
   color: var(--pill-text);
-  background: #0a090f;
-  box-shadow: inset 0 0 0 1px var(--pill-ring);
+  background: var(--pill-ring);
+  clip-path: inset(var(--st) calc(100% - var(--sl) - var(--sw)) calc(100% - var(--st) - var(--sh)) var(--sl) round var(--surface-r));
   opacity: 0.6;
-  overflow: hidden;
-  transition: width var(--dur) var(--ease-out), opacity var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+  isolation: isolate;
+  transition: clip-path var(--g-dur) var(--g-ease) var(--g-delay), opacity var(--dur) var(--ease);
   user-select: none; -webkit-user-select: none;
 }
-.pill-row { position: relative; display: flex; align-items: center; gap: 10px; height: 40px; padding: 0 6px 0 15px; }
+/* the fill, 1 px inside the shape: the hairline ring is what it leaves uncovered */
+.pill::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; background: var(--pill-fill);
+  clip-path: inset(calc(var(--st) + 1px) calc(100% - var(--sl) - var(--sw) + 1px) calc(100% - var(--st) - var(--sh) + 1px) calc(var(--sl) + 1px) round calc(var(--surface-r) - 1px));
+  transition: clip-path var(--g-dur) var(--g-ease) var(--g-delay);
+}
+/* the bar rides the shape's top-left corner (a translate: compositor only) */
+.pill > :is(.pill-row, .undo) {
+  position: absolute; left: 0; top: 0; width: var(--w); height: 40px;
+  transform: translate(var(--sl), var(--st));
+  transition: transform var(--g-dur) var(--g-ease) var(--g-delay);
+}
+.pill-row { display: flex; align-items: center; gap: 10px; padding: 0 8px 0 15px; }
 .pill[data-hover="true"], .pill:focus-within { --w: 296px; opacity: 1; }
+/* layers that move get their own compositor layer only while they move */
+.pill[data-moving="true"], .pill[data-moving="true"]::before { will-change: clip-path; }
+.pill[data-moving="true"] > :is(.pill-row, .undo) { will-change: transform; }
+/* JS snaps a change (layout, re-show) without letting it animate */
+.pill.snap, .pill.snap::before, .pill.snap > * { transition: none !important; }
 
-/* ---- two states: pill | card (the shape snaps; only the content fades) ---------------- */
-.pill:is([data-surface="card"], [data-surface="collapsing"]) {
-  left: var(--card-l); top: 0; width: 372px; height: 112px; opacity: 1 !important; transition: none;
+/* ---- the morph: pill -> card -> pill -------------------------------------------------- */
+.pill:is([data-surface="expanding"], [data-surface="card"]) {
+  --sl: var(--card-l); --st: 0px; --sw: 372px; --sh: 112px;
+  --g-dur: var(--grow); --g-ease: var(--surface-ease); --g-delay: 0ms;
+  opacity: 1 !important;
 }
-.pill[data-surface="expanding"] { opacity: 1 !important; transition: none; }
+.pill[data-surface="collapsing"] { --g-dur: var(--shrink); --g-ease: var(--surface-ease); --g-delay: var(--shrink-delay); }
 /* while it is a card the bar's extras step aside (the dot + timer stay: the card's header) */
-.pill:is([data-surface="expanding"], [data-surface="card"], [data-surface="collapsing"]) :is(.pill-tag, .pill-save, .pill-title, .pill-meters, .pill-actions) {
-  opacity: 0 !important; visibility: hidden; pointer-events: none; transition: none;
+.pill:is([data-surface="expanding"], [data-surface="card"]) :is(.pill-tag, .pill-save, .pill-title, .pill-meters, .pill-actions),
+.pill[data-surface="collapsing"] :is(.pill-title, .pill-actions) {
+  opacity: 0 !important; visibility: hidden; pointer-events: none;
+  transition: opacity 90ms var(--ease), visibility 0s linear 90ms;
 }
-/* the veil: content out (and a touch down), the window/shape changes, content back in */
-.pill > :is(.pill-row, .undo, .card) { transition: opacity var(--fade) var(--ease), transform var(--fade) var(--ease-out); }
-.pill[data-veil="on"] > :is(.pill-row, .undo, .card) { opacity: 0; transform: translateY(4px); pointer-events: none; }
+/* ...and come back in the last half of the shrink. An animation, not a transition: the
+   «Sí» swaps «¿Guardar?» for the meters while shrinking, and an element that was
+   display:none has nothing to transition from (it would pop in at full opacity). */
+.pill[data-surface="collapsing"] :is(.pill-tag, .pill-save, .pill-meters) {
+  pointer-events: none;
+  animation: extras-in 140ms var(--ease) 150ms both;
+}
+@keyframes extras-in { from { opacity: 0; } }
 
 /* state glyph: warm square (recording), hollow square (provisional), two ink bars (private pause) */
 .state-ico { position: relative; width: 10px; height: 10px; flex: none; display: grid; place-items: center; }
@@ -77,12 +122,13 @@
 .pill-actions {
   display: flex; gap: 2px; align-items: center; margin-left: 0;
   max-width: 0; opacity: 0; overflow: hidden;
-  transition: max-width var(--dur) var(--ease-out), opacity var(--dur-fast) var(--ease), margin var(--dur) var(--ease-out);
+  transition: opacity var(--dur-fast) var(--ease);
 }
-/* hover-in: the bar widens first and the controls follow a beat later; hover-out: they leave at once */
-.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 104px; opacity: 1; margin-left: 2px; transition-delay: 0ms, 60ms, 0ms; }
+/* hover-in: the shape widens and the controls fade in a beat later (their room is taken at
+   once: one layout, then only opacity); hover-out: they leave at once */
+.pill[data-hover="true"] .pill-actions, .pill:focus-within .pill-actions { max-width: 104px; opacity: 1; margin-left: 2px; transition-delay: 60ms; }
 .pb {
-  position: relative; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 4px; flex: none;
+  position: relative; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 50%; flex: none;
   display: grid; place-items: center; background: transparent; color: var(--pill-text);
   transition: background-color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out), color var(--dur-hover) var(--ease);
 }
@@ -138,7 +184,7 @@
 .pill-title {
   flex: 1; min-width: 0; max-width: 0; opacity: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   font-size: 13px; font-weight: 600; color: var(--pill-dim);
-  transition: max-width var(--dur) var(--ease-out), opacity var(--dur) var(--ease);
+  transition: opacity var(--dur) var(--ease);
 }
 .pill[data-has-title="true"][data-hover="true"], .pill[data-has-title="true"]:focus-within { --w: 420px; }
 .pill[data-has-title="true"][data-hover="true"] .pill-title,
@@ -154,7 +200,7 @@ body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; backg
 /* ---- «¿Guardar?» en la pastilla provisional: la decision siempre a mano ------------------ */
 .pill-save {
   display: none; align-items: center; gap: 6px; height: 24px; padding: 0 10px 0 8px; margin-left: auto; margin-right: 4px;
-  border: 0; border-radius: 3px; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+  border: 0; border-radius: 12px; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
   color: #f4f4f7; background: transparent; box-shadow: inset 0 0 0 1px rgb(244 244 247 / 0.24);
   white-space: nowrap; flex: none;
   transition: background-color var(--dur-hover) var(--ease), box-shadow var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
@@ -170,23 +216,21 @@ body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; backg
 .pill[data-provisional="true"][data-hover="true"] .pill-time { min-width: 0; }
 
 /* ---- «Descartada · Deshacer» ---------------------------------------------------------- */
-.undo {
-  position: absolute; top: 0; left: 0; right: 0; height: 40px; display: none; align-items: center; gap: 10px; padding: 0 6px 0 15px;
-  color: var(--pill-text);
-}
+.undo { display: none; align-items: center; gap: 10px; padding: 0 6px 0 17px; color: var(--pill-text); }
 .pill[data-mode="undo"] { --w: 236px; opacity: 1; }
 .pill[data-mode="undo"] > :not(.undo) { visibility: hidden; }
 .pill[data-mode="undo"] .undo { display: flex; }
 .undo-text { font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pill-dim); white-space: nowrap; }
 .undo-btn {
-  margin-left: auto; height: 28px; padding: 0 11px; border: 0; border-radius: 4px;
+  margin-left: auto; height: 28px; padding: 0 13px; border: 0; border-radius: 14px;
   font: 600 13px/1 var(--font); color: #0b0b0f; background: #f4f4f7;
   transition: background-color var(--dur-hover) var(--ease), transform var(--dur-fast) var(--ease-out);
 }
 .undo-btn:hover { background: #fff; }
 .undo-btn:active { transform: scale(var(--press-scale)); transition-duration: var(--dur-press); }
 .undo-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
-.undo-bar { position: absolute; left: 0; right: 0; bottom: 0; height: 2px;
+/* the countdown runs along the bottom, inside the round ends */
+.undo-bar { position: absolute; left: 20px; right: 20px; bottom: 3px; height: 2px; border-radius: 1px;
   background: rgb(244 244 247 / 0.4); transform-origin: left center; transform: scaleX(var(--p, 1)); }
 
 /* ---- the card inside the pill (popup.css draws its parts; this places them) ------------
@@ -199,7 +243,7 @@ body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; backg
  */
 .pill .card {
   --cw: 372px; --ch: 112px;
-  position: absolute; top: 0; left: 0; width: 372px; height: 112px;
+  position: absolute; top: 0; left: var(--card-l); width: 372px; height: 112px;
   border-radius: 0; background: none; box-shadow: none; overflow: visible; isolation: auto;
   color-scheme: dark; color: var(--text);
   transition: none; pointer-events: none;
@@ -211,27 +255,33 @@ body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; backg
 .pill .src { padding-left: 74px; }      /* after the pill's dot (10) + gap (10) + timer (44) + gap (10) */
 .pill .src::before { display: none; }
 .pill .actions { margin-top: -4px; }
+/* soft corners inside the round card, concentric with its 20 px radius */
+.pill .countdown { border-radius: 14px; }
+.pill .btn-round.rec { border-radius: 9px; }
+.pill .btn-round.no, .pill .notice-x { border-radius: 50%; }
+.pill .notice { border-radius: 9px; }
+.pill .chip-btn { border-radius: 12px; }
 
 .pill .lift { position: absolute; inset: 0; transform: none; transition: opacity 80ms var(--ease-in); }
 .pill .lift[data-phase="hidden"], .pill .lift[data-phase="done"] { opacity: 0; transform: none; transition: none; visibility: hidden; }
 .pill .lift[data-phase="shown"], .pill .lift[data-phase="confirming"] { opacity: 1; transform: none; transition: none; }
 .pill .lift[data-phase="leaving"], .pill .lift[data-phase="fading"], .pill .lift[data-phase="morphing"] { opacity: 0; transform: none; }
-/* the card content comes in with the veil (one calm fade), not with its own stagger */
-.pill .lift[data-phase="shown"] * { animation: none; }
+/* the content follows the opening shape (~70 % open at 80 ms): fades + rises 6 px, in reading
+   order. Opacity and transform only: the compositor runs it. */
+.pill .lift:is([data-phase="shown"], [data-warm="true"]) :is(.src, .question, .levels, .end-row, .actions) { animation: card-in 240ms var(--ease-out) both; }
+/* one invisible rehearsal of the card per page (pill.js warmUp): its first real draw stalled
+   the first grow by 70-160 ms in WebView2 (measured); rehearsed, it is a normal frame */
+.pill .lift[data-warm="true"] { visibility: visible !important; opacity: 0.002 !important; transition: none !important; pointer-events: none; }
+.pill .lift[data-phase="shown"] .src { animation-delay: 70ms; }
+.pill .lift[data-phase="shown"] .actions { animation-delay: 90ms; }
+.pill .lift[data-phase="shown"] .question { animation-delay: 110ms; }
+.pill .lift[data-phase="shown"] :is(.levels, .end-row) { animation-delay: 140ms; }
+@keyframes card-in { from { opacity: 0; transform: translateY(6px); } }
 
-/* reduced motion: every change is instant */
-:root[data-motion="off"] :is(.pill, .pill .lift, .pill > *) { transition: none !important; }
+/* reduced motion: no travelling shape; JS cross-fades the surface instead */
+:root[data-motion="off"] :is(.pill, .pill::before, .pill > .pill-row, .pill > .undo, .pill .lift) { transition: none !important; }
+:root[data-motion="off"] .pill .lift * { animation-delay: 0ms !important; animation-duration: 1ms !important; }
 @media (prefers-reduced-motion: reduce) {
-  :is(.pill, .pill .lift, .pill > *) { transition: none !important; }
-}
-
-/* ---- the app: the native window IS the shape (?fit=1) ---------------------------------
- * No transparency (user's decision, DECISIONS §29): the window is opaque, painted with the
- * pill's night colour, and Python resizes it to the visible shape (rounded by its region) while
- * the content is veiled. The shape fills the window. Nothing outside the shape can show. */
-:root[data-fit="window"] body.pill-page { background: #0a090f; }
-:root[data-fit="window"] .pill,
-:root[data-fit="window"] .pill:is([data-surface="expanding"], [data-surface="card"], [data-surface="collapsing"]) {
-  left: 0; top: 0; width: 100vw; height: 100vh;
-  transition: opacity var(--dur) var(--ease), box-shadow var(--dur) var(--ease);  /* never the size */
+  :is(.pill, .pill::before, .pill > .pill-row, .pill > .undo, .pill .lift) { transition: none !important; }
+  .pill .lift * { animation-delay: 0ms !important; animation-duration: 1ms !important; }
 }
