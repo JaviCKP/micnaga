@@ -63,20 +63,60 @@ def test_spec_collects_what_the_frozen_app_needs() -> None:
         "onnxruntime",
         "ctranslate2",
         "aec_audio_processing",
-        "pyaec",
         "soundfile",
         "pyaudiowpatch",
+        # diarizacion (unico motor): diarize + torch CPU
+        '"diarize"',
+        '"silero_vad"',
+        "data/silero_vad.jit",
+        '"wespeakerruntime"',
+        '"sklearn"',
+        "torchaudio.compliance.kaldi",
+        "packaging" + chr(34) + ' / "stubs" / "kaldiio"',
     ):
         assert needle in spec, needle
+    assert "diar.onnx" not in spec  # el diarizador ONNX se retiro
 
 
-def test_spec_excludes_dev_tools_gpl_ffmpeg_and_torch_in_standard() -> None:
+def _excludes(spec: str) -> list[str]:
+    """Valor de ``excludes`` tras ejecutar solo las asignaciones de listas del .spec."""
+    tree = ast.parse(spec)
+    names: dict[str, list[str]] = {}
+    for node in tree.body:
+        targets = getattr(node, "targets", None) or [getattr(node, "target", None)]
+        value = getattr(node, "value", None)
+        target = targets[0]
+        if isinstance(target, ast.Name) and isinstance(value, (ast.List, ast.BinOp)):
+            try:
+                result = eval(compile(ast.Expression(value), "spec", "eval"), {}, dict(names))
+            except Exception:
+                continue
+            if isinstance(result, list) and all(isinstance(x, str) for x in result):
+                if isinstance(node, ast.AugAssign):
+                    names[target.id] = names.get(target.id, []) + result
+                else:
+                    names[target.id] = result
+    return names["excludes"]
+
+
+def test_spec_excludes_dev_tools_gpl_ffmpeg_and_unsigned_aec() -> None:
     spec = _spec()
-    for needle in ('"pytest"', '"mypy"', '"ruff"', '"jiwer"', '"av"', "cudnn64_9.dll"):
+    excludes = _excludes(spec)
+    for needle in ("pytest", "mypy", "ruff", "jiwer", "av", "kaldiio", "pyaec", "PIL._avif"):
+        assert needle in excludes, needle
+    for needle in ("cudnn64_9.dll", '"aec.dll"', '"torch/bin/"'):
         assert needle in spec, needle
-    standard_block = spec[spec.index('if VARIANT == "standard":') : spec.index("a = Analysis(")]
-    for needle in ('"torch"', '"torchaudio"', '"diarize"', '"sklearn"', '"pandas"'):
-        assert needle in standard_block, needle
+    # torch va dentro (unico diarizador); solo se recortan subpaquetes que la diarizacion no usa
+    for kept in ("torch", "torchaudio", "diarize", "sklearn", "silero_vad", "scipy", "PIL"):
+        assert kept not in excludes, kept
+    for trimmed in ("torch._inductor", "torch._dynamo", "torch.onnx", "pandas"):
+        assert trimmed in excludes, trimmed
+    assert '"pyaec"' not in spec.split("excludes = [")[0]  # ni hiddenimport ni DLL recogida
+
+
+def test_spec_shares_python_modules_between_the_three_exes() -> None:
+    """Con PYZ cada .exe llevaba su copia de todo el codigo Python (3 x 51 MiB con torch)."""
+    assert "noarchive=True" in _spec()
 
 
 def test_stubs_exist_and_fail_loudly() -> None:
@@ -116,6 +156,13 @@ def test_frozen_entry_dispatch_and_stream_fix(monkeypatch: pytest.MonkeyPatch) -
     assert calls == ["host"]
     # Los assets web existen en el arbol de fuentes
     assert frozen_entry._check_assets() == []
+    # pyaec (aec.dll sin firmar) no viaja; la diarizacion con torch si
+    assert "pyaec" not in frozen_entry.THIRD_PARTY_IMPORTS
+    assert "pyaec" in frozen_entry.BANNED_IMPORTS
+    assert {"torch", "diarize", "silero_vad", "torchaudio.compliance.kaldi"} <= set(
+        frozen_entry.DIAR_IMPORTS
+    )
+    assert not any("diar.onnx" in m for m in frozen_entry.THIRD_PARTY_IMPORTS)
 
 
 def test_iss_is_per_user_with_aumid_and_clean_uninstall() -> None:
@@ -163,6 +210,63 @@ def test_iss_is_one_click_and_upgrades_in_place() -> None:
 
     assert SingleInstance().name.startswith(prefix)
     assert "UsePreviousAppDir=yes" in iss
+    # lo que la version nueva ya no trae (p. ej. aec.dll) no sobrevive a la actualizacion
+    install_delete = iss[iss.index("[InstallDelete]") : iss.index("[Files]")]
+    assert r'Name: "{app}\_internal"' in install_delete and "filesandordirs" in install_delete
+
+
+def test_iss_single_product_webview2_check_and_optional_signing() -> None:
+    iss = _iss()
+    assert "Variant" not in iss and "micnaga-torch" not in iss
+    assert r'#define SourceDir "..\dist\micnaga"' in iss
+    # WebView2: aviso (nunca en silencio), no bloquea
+    assert "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}" in iss and "'pv'" in iss
+    webview = iss[iss.index("procedure CurStepChanged") :]
+    assert "WizardSilent" in webview and "ssPostInstall" in webview
+    # firma solo si build.ps1 pasa /DSign=1 (un SignTool sin definir romperia la compilacion)
+    sign = iss[iss.index("#ifdef Sign") : iss.index("#endif", iss.index("#ifdef Sign"))]
+    assert "SignTool=micnaga" in sign and "SignedUninstaller=yes" in sign
+    assert iss.count("SignTool=") == 1
+
+
+def test_iss_registers_native_host_per_user_and_relaunches_after_silent_update() -> None:
+    import json
+
+    from micnaga.watcher.extension import HOST_NAME, extension_id_from_key
+
+    iss = _iss()
+    manifest = json.loads((ROOT / "extension" / "manifest.json").read_text(encoding="utf-8"))
+    assert f'#define ExtensionId "{extension_id_from_key(manifest["key"])}"' in iss
+    assert f'#define HostName "{HOST_NAME}"' in iss
+    registry = iss[iss.index("[Registry]") : iss.index("[Run]")]
+    for browser in (r"Google\Chrome", r"Microsoft\Edge", r"BraveSoftware\Brave-Browser"):
+        line = next(x for x in registry.splitlines() if browser + r"\NativeMessagingHosts" in x)
+        assert line.startswith("Root: HKCU;") and "uninsdeletekey" in line
+    assert "WriteHostManifest" in iss and r'Name: "{app}\{#HostName}.json"' in iss
+    # la actualizacion automatica (updates.py: /VERYSILENT ...) necesita que [Run] relance la app
+    run = iss[iss.index("[Run]") : iss.index("[UninstallRun]")]
+    entry = next(x for x in run.splitlines() if x.startswith("Filename:"))
+    assert "{#AppExe}" in entry and "skipifsilent" not in entry and "postinstall" not in entry
+
+
+def test_build_script_writes_sha256sums() -> None:
+    script = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    assert "SHA256SUMS.txt" in script and "Get-FileHash" in script and "ToLowerInvariant" in script
+    assert '"{0}  {1}"' in script  # formato de sha256sum: dos espacios
+
+
+def test_build_script_signs_optionally() -> None:
+    script = (ROOT / "scripts" / "build.ps1").read_text(encoding="utf-8")
+    for needle in (
+        "MICNAGA_SIGN_THUMBPRINT",
+        "MICNAGA_SIGN_PFX",
+        "Get-AuthenticodeSignature",
+        "/DSign=1",
+        "Write-Warning",
+        "--check --dist",
+    ):
+        assert needle in script, needle
+    assert "-Variant" not in script and "micnaga-torch" not in script
 
 
 def test_iss_version_matches_package() -> None:

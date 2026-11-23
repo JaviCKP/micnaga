@@ -19,16 +19,14 @@ from micnaga.types import AudioArray, Turn, Word
 
 def test_names_match_spec() -> None:
     assert set(ASR_ENGINES.names()) == {"parakeet", "whisper"}
-    assert set(DIARIZERS.names()) == {"onnx", "diarize", "pyannote"}
+    assert set(DIARIZERS.names()) == {"diarize"}
     assert set(AEC_ENGINES.names()) == {"webrtc", "speex"}
 
 
 def test_targets_follow_the_convention() -> None:
     assert ASR_ENGINES.target("parakeet") == "micnaga.pipeline.engines.asr.parakeet:create"
     assert ASR_ENGINES.target("whisper") == "micnaga.pipeline.engines.asr.whisper:create"
-    assert DIARIZERS.target("onnx") == "micnaga.pipeline.engines.diar.onnx:create"
     assert DIARIZERS.target("diarize") == "micnaga.pipeline.engines.diar.diarize:create"
-    assert DIARIZERS.target("pyannote") == "micnaga.pipeline.engines.diar.pyannote:create"
     assert AEC_ENGINES.target("webrtc") == "micnaga.pipeline.aec.webrtc:create"
     assert AEC_ENGINES.target("speex") == "micnaga.pipeline.aec.speex:create"
 
@@ -132,10 +130,36 @@ def test_auto_picks_first_available(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         AEC_ENGINES, "_entries", {"webrtc": "nonexistent.mod:create", "speex": "fake_speex:create"}
     )
-    assert AUTO_ORDER == ("speex", "webrtc")
+    # webrtc primero (pyaec/speex ya no viaja en el instalador: aec.dll sin firmar)
+    assert AUTO_ORDER == ("webrtc", "speex")
     engine = create_echo_canceller(Config(), "auto")
     assert engine is not None
     assert engine.name == "speex"
+
+
+def test_speex_requested_but_missing_falls_back_to_auto(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Una config antigua con ``aec = "speex"`` en el instalador (sin pyaec) sigue con AEC."""
+
+    class Webrtcish:
+        name = "webrtc"
+
+        def process(self, mic: AudioArray, ref: AudioArray, sr: int) -> AudioArray:
+            return mic
+
+    mod = types.ModuleType("fake_webrtc")
+    mod.create = lambda config: Webrtcish()  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "fake_webrtc", mod)
+    monkeypatch.setattr(
+        AEC_ENGINES, "_entries", {"webrtc": "fake_webrtc:create", "speex": "no.pyaec:create"}
+    )
+    engine = create_echo_canceller(Config(), "speex")
+    assert engine is not None and engine.name == "webrtc"
+    # webrtc pedido explicitamente y ausente: error claro (no se cambia de motor en silencio)
+    monkeypatch.setattr(AEC_ENGINES, "_entries", {"webrtc": "no.a:create", "speex": "no.b:create"})
+    with pytest.raises(EngineUnavailableError):
+        create_echo_canceller(Config(), "webrtc")
+    with pytest.raises(EngineUnavailableError):
+        create_echo_canceller(Config(), "speex")
 
 
 def test_auto_with_nothing_available(monkeypatch: pytest.MonkeyPatch) -> None:

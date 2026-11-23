@@ -127,8 +127,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
                 choices=("large-v3", "large-v3-turbo"),
                 advanced=True,
             ),
-            _f("processing.diarization", "choice", choices=("onnx", "diarize", "pyannote")),
-            _f("processing.aec", "choice", choices=("auto", "webrtc", "speex", "off")),
+            _f("processing.aec", "choice", choices=("auto", "webrtc", "off")),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
             _f("processing.low_priority", "bool"),
             _f("processing.live", "bool"),
@@ -250,6 +249,8 @@ FIELDS: dict[str, FieldSpec] = {f.path: f for _g, fields in GROUPS for f in fiel
 
 
 INTERNAL_SECTIONS = frozenset({"meta"})
+INTERNAL_FIELDS = frozenset({"processing.diarization"})
+"""Campos sin control en Ajustes (un solo valor posible: ``diarize``)."""
 """Secciones de ``config.toml`` que no son ajustes (``[meta] version``)."""
 
 
@@ -261,7 +262,10 @@ def config_paths() -> list[str]:
         if sec.name in INTERNAL_SECTIONS:
             continue
         section = getattr(cfg, sec.name)
-        out.extend(f"{sec.name}.{f.name}" for f in dataclasses.fields(section))
+        for f in dataclasses.fields(section):
+            path = f"{sec.name}.{f.name}"
+            if path not in INTERNAL_FIELDS:
+                out.append(path)
     return out
 
 

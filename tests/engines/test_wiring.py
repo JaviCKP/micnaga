@@ -17,7 +17,7 @@ def test_asr_factories_resolve(name: str) -> None:
     assert callable(ASR_ENGINES.resolve(name))
 
 
-@pytest.mark.parametrize("name", ["onnx", "diarize", "pyannote"])
+@pytest.mark.parametrize("name", ["diarize"])
 def test_diarizer_factories_resolve(name: str) -> None:
     assert callable(DIARIZERS.resolve(name))
 
@@ -48,15 +48,6 @@ def test_diarize_without_wespeaker_model_gives_helpful_error(tmp_models: object)
         create_diarizer(Config(), "diarize")
 
 
-def test_pyannote_not_installed_gives_helpful_error() -> None:
-    import importlib.util
-
-    if importlib.util.find_spec("pyannote.audio") is not None:  # pragma: no cover
-        pytest.skip("pyannote.audio is installed")
-    with pytest.raises(EngineUnavailableError, match=r"pyannote\.audio is not installed"):
-        create_diarizer(Config(), "pyannote")
-
-
 def test_aec_auto_and_off() -> None:
     cfg = Config()
     ec = create_echo_canceller(cfg)
@@ -75,8 +66,7 @@ def test_importing_engine_modules_is_light() -> None:
     code = (
         "import sys\n"
         "import micnaga.pipeline.engines.asr.parakeet, micnaga.pipeline.engines.asr.whisper\n"
-        "import micnaga.pipeline.engines.diar.diarize, micnaga.pipeline.engines.diar.pyannote\n"
-        "import micnaga.pipeline.engines.diar.onnx\n"
+        "import micnaga.pipeline.engines.diar.diarize, micnaga.pipeline.engines.diar.room\n"
         "import micnaga.pipeline.aec.webrtc, micnaga.pipeline.aec.speex\n"
         "import micnaga.pipeline.vad, micnaga.models\n"
         "bad = [m for m in ('torch', 'torchaudio', 'diarize', 'wespeakerruntime',\n"

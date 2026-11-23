@@ -119,7 +119,6 @@
   "settings.opt.processing.hq_model.large-v3-turbo": "large-v3-turbo",
   "settings.opt.processing.aec.auto": "Automático",
   "settings.opt.processing.aec.webrtc": "WebRTC AEC3",
-  "settings.opt.processing.aec.speex": "SpeexDSP",
   "settings.opt.processing.aec.off": "Desactivado",
   "tray.record_in_person": "Grabar reunión presencial",
   "common.cancel": "Cancelar",

@@ -1,19 +1,20 @@
 # -*- mode: python ; coding: utf-8 -*-
-"""PyInstaller (onedir) para Micnaga. Uso: ``scripts\build.ps1 -Variant standard|torch``.
+"""PyInstaller (onedir) para Micnaga. Uso: ``scripts\build.ps1``.
 
-Variables de entorno que lee:
-
-``MICNAGA_VARIANT``  ``standard`` (por defecto) o ``torch``.
-    * ``standard``: EL producto (un unico instalador). Sin torch; la diarizacion es
-      ``micnaga.pipeline.engines.diar.onnx`` (onnxruntime + scipy.cluster, sin binarios extra).
-      Sin diarize / silero-vad / wespeakerruntime / scikit-learn / pandas.
-      La diarizacion queda desactivada (todo lo remoto es ``S1``) y el instalador cabe en el
-      presupuesto de 150 MB de la spec §2.
-    * ``torch``: respaldo SOLO para desarrollo (``diarize`` + torch, ~0,8 GB). No se distribuye.
+Un unico producto (un unico instalador). Incluye la diarizacion ``diarize`` (torch CPU, silero_vad,
+wespeakerruntime, scikit-learn), que es el unico diarizador. Sin CUDA. Torch se recorta (ver
+``TRIM_*`` y ``excludes``): solo se quitan subpaquetes que una diarizacion real NO carga
+(comprobado volcando ``sys.modules`` tras ``diarize`` + ``embed`` y repitiendo la diarizacion con
+esos modulos bloqueados; ver DECISIONS.md §31). Si se toca la lista, repetir esa prueba y la del
+ejecutable congelado (``micnaga-cli.exe --selftest`` y ``--selftest-diarize <wav>``).
 
 Tres ejecutables en la misma carpeta (comparten ``_internal``):
 ``micnaga.exe`` (ventana), ``micnaga-cli.exe`` (consola) y ``micnaga-host.exe`` (host de la
 extension). Los tres son el mismo ``frozen_entry.py``; el host se reconoce por el nombre.
+
+``noarchive=True``: los modulos Python van como ``.pyc`` sueltos en ``_internal`` y los tres
+``.exe`` los COMPARTEN. Con el PYZ (por defecto) cada ``.exe`` llevaba su propia copia de todo el
+codigo Python (3 x 51 MiB con torch).
 """
 
 import os
@@ -26,15 +27,15 @@ from PyInstaller.utils.hooks import (
     copy_metadata,
 )
 
-VARIANT = os.environ.get("MICNAGA_VARIANT", "standard").strip().lower()
-if VARIANT not in ("standard", "torch"):
-    raise SystemExit(f"MICNAGA_VARIANT debe ser standard o torch, no {VARIANT!r}")
+VARIANT = "standard"  # unico producto; el --selftest lo comprueba
+_requested = os.environ.get("MICNAGA_VARIANT", VARIANT).strip().lower()
+if _requested not in ("standard", "torch"):  # "torch" = alias antiguo de lo mismo
+    raise SystemExit(f"MICNAGA_VARIANT ya no existe (unico producto), no {_requested!r}")
 
 ROOT = Path(SPECPATH).resolve().parent  # noqa: F821 - SPECPATH lo define PyInstaller
 BUILD_DIR = ROOT / "build"
-DIST_DIR = ROOT / "dist"
 ICON = ROOT / "micnaga" / "ui" / "web" / "assets" / "micnaga.ico"
-NAME = "micnaga"  # carpeta de salida: dist/micnaga (standard) o dist/micnaga-torch
+NAME = "micnaga"  # carpeta de salida: dist/micnaga
 
 # Modulo generado: le dice al --selftest en que variante esta.
 variant_dir = BUILD_DIR / f"variant-{VARIANT}"
@@ -50,7 +51,6 @@ hiddenimports += [
     "onnx_asr",
     "faster_whisper",
     "aec_audio_processing",
-    "pyaec",
     "pyaudiowpatch",
     "win32event",
     "win32api",
@@ -64,12 +64,17 @@ hiddenimports += [
     "pycaw.pycaw",
     "windows_toasts",
     "scipy.signal",
-    # diarizacion por defecto sin torch (clustering aglomerativo con scipy)
-    "micnaga.pipeline.engines.diar.onnx",
     "scipy.cluster",
     "scipy.cluster.hierarchy",
     "scipy.cluster.vq",
     "scipy.spatial.distance",
+    # diarizacion (unico motor): diarize + torch CPU; ``embed`` usa torchaudio.compliance.kaldi
+    "diarize",
+    "silero_vad",
+    "silero_vad.data",  # paquete de recursos (importlib.resources) del modelo .jit
+    "wespeakerruntime",
+    "sklearn",
+    "torchaudio.compliance.kaldi",
 ]
 
 datas = []
@@ -82,16 +87,18 @@ datas += [(str(ROOT / "micnaga" / "brain" / "prompts"), "micnaga/brain/prompts")
 datas += [(str(ROOT / "micnaga" / "brain" / "context"), "micnaga/brain/context")]
 if (ROOT / "micnaga" / "brain" / "odoo_schema.json").is_file():
     datas += [(str(ROOT / "micnaga" / "brain" / "odoo_schema.json"), "micnaga/brain")]
-# Sustituto de PyAV (ver excludes): ``faster_whisper.audio`` hace ``import av`` al importarse.
+# Sustitutos (ver excludes): ``faster_whisper.audio`` hace ``import av`` al importarse y
+# ``wespeakerruntime`` hace ``import kaldiio`` (licencia de solo evaluacion de NTT).
 datas += [(str(ROOT / "packaging" / "stubs" / "av"), "av")]
-if VARIANT == "torch":
-    # kaldiio (licencia de solo evaluacion de NTT) lo importa wespeakerruntime: se sustituye.
-    datas += [(str(ROOT / "packaging" / "stubs" / "kaldiio"), "kaldiio")]
+datas += [(str(ROOT / "packaging" / "stubs" / "kaldiio"), "kaldiio")]
+# silero_vad (via diarize) carga ``silero_vad/data/silero_vad.jit`` (``load_silero_vad()`` por
+# defecto). Las otras seis variantes ONNX del paquete (~11 MiB) no se usan.
+datas += collect_data_files("silero_vad", includes=["data/silero_vad.jit"])
 # Licencias (LGPL, CC-BY...): el texto viaja con el programa.
 datas += [(str(ROOT / "LICENSE"), "."), (str(ROOT / "THIRD_PARTY_LICENSES.md"), ".")]
 
-# DLL/binarios que los hooks no siempre recogen.
-for pkg in ("onnxruntime", "ctranslate2", "aec_audio_processing", "pyaec", "soundfile", "soxr"):
+# DLL/binarios que los hooks no siempre recogen. ``pyaec`` (aec.dll, sin firmar) NO viaja.
+for pkg in ("onnxruntime", "ctranslate2", "aec_audio_processing", "soundfile", "soxr"):
     binaries += collect_dynamic_libs(pkg)
 for pkg in ("onnx_asr", "aec_audio_processing", "_soundfile_data", "webview", "faster_whisper"):
     try:
@@ -109,7 +116,7 @@ for pkg, names in {"onnxruntime": ("LICENSE", "ThirdPartyNotices.txt")}.items():
             if notice.is_file():
                 datas += [(str(notice), pkg)]
 # ``onnx_asr`` (y otros) consultan su version con importlib.metadata al importarse.
-for dist in ("onnx-asr", "onnxruntime", "faster-whisper", "ctranslate2", "tokenizers"):
+for dist in ("onnx-asr", "onnxruntime", "faster-whisper", "ctranslate2", "tokenizers", "diarize"):
     try:
         datas += copy_metadata(dist)
     except Exception:  # distribucion ausente en este entorno
@@ -136,19 +143,47 @@ excludes = [
     # modulo vacio (packaging/stubs/av) que solo falla si alguien intenta decodificar un fichero.
     "av",
     "hf_xet",  # descargas Xet de huggingface_hub: Micnaga descarga con urllib + SHA-256
-]
-if VARIANT == "standard":
-    excludes += [
-        "torch", "torchaudio", "torchgen", "torio", "functorch",
-        "diarize", "silero_vad", "wespeakerruntime", "kaldiio",
-        "sklearn", "pandas", "sympy", "mpmath", "networkx", "joblib", "threadpoolctl",
-        "pydantic", "pydantic_core", "jinja2", "click",
-    ]  # fmt: skip
-else:
-    hiddenimports += ["diarize", "silero_vad", "wespeakerruntime", "sklearn"]
-    excludes += ["kaldiio"]
-    # silero_vad (via diarize) carga su modelo desde ``silero_vad/data`` junto al paquete.
-    datas += collect_data_files("silero_vad")
+    "kaldiio",  # licencia de solo evaluacion: sustituido por packaging/stubs/kaldiio
+    # pyaec (SpeexDSP): su ``aec.dll`` no esta firmada y bloqueo la instalacion en un PC.
+    "pyaec",
+    # Pillow: solo se usan Image/ImageDraw y el guardado ICO/PNG (iconos de la bandeja). Fuera
+    # los codecs AVIF/WebP, FreeType, LittleCMS y Tk (~11 MiB de .pyd sin firmar).
+    "PIL._avif", "PIL._webp", "PIL._imagingft", "PIL._imagingcms", "PIL._imagingtk",
+    "PIL.ImageTk", "PIL.ImageQt",
+    # Arrastrados por torch/sklearn pero no cargados por la diarizacion (comprobado).
+    "pandas", "sympy", "mpmath", "networkx", "jinja2", "markupsafe", "click",
+    # pygments solo lo usa la CLI de httpx2 (``httpx2._main``, importada a demanda).
+    "pygments", "httpx2._main",
+]  # fmt: skip
+# torch CPU: compilador (inductor/dynamo), exportacion ONNX, NumPy-on-torch, lazy tensors y
+# entrenamiento distribuido. Ninguno se carga al diarizar ni al extraer huellas (comprobado).
+TRIM_TORCH = [
+    "torch._inductor", "torch._dynamo", "torch.onnx", "torch._numpy", "torch._lazy",
+    "torch.contrib", "torch.utils.hipify", "torch.utils.benchmark", "torch.utils.tensorboard",
+    "torch.distributed.fsdp", "torch.distributed.tensor", "torch.distributed.elastic",
+    "torch.distributed.checkpoint", "torch.distributed.pipelining", "torch.distributed._shard",
+    "torch.distributed._tools", "torch.distributed.optim",
+    "torchaudio.prototype",
+]  # fmt: skip
+# ``import torch`` carga ``torch.testing._internal.logging_tensor`` (y su paquete); el resto de
+# ``torch.testing._internal`` (~10 MiB de utilidades de tests) no se usa.
+_torch_spec = importlib.util.find_spec("torch")
+if _torch_spec and _torch_spec.submodule_search_locations:
+    _internal = Path(_torch_spec.submodule_search_locations[0]) / "testing" / "_internal"
+    TRIM_TORCH += [
+        f"torch.testing._internal.{p.stem}"
+        for p in sorted(_internal.iterdir())
+        if p.stem not in ("__init__", "logging_tensor", "__pycache__")
+        and (p.suffix == ".py" or (p / "__init__.py").is_file())
+    ]
+# scikit-learn: diarize solo usa cluster, decomposition, metrics, mixture y preprocessing.
+TRIM_SKLEARN = [
+    "sklearn.ensemble", "sklearn.datasets", "sklearn.tests", "sklearn.neural_network",
+    "sklearn.gaussian_process", "sklearn.semi_supervised", "sklearn.feature_extraction",
+    "sklearn.feature_selection", "sklearn.impute", "sklearn.inspection", "sklearn.compose",
+    "sklearn.cross_decomposition",
+]  # fmt: skip
+excludes += TRIM_TORCH + TRIM_SKLEARN
 
 a = Analysis(  # noqa: F821
     [str(ROOT / "packaging" / "frozen_entry.py")],
@@ -159,16 +194,27 @@ a = Analysis(  # noqa: F821
     hookspath=[],
     runtime_hooks=[],
     excludes=excludes,
-    noarchive=False,
-    # pystray es LGPL-3.0: se entrega como ficheros .py sueltos (sustituibles) y no dentro del
-    # PYZ. Ver THIRD_PARTY_LICENSES.md.
+    # Modulos como .pyc sueltos en _internal, compartidos por los tres .exe (ver docstring).
+    noarchive=True,
+    # pystray es LGPL-3.0: se entrega como ficheros .py sueltos (sustituibles). Ver
+    # THIRD_PARTY_LICENSES.md.
     module_collection_mode={"pystray": "py"},
 )
 
-# DLL que no deben viajar: cuDNN (NVIDIA, propietaria; solo sirve con CUDA, que no usamos) y las de
-# depuracion de Windows (ya estan en System32; no son redistribuibles).
-DROP_BINARIES = {"cudnn64_9.dll", "dbghelp.dll", "dbgcore.dll"}
-a.binaries = [b for b in a.binaries if os.path.basename(b[0]).lower() not in DROP_BINARIES]
+# DLL que no deben viajar: cuDNN (NVIDIA, propietaria; solo sirve con CUDA, que no usamos), las de
+# depuracion de Windows (ya estan en System32; no son redistribuibles) y aec.dll (pyaec).
+DROP_BINARIES = {"cudnn64_9.dll", "dbghelp.dll", "dbgcore.dll", "aec.dll"}
+# ``torch/bin`` solo trae ``protoc.exe`` (compilador de protobuf) y copias de DLL que ya estan en
+# ``torch/lib`` (de donde las carga torch).
+DROP_PREFIXES = ("torch/bin/", "torch\\bin\\")
+
+
+def _keep(dest: str) -> bool:
+    return os.path.basename(dest).lower() not in DROP_BINARIES and not dest.startswith(DROP_PREFIXES)
+
+
+a.binaries = [b for b in a.binaries if _keep(b[0])]
+a.datas = [d for d in a.datas if _keep(d[0])]
 
 pyz = PYZ(a.pure)  # noqa: F821
 
@@ -202,5 +248,31 @@ coll = COLLECT(  # noqa: F821
     a.datas,
     strip=False,
     upx=False,
-    name=NAME if VARIANT == "standard" else f"{NAME}-torch",
+    name=NAME,
 )
+
+# ------------------------------------------------------------------ pyc de modulos con fuente
+# Los paquetes que se recogen tambien con su fuente (torch y torchaudio: su hook usa ``pyz+py``,
+# TorchScript necesita el .py) quedan como ``X.py`` + ``X.pyc`` en la misma carpeta. Python carga
+# SIEMPRE el ``.py`` antes que un ``.pyc`` hermano y, como el congelado no escribe bytecode,
+# recompilaria ~1300 modulos de torch en cada arranque del worker. Se mueve cada ``.pyc`` a
+# ``__pycache__/X.cpython-311.pyc`` en modo «unchecked hash» (PEP 552): Python lo usa sin mirar la
+# fecha del ``.py`` (que cambia al instalar). Mismo tamano; el ``.py`` sigue ahi para TorchScript.
+import py_compile
+import sys
+
+_internal_dir = Path(DISTPATH) / NAME / "_internal"  # noqa: F821 - DISTPATH lo define PyInstaller
+_relocated = 0
+for _py in _internal_dir.rglob("*.py"):
+    _pyc = _py.with_suffix(".pyc")
+    if not _pyc.is_file():
+        continue  # p. ej. pystray (solo fuente, LGPL) o los stubs
+    py_compile.compile(
+        str(_py),
+        cfile=str(_py.parent / "__pycache__" / f"{_py.stem}.{sys.implementation.cache_tag}.pyc"),
+        doraise=True,
+        invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH,
+    )
+    _pyc.unlink()
+    _relocated += 1
+print(f"micnaga.spec: {_relocated} .pyc movidos a __pycache__ (unchecked-hash)")

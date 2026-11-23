@@ -14,6 +14,8 @@ dispositivos ni carga PyAudio/COM):
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Any
+
 from micnaga.capture.recorder import (
     CaptureError,
     Recorder,
@@ -22,7 +24,22 @@ from micnaga.capture.recorder import (
     RecorderStatus,
 )
 from micnaga.capture.recovery import finalize_session, find_sessions, recover_sessions
-from micnaga.capture.sync import DriftEstimate, align_tracks, estimate_drift
+
+if TYPE_CHECKING:
+    from micnaga.capture.sync import DriftEstimate, align_tracks, estimate_drift
+
+# ``sync`` (alineacion; la usan el pipeline y ``micnaga record``) importa scipy.ndimage: ~20 MiB de
+# RSS que el proceso de la bandeja no necesita para grabar. Se carga al pedir el nombre.
+_LAZY_SYNC = ("DriftEstimate", "align_tracks", "estimate_drift")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _LAZY_SYNC:
+        from micnaga.capture import sync
+
+        return getattr(sync, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
 
 __all__ = [
     "CaptureError",

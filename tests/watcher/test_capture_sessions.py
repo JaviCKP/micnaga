@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from micnaga.watcher.capture_sessions import CaptureSessionMicSource, CombinedMicSource
 from micnaga.watcher.model import MicApp, SignalReading
 from micnaga.watcher.sources import MicReading
@@ -81,3 +83,44 @@ def test_combined_inactive_when_both_empty() -> None:
     empty = MicReading(frozenset(), SignalReading("mic", False))
     r = CombinedMicSource(_Fixed(empty), _Fixed(empty)).read()
     assert not r.reading.active
+
+
+def test_cached_lister_reuses_endpoints_and_recovers_from_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import micnaga.watcher.capture_sessions as cs
+
+    enumerations: list[int] = []
+    fail_next = {"on": False}
+
+    def fake_managers() -> list[object]:
+        enumerations.append(1)
+        return [object()]
+
+    def fake_active(managers: object) -> list[tuple[int, str, str]]:
+        if fail_next["on"]:
+            fail_next["on"] = False
+            raise OSError("device removed")
+        return [(7, "chrome.exe", r"C:\chrome.exe")]
+
+    monkeypatch.setattr(cs, "_session_managers", fake_managers)
+    monkeypatch.setattr(cs, "_active_sessions", fake_active)
+    now = {"t": 0.0}
+    lister = cs.CachedCaptureLister(refresh_s=10.0, clock=lambda: now["t"])
+    for t in (0.0, 1.0, 9.0):  # una sola enumeracion de micros en 10 s
+        now["t"] = t
+        assert lister() == [(7, "chrome.exe", r"C:\chrome.exe")]
+    assert len(enumerations) == 1
+    now["t"] = 10.5  # caduca: se vuelve a enumerar
+    lister()
+    assert len(enumerations) == 2
+    fail_next["on"] = True  # un error tira la cache y reintenta con una enumeracion nueva
+    now["t"] = 11.0
+    assert lister() == [(7, "chrome.exe", r"C:\chrome.exe")]
+    assert len(enumerations) == 3
+    combined = cs.CombinedMicSource(
+        cs.CaptureSessionMicSource(BROWSERS, lister, own_paths=frozenset(), own_pid=1),
+        cs.CaptureSessionMicSource(BROWSERS, lambda: [], own_paths=frozenset(), own_pid=1),
+    )
+    combined.close()  # suelta los objetos COM de la cache
+    assert lister._managers is None

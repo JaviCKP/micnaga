@@ -106,6 +106,14 @@ class Tray:
         )
 
     def set_state(self, state: TrayState) -> None:
+        # El supervisor del worker lo llama en cada vuelta (cada 15 s, 3 s con un trabajo) aunque
+        # nada cambie: redibujar el icono (Pillow + ICO + LoadImage) solo si cambia el estado. El
+        # menu se sigue reconstruyendo (sus entradas dinamicas, p. ej. la de reunion presencial,
+        # solo se evaluan en ``update_menu``).
+        if state == self._state:
+            if self._icon is not None:
+                self._icon.update_menu()
+            return
         self._state = state
         self._refresh()
 

@@ -29,24 +29,71 @@ CaptureLister = Callable[[], Iterable[tuple[int, str, str]]]
 """Devuelve ``(pid, exe_en_minusculas, ruta_del_exe)`` por cada sesion de captura ACTIVA."""
 
 
-def wasapi_capture_sessions() -> list[tuple[int, str, str]]:
+ENDPOINTS_REFRESH_S = 10.0
+"""Cada cuanto se vuelven a enumerar los micros (``EnumAudioEndpoints`` + ``Activate``): era el
+~70 % de los ~5 ms que costaba cada tick de 1 s. Las sesiones se leen en cada tick."""
+
+
+def _session_managers() -> list[object]:
     import comtypes
-    import psutil
     from pycaw.api.mmdeviceapi import IMMDeviceEnumerator
     from pycaw.constants import CLSID_MMDeviceEnumerator
-    from pycaw.pycaw import IAudioSessionControl2, IAudioSessionManager2
+    from pycaw.pycaw import IAudioSessionManager2
 
     enumerator = comtypes.CoCreateInstance(
         CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER
     )
     devices = enumerator.EnumAudioEndpoints(1, 1)  # eCapture, DEVICE_STATE_ACTIVE
+    return [
+        devices.Item(i)
+        .Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
+        .QueryInterface(IAudioSessionManager2)
+        for i in range(devices.GetCount())
+    ]
+
+
+class CachedCaptureLister:
+    """``CaptureLister`` que reutiliza los gestores de sesion de cada micro durante
+    ``refresh_s`` (un micro enchufado a mitad aparece como mucho ``refresh_s`` despues en ESTA
+    senal secundaria; el registro de privacidad sigue en cada tick). Cualquier error tira la cache
+    y se reintenta con una enumeracion nueva. Solo desde el hilo del vigilante (objetos COM STA).
+    """
+
+    def __init__(
+        self, refresh_s: float = ENDPOINTS_REFRESH_S, clock: Callable[[], float] = time.monotonic
+    ) -> None:
+        self._refresh_s = refresh_s
+        self._clock = clock
+        self._managers: list[object] | None = None
+        self._at = 0.0
+
+    def __call__(self) -> list[tuple[int, str, str]]:
+        now = self._clock()
+        if self._managers is None or now - self._at >= self._refresh_s:
+            self._managers, self._at = _session_managers(), now
+        try:
+            return _active_sessions(self._managers)
+        except Exception:
+            self._managers, self._at = _session_managers(), now
+            return _active_sessions(self._managers)
+
+    def close(self) -> None:
+        """Suelta los objetos COM (antes del ``CoUninitialize`` del hilo del vigilante)."""
+        self._managers = None
+
+
+def wasapi_capture_sessions() -> list[tuple[int, str, str]]:
+    """Enumeracion completa (sin cache)."""
+    return _active_sessions(_session_managers())
+
+
+def _active_sessions(managers: Iterable[object]) -> list[tuple[int, str, str]]:
+    import psutil
+    from pycaw.pycaw import IAudioSessionControl2
+
     out: list[tuple[int, str, str]] = []
-    for i in range(devices.GetCount()):
-        device = devices.Item(i)
-        manager = device.Activate(
-            IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None
-        ).QueryInterface(IAudioSessionManager2)
-        sessions = manager.GetSessionEnumerator()
+    for manager in managers:
+        sessions = manager.GetSessionEnumerator()  # type: ignore[attr-defined]
         for j in range(sessions.GetCount()):
             control = sessions.GetSession(j).QueryInterface(IAudioSessionControl2)
             if int(control.GetState()) != 1:  # AudioSessionStateActive
@@ -70,7 +117,7 @@ class CaptureSessionMicSource:
     def __init__(
         self,
         browsers: Iterable[str],
-        lister: CaptureLister = wasapi_capture_sessions,
+        lister: CaptureLister | None = None,
         *,
         generic: bool = True,
         exclude: Iterable[str] = (),
@@ -78,7 +125,7 @@ class CaptureSessionMicSource:
         own_pid: int | None = None,
     ) -> None:
         self._browsers = frozenset(b.lower() for b in browsers)
-        self._lister = lister
+        self._lister: CaptureLister = lister if lister is not None else CachedCaptureLister()
         self._generic = generic
         self._exclude = frozenset(e.strip().lower() for e in exclude if e.strip())
         self._own_paths = frozenset(own_paths) if own_paths is not None else own_exe_paths()
@@ -136,6 +183,11 @@ class CaptureSessionMicSource:
             frozenset(apps),
         )
 
+    def close(self) -> None:
+        close = getattr(self._lister, "close", None)
+        if callable(close):
+            close()
+
 
 class CombinedMicSource:
     """Une dos fuentes de micro: una app cuenta como «en uso» si cualquiera de ellas lo dice.
@@ -162,3 +214,9 @@ class CombinedMicSource:
             (a.reading.cost_ms or 0.0) + (b.reading.cost_ms or 0.0),
         )
         return MicReading(browsers, reading, frozenset(apps))
+
+    def close(self) -> None:
+        for source in (self._primary, self._secondary):
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()

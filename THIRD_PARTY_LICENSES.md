@@ -1,6 +1,6 @@
 # Licencias de terceros — Micnaga
 
-> Generado por `scripts/gen_licenses.py` (no editar a mano las secciones de dependencias; las de modelos y componentes nativos son texto fijo del script). Fecha de generacion: 2026-11-19.
+> Generado por `scripts/gen_licenses.py` (no editar a mano las secciones de dependencias; las de modelos y componentes nativos son texto fijo del script). Fecha de generacion: 2026-11-23.
 
 El codigo de Micnaga es **MIT** (`LICENSE`). Este fichero lista las licencias de las dependencias de ejecucion (clausura de `micnaga` + extras `asr`, `diar`, `aec`, `ui`; sin herramientas de desarrollo) y de los modelos.
 
@@ -85,7 +85,7 @@ excepcion que permite distribuirlo en cualquier aplicacion (ver «Componentes na
 | protobuf | 7.36.2 | BSD-3-Clause | License (campo) | permissive |
 | proxy_tools | 0.1.0 | MIT | License (campo) | permissive |
 | psutil | 7.2.2 | BSD-3-Clause | License (campo) | permissive |
-| pyaec | 1.0.1 | MIT | MANUAL (https://github.com/thewh1teagle/aec/blob/main/LICENSE (el wheel de PyPI no declara licencia ni trae fichero; contiene SpeexDSP, BSD-3-Clause)) | permissive |
+| pyaec | 1.0.1 | MIT | MANUAL (https://github.com/thewh1teagle/aec/blob/main/LICENSE (el wheel de PyPI no declara licencia ni trae fichero; contiene SpeexDSP, BSD-3-Clause)) | not-bundled |
 | PyAudioWPatch | 0.2.12.9 | Apache-2.0 | License (campo) | permissive |
 | pycaw | 20260927 | MIT | License-Expression | permissive |
 | pycparser | 3.12 | BSD-3-Clause | License-Expression | permissive |
@@ -129,6 +129,7 @@ excepcion que permite distribuirlo en cualquier aplicacion (ver «Componentes na
 * **kaldiio**: NO SE DISTRIBUYE: kaldiio (nttcslab-sp): su LICENSE es un «Software License Agreement for Evaluation» (uso interno de evaluacion, prohibe redistribuir) verificado en el paquete y en el repo upstream. Solo la importa wespeakerruntime en `extract_embedding_kaldiio`, que Micnaga no usa. Sustituido por packaging/stubs/kaldiio.
 * **numpy**: su fichero de licencia contiene texto AGPL-3.0-or-later (el propio texto LGPL o licencias de componentes de terceros que cita): revisar
 * **pillow**: su fichero de licencia contiene texto LGPL-2.1-or-later (el propio texto LGPL o licencias de componentes de terceros que cita): revisar
+* **pyaec**: NO SE DISTRIBUYE: pyaec (SpeexDSP, `aec.dll`): su DLL no esta firmada ni declara editor y Windows/antivirus bloquearon la instalacion en un PC. Solo para desarrollo (extra `aec-speex`); el instalador usa webrtc (aec-audio-processing). Mientras la instalacion de desarrollo lo declare en el extra `aec` aparece en la clausura, pero no viaja.
 * **pystray**: su fichero de licencia contiene texto AGPL-3.0-or-later, LGPL-3.0-or-later (el propio texto LGPL o licencias de componentes de terceros que cita): revisar
 * **pywin32**: su fichero de licencia contiene texto GPL-3.0-or-later, LGPL-2.1-or-later (el propio texto LGPL o licencias de componentes de terceros que cita): revisar
 * **scipy**: su fichero de licencia contiene texto AGPL-3.0-or-later (el propio texto LGPL o licencias de componentes de terceros que cita): revisar
@@ -168,7 +169,7 @@ README.
 | Modelo | Autor / origen | Licencia | Notas y atribucion |
 | --- | --- | --- | --- |
 | **Parakeet TDT 0.6B v3** (int8, ONNX) | NVIDIA, `nvidia/parakeet-tdt-0.6b-v3`; conversion ONNX: `istupakov/parakeet-tdt-0.6b-v3-onnx` | **CC-BY-4.0** | Atribucion obligatoria: © NVIDIA. Modelo derivado (conversion ONNX/int8) de terceros. |
-| **WeSpeaker voxceleb ResNet34-LM** (ONNX) | WeSpeaker, `Wespeaker/wespeaker-voxceleb-resnet34-LM` | **CC-BY-4.0** (segun la ficha de Hugging Face); codigo WeSpeaker: Apache-2.0 | Atribucion obligatoria: WeSpeaker. Embeddings de hablante para la diarizacion (variante `full`). |
+| **WeSpeaker voxceleb ResNet34-LM** (ONNX) | WeSpeaker, `Wespeaker/wespeaker-voxceleb-resnet34-LM` | **CC-BY-4.0** (segun la ficha de Hugging Face); codigo WeSpeaker: Apache-2.0 | Atribucion obligatoria: WeSpeaker. Embeddings de hablante para la diarizacion (`diarize`) y las huellas de voz. |
 | **Silero VAD** (ONNX) | Silero Team, `snakers4/silero-vad`; conversion: `istupakov/silero-vad-onnx` | MIT | |
 | **faster-whisper small** (opcional) | Systran, `Systran/faster-whisper-small` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Solo si el usuario elige Whisper. |
 | **pyannote speaker-diarization community-1** (opcional, **no instalado**) | pyannote.audio / pyannoteAI | **CC-BY-4.0** | Alternativa de diarizacion (extra `pyannote`); atribucion: pyannote.audio / pyannoteAI. |
@@ -177,7 +178,7 @@ README.
 
 | Componente | Origen | Licencia |
 | --- | --- | --- |
-| `pyaec` (`aec.dll`) | https://github.com/thewh1teagle/aec | MIT. Envuelve **SpeexDSP** (BSD-3-Clause, Xiph.Org). |
+| `pyaec` (`aec.dll`) | https://github.com/thewh1teagle/aec | MIT. Envuelve **SpeexDSP** (BSD-3-Clause, Xiph.Org). **No se incluye en el instalador** (DLL sin firmar; solo desarrollo). |
 | `aec-audio-processing` (`webrtc-audio-processing-2-1.dll`) | enlace de WebRTC Audio Processing (AEC3) | BSD-3-Clause; **WebRTC** (BSD-3-Clause, The WebRTC project authors) incluye abseil (Apache-2.0). |
 
 ## Textos de licencia de las dependencias

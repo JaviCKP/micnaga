@@ -50,7 +50,7 @@ def test_check_mode_does_not_write(tmp_path: Path) -> None:
 def test_closure_excludes_dev_tools_and_includes_runtime_libs() -> None:
     infos, _missing = gl.runtime_closure()
     names = {i.name.lower() for i in infos.values()}
-    for wanted in ("numpy", "soxr", "pystray", "onnxruntime", "aec-audio-processing", "pyaec"):
+    for wanted in ("numpy", "soxr", "pystray", "onnxruntime", "aec-audio-processing"):
         assert wanted in names
     for dev in ("pytest", "ruff", "mypy", "pyinstaller", "jiwer", "pyannote-metrics"):
         assert dev not in names
@@ -156,7 +156,9 @@ def test_known_findings_in_this_environment() -> None:
     assert infos["pystray"].category == "lgpl"
     assert infos["kaldiio"].category == "not-bundled"  # licencia de solo evaluacion (NTT)
     assert infos["av"].category == "not-bundled"  # FFmpeg con x264/x265 (GPL)
-    assert infos["pyaec"].expression == "MIT" and "MANUAL" in infos["pyaec"].source
+    if "pyaec" in infos:  # solo mientras la instalacion editable lo declare en el extra `aec`
+        assert infos["pyaec"].expression == "MIT" and "MANUAL" in infos["pyaec"].source
+        assert infos["pyaec"].category == "not-bundled"  # aec.dll sin firmar: no viaja
     assert infos["torch"].category == "permissive"
 
 
@@ -164,6 +166,10 @@ def test_scan_dist_flags_forbidden_binaries(tmp_path: Path) -> None:
     (tmp_path / "ok.dll").write_bytes(b"")
     (tmp_path / "libx264-165-abc.dll").write_bytes(b"")
     (tmp_path / "cudnn64_9.dll").write_bytes(b"")
+    (tmp_path / "pyaec").mkdir()
+    (tmp_path / "pyaec" / "aec.dll").write_bytes(b"")  # sin firmar: bloqueo una instalacion
+    (tmp_path / "webrtc-aec.dll").write_bytes(b"")  # no confundir con aec.dll
     problems = gl.scan_dist(tmp_path)
-    assert len(problems) == 2
+    assert len(problems) == 3
+    assert any("aec.dll" in p and "webrtc" not in p for p in problems)
     assert not any("ok.dll" in p for p in problems)
