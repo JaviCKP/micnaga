@@ -76,7 +76,7 @@ class ProcessingConfig:
     whisper_model: str = "small"
     hq_model: str = "large-v3"  # «Mejorar transcripcion»: large-v3 | large-v3-turbo
     hq_transcribe: bool = True  # boton «Mejorar transcripcion» en la biblioteca
-    diarization: str = "onnx"  # onnx | diarize | pyannote
+    diarization: str = "diarize"  # unico motor: diarize (WeSpeaker ResNet34 + torch)
     aec: str = "auto"  # auto | webrtc | speex | off
     threads: int = 6
     low_priority: bool = True  # BELOW_NORMAL_PRIORITY_CLASS en el worker
@@ -176,9 +176,7 @@ class Config:
         """Comprueba los valores enumerados y los rangos; lanza ``ConfigError``."""
         _check_choice("detection.on_timeout", self.detection.on_timeout, ("provisional", "discard"))
         _check_choice("processing.asr_engine", self.processing.asr_engine, ("parakeet", "whisper"))
-        _check_choice(
-            "processing.diarization", self.processing.diarization, ("onnx", "diarize", "pyannote")
-        )
+        _check_choice("processing.diarization", self.processing.diarization, DIARIZERS)
         _check_choice("processing.aec", self.processing.aec, ("auto", "webrtc", "speex", "off"))
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
         d = self.detection
@@ -307,6 +305,10 @@ def _build_section(cls: type[Any], name: str, data: Mapping[str, Any]) -> Any:
     return cls(**values)
 
 
+DIARIZERS: tuple[str, ...] = ("diarize",)
+"""Diarizadores admitidos. ``onnx`` («Integrado (rapido)») y ``pyannote`` se retiraron: un
+``config.toml`` que aun los tenga pasa a ``diarize`` al cargarse (``_migrate``)."""
+
 _V1_GATES: dict[str, float] = {"min_duration_s": 180.0, "min_remote_speech_s": 30.0, "min_turns": 6}
 
 
@@ -329,6 +331,10 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
             for key, old in _V1_GATES.items():
                 if key in gates and gates[key] == old:
                     gates[key] = getattr(GatesConfig(), key)
+    processing = out.get("processing")
+    diar = processing.get("diarization") if isinstance(processing, dict) else None
+    if isinstance(processing, dict) and diar is not None and diar not in DIARIZERS:
+        processing["diarization"] = DIARIZERS[0]  # motores retirados -> el unico que queda
     out["meta"] = {"version": CONFIG_VERSION}
     return out
 

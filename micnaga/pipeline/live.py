@@ -27,9 +27,8 @@ Despues, por pista, los tramos de voz se calculan sobre las probabilidades **acu
 (acaban antes del final del audio menos una guarda; el ultimo bloque abierto espera). Cada bloque
 se guarda en ``asr/<pista>_<ini_ms>_<fin_ms>.json``: al final se reutiliza si el bloque final
 coincide y si no se transcribe. Asi ninguna palabra se corta en una frontera de trozo (los
-bloques salen de la voz, no de los trozos) y ninguna se duplica (``stitch_words``). Con el
-diarizador ``onnx`` tambien se calculan en vivo los embeddings de las ventanas de cada tramo de
-voz remota (cifrados con DPAPI, como todo embedding) y al final la etapa 7 solo agrupa.
+bloques salen de la voz, no de los trozos) y ninguna se duplica (``stitch_words``). La
+diarizacion (etapa 7) se hace siempre despues, con la reunion entera.
 
 Recorte, descarte y caidas: un trozo que pasa del final real (``trim_end_samples``) o de la
 longitud final se rehace; un fichero solo cuenta cuando su escritura atomica termino; una huella
@@ -87,7 +86,6 @@ ECHO_LOOKBACK_S = 300.0
 MANIFEST = "manifest.json"
 SLICE_META = "slice.json"
 STOP_FILE = "stop"
-DIAR_INDEX = "diar_index.json"
 TRACKS = ("mic", "system")
 WORDS_FILES = {"mic": "06_words_me.json", "system": "06_words_remote.json"}
 DEDUPE_TOLERANCE_S = 0.25
@@ -101,22 +99,6 @@ class StatefulProbModel(Protocol):
     ) -> tuple[NDArray[np.float32], VadCarry]: ...
 
 
-class WindowEmbedder(Protocol):
-    """Lo que el procesado en vivo usa del diarizador ONNX."""
-
-    name: str
-
-    def speech_regions(
-        self, probs: NDArray[np.float32], duration_s: float, *, final: bool = True
-    ) -> list[tuple[float, float]]: ...
-
-    def embed_windows(
-        self, audio: AudioArray, regions: Sequence[tuple[float, float]], offset: int = 0
-    ) -> tuple[NDArray[np.float32], list[tuple[float, float]], list[int]]: ...
-
-    def close(self) -> None: ...
-
-
 @dataclass
 class LiveEngines:
     """Fabricas de motores (inyectables en los tests). ``None`` en ``vad`` = sin vivo."""
@@ -124,7 +106,6 @@ class LiveEngines:
     create_asr: Callable[[Config], AsrEngine]
     create_aec: Callable[[Config], EchoCanceller | None]
     vad: Callable[[Config], StatefulProbModel] | None
-    create_embedder: Callable[[Config], WindowEmbedder | None] = lambda _c: None
 
 
 LIVE_SR = 16000
@@ -149,7 +130,6 @@ def engines_from_deps(deps: Deps) -> LiveEngines | None:
         create_asr=deps.create_asr,
         create_aec=deps.create_aec,
         vad=deps.live_vad,
-        create_embedder=deps.create_live_embedder,
     )
 
 
@@ -377,8 +357,6 @@ class LiveStats:
     slices_done: int = 0
     blocks_cached: int = 0
     blocks_done: int = 0
-    regions_cached: int = 0
-    regions_done: int = 0
     times: dict[str, float] = field(default_factory=dict)
 
     def add_time(self, key: str, dt: float) -> None:
@@ -405,8 +383,6 @@ class LiveProcessor:
         self._stop = stop
         self._asr: AsrEngine | None = None
         self._vad: StatefulProbModel | None = None
-        self._embedder: WindowEmbedder | None = None
-        self._embedder_tried = False
         self._asr_lock = threading.Lock()
         self.stats = LiveStats()
         self.meta: CaptureMeta | None = None
@@ -414,12 +390,10 @@ class LiveProcessor:
     # -------------------------------------------------------------- vida
 
     def close(self) -> None:
-        for eng in (self._asr, self._embedder):
-            if eng is not None:
-                with contextlib.suppress(Exception):
-                    eng.close()
+        if self._asr is not None:
+            with contextlib.suppress(Exception):
+                self._asr.close()
         self._asr = None
-        self._embedder = None
         self._vad = None
         import gc
 
@@ -732,57 +706,6 @@ class LiveProcessor:
         (self.dir / "asr").mkdir(parents=True, exist_ok=True)
         return {t: (plan[t], self.transcribe_blocks(t, plan[t])) for t in TRACKS}
 
-    # -------------------------------------------------------------- ventanas de diarizacion
-
-    def embedder(self) -> WindowEmbedder | None:
-        if not self._embedder_tried:
-            self._embedder_tried = True
-            if self.config.processing.diarization == "onnx":
-                try:
-                    self._embedder = self.engines.create_embedder(self.config)
-                except Exception as exc:
-                    log.warning("live speaker windows disabled: %s", exc)
-                    self._embedder = None
-        return self._embedder
-
-    def _region_file(self, r0: float, r1: float) -> Path:
-        return self.dir / "diar" / f"{_ms(r0)}_{_ms(r1)}.dpapi"
-
-    def commit_diar(
-        self, probs: NDArray[np.float32], length: int, final: bool
-    ) -> list[tuple[float, float]] | None:
-        """Embeddings de las ventanas de los tramos remotos estables (cifrados). ``None`` si no
-        hay embedder o DPAPI falla (la etapa 7 diariza entonces de la forma normal)."""
-        emb = self.embedder()
-        if emb is None:
-            return None
-        from micnaga.store.voiceprints import VoiceprintError, write_protected_json
-
-        regions = emb.speech_regions(probs, length / self.sr, final=final)
-        (self.dir / "diar").mkdir(parents=True, exist_ok=True)
-        for r0, r1 in regions:
-            file = self._region_file(r0, r1)
-            if file.is_file():
-                self.stats.regions_cached += 1
-                continue
-            if self.stopped():
-                raise _Stopped
-            t0 = time.perf_counter()
-            a0 = round(r0 * 100) * 160  # como embed_windows (16 kHz, tramas de 10 ms)
-            piece = self.read_conditioned("system", a0, int(r1 * self.sr))
-            vecs, spans, _ = emb.embed_windows(piece, [(r0, r1)], offset=a0)
-            try:
-                write_protected_json(
-                    file,
-                    {"emb": vecs.astype(np.float32).tolist(), "spans": [list(s) for s in spans]},
-                )
-            except (VoiceprintError, ImportError, OSError) as exc:
-                log.warning("live speaker windows skipped, cannot store them encrypted: %s", exc)
-                return None
-            self.stats.add_time("diar", time.perf_counter() - t0)
-            self.stats.regions_done += 1
-        return regions
-
     # -------------------------------------------------------------- un paso en vivo
 
     def step(self) -> bool:
@@ -803,7 +726,6 @@ class LiveProcessor:
             length = slices[-1].end
             probs = self.slice_probs(slices)
             self.commit_asr(probs, length, final=False)
-            self.commit_diar(probs["system"], length, final=False)
         return did
 
 
@@ -877,10 +799,8 @@ def finish(
             # (si de verdad no hay voz solo cuesta repetir las etapas 2-6)
             log.info("live processing produced no words; processing in batch")
             return False
-        progress(0.8)
-        regions = proc.commit_diar(probs["system"], length, final=True)
         progress(0.9)
-        _write_outputs(proc, ctx, stages, slices, probs, words, regions, length, t_start)
+        _write_outputs(proc, ctx, stages, slices, probs, words, length, t_start)
         progress(1.0)
         return True
     finally:
@@ -902,7 +822,6 @@ def _write_outputs(
     slices: Sequence[SliceResult],
     probs: dict[str, NDArray[np.float32]],
     words: dict[str, tuple[list[tuple[float, float]], list[Word]]],
-    regions: list[tuple[float, float]] | None,
     length: int,
     t_start: float,
 ) -> None:
@@ -941,12 +860,6 @@ def _write_outputs(
         ws = words[t][1]
         ctx.write_json(WORDS_FILES[t], [w.to_dict() for w in ws])
         counts[t] = len(ws)
-    # ventanas de diarizacion (indice de los tramos, en orden)
-    if regions is not None:
-        atomic_write_json(
-            proc.dir / DIAR_INDEX,
-            {"embedder": getattr(proc.embedder(), "name", ""), "regions": regions},
-        )
     # marcas 2-6 (lo ultimo)
     used_aec = sorted({s.aec for s in slices if s.aec})
     stats = proc.stats
@@ -955,8 +868,6 @@ def _write_outputs(
         "slices_cached": stats.slices_cached,
         "blocks_cached": stats.blocks_cached,
         "blocks_done": stats.blocks_done,
-        "regions_cached": stats.regions_cached,
-        "regions_done": stats.regions_done,
         "times": {k: round(v, 2) for k, v in stats.times.items()},
     }
     by_name = {s.name: s for s in stages}
@@ -999,14 +910,11 @@ def _write_outputs(
     for name, result in results.items():
         write_marker(ctx.session, by_name[name], result, elapsed if name == "asr" else 0.0)
     log.info(
-        "live processing finished: %d slices (%d cached), %d ASR blocks (%d cached), "
-        "%d speaker regions (%d cached) in %.1f s",
+        "live processing finished: %d slices (%d cached), %d ASR blocks (%d cached) in %.1f s",
         len(slices),
         stats.slices_cached,
         stats.blocks_cached + stats.blocks_done,
         stats.blocks_cached,
-        stats.regions_cached + stats.regions_done,
-        stats.regions_cached,
         elapsed,
     )
 
@@ -1018,49 +926,6 @@ def _engine_name(proc: LiveProcessor) -> str:
         return str(json.loads((proc.dir / "asr_engine.json").read_text("utf-8"))["name"])
     except (OSError, ValueError, KeyError, TypeError):
         return "unknown"
-
-
-def load_diar_windows(
-    ctx: StageContext, diarizer: object
-) -> (
-    tuple[list[tuple[float, float]], NDArray[np.float32], list[tuple[float, float]], list[int]]
-    | None
-):
-    """Ventanas de diarizacion calculadas en vivo (para la etapa 7), o ``None``."""
-    folder = live_dir(ctx.session)
-    index_file = folder / DIAR_INDEX
-    if not index_file.is_file() or not callable(getattr(diarizer, "turns_from_embeddings", None)):
-        return None
-    try:
-        index = json.loads(index_file.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if index.get("embedder") != getattr(diarizer, "name", None):
-        return None
-    from micnaga.store.voiceprints import VoiceprintError, read_protected_json
-
-    regions: list[tuple[float, float]] = []
-    vecs: list[NDArray[np.float32]] = []
-    spans: list[tuple[float, float]] = []
-    region_of: list[int] = []
-    for r0, r1 in index.get("regions", []):
-        file = folder / "diar" / f"{_ms(r0)}_{_ms(r1)}.dpapi"
-        try:
-            data = read_protected_json(file)
-        except (VoiceprintError, ImportError, OSError):
-            return None
-        ri = len(regions)
-        regions.append((float(r0), float(r1)))
-        e = np.asarray(data["emb"], dtype=np.float32).reshape(-1, 256)
-        if len(e):
-            vecs.append(e)
-            for s in data["spans"]:
-                spans.append((float(s[0]), float(s[1])))
-                region_of.append(ri)
-    emb = np.concatenate(vecs) if vecs else np.zeros((0, 256), dtype=np.float32)
-    if len(emb) != len(spans):
-        return None
-    return regions, emb, spans, region_of
 
 
 # ----------------------------------------------------------------------------- proceso en vivo
@@ -1205,7 +1070,6 @@ __all__ = [
     "finish",
     "has_cache",
     "live_supported",
-    "load_diar_windows",
     "request_stop",
     "run_live",
     "stitch_words",

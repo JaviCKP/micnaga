@@ -509,7 +509,9 @@
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("menu").hidden) { closeMenu(); } });
 
   function speakerMenu(anchor, sp) {
-    const others = S.data.transcript.speakers.filter((x) => x.id !== sp.id && x.id !== "me");
+    // A person in the room (P<n>, same mic as «Yo») can be merged into «Yo»; nobody else can.
+    const room = /^P\d+$/.test(sp.id);
+    const others = S.data.transcript.speakers.filter((x) => x.id !== sp.id && (x.id !== "me" || room));
     const items = [{ icon: "edit", label: mic.t("library.rename"), run: () => {
       const chip = anchor.closest(".spk");
       editName(chip, chip.querySelector(".name"), sp);

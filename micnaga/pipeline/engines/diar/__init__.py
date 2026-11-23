@@ -1,7 +1,9 @@
-"""Diarizadores: ``onnx.py`` (por defecto, sin torch), ``diarize.py`` (torch) y ``pyannote.py``.
+"""Diarizador: ``diarize.py`` (libreria ``diarize`` + torch, WeSpeaker ResNet34-LM).
 
-Cada modulo expone ``create(config: Config) -> Diarizer``. Dentro de ``diarize.py`` el
-``import diarize`` (la libreria) es absoluto y no choca con el modulo del mismo nombre.
+Es el unico motor. El ONNX propio («Integrado (rapido)») y ``pyannote`` se retiraron: el
+primero no separaba bien a las personas en reuniones reales y el segundo nunca se instalaba.
+``diarize.py`` expone ``create(config: Config) -> Diarizer``; dentro, el ``import diarize`` (la
+libreria) es absoluto y no choca con el modulo del mismo nombre.
 """
 
 from __future__ import annotations
@@ -12,12 +14,8 @@ from micnaga.registry import LazyRegistry
 
 DIARIZERS: LazyRegistry[Diarizer] = LazyRegistry(
     "diarizer",
-    {
-        "onnx": "micnaga.pipeline.engines.diar.onnx:create",
-        "diarize": "micnaga.pipeline.engines.diar.diarize:create",
-        "pyannote": "micnaga.pipeline.engines.diar.pyannote:create",
-    },
-    install_hint="pip install micnaga[diar]  /  micnaga[pyannote]",
+    {"diarize": "micnaga.pipeline.engines.diar.diarize:create"},
+    install_hint="pip install micnaga[diar]",
 )
 
 

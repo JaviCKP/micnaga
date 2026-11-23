@@ -43,7 +43,7 @@ from micnaga.pipeline.stages.phrases import (
     drop_echo,
     merge_segments,
 )
-from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word
+from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word, is_mic_speaker
 
 log = logging.getLogger(__name__)
 
@@ -126,11 +126,13 @@ def drop_loops(words: Sequence[Word], *, max_n: int = 4, min_repeats: int = 3) -
 # ----------------------------------------------------------------------------- hablantes
 
 
-def _remote_turns(transcript: Transcript) -> list[tuple[float, float, str]]:
-    """Tramos ``(inicio, fin, hablante)`` de los hablantes remotos (por palabra si las hay)."""
+def _remote_turns(transcript: Transcript, *, mic: bool = False) -> list[tuple[float, float, str]]:
+    """Tramos ``(inicio, fin, hablante)`` de los hablantes remotos (por palabra si las hay).
+
+    Con ``mic=True``, los del micro (``me`` y personas de la sala ``P<n>``)."""
     turns: list[tuple[float, float, str]] = []
     for seg in transcript.segments:
-        if seg.speaker == SPEAKER_ME:
+        if is_mic_speaker(seg.speaker) != mic:
             continue
         if seg.words:
             turns.extend((w.s, max(w.e, w.s), seg.speaker) for w in seg.words)
@@ -161,11 +163,18 @@ def remote_speaker_for(word: Word, turns: Sequence[tuple[float, float, str]]) ->
 def assign_words(
     transcript: Transcript, mic: Sequence[Word], system: Sequence[Word]
 ) -> list[tuple[str, Word]]:
-    """Palabras nuevas con hablante: micro = «Yo»; sistema = tramo remoto actual por tiempo.
+    """Palabras nuevas con hablante: sistema = tramo remoto actual por tiempo; micro = «Yo», o la
+    persona de la sala (``P<n>``) de ese momento si la reunion era presencial.
 
     Una palabra del sistema lejos de cualquier tramo toma el hablante de la anterior (o el remoto
-    mas frecuente si es la primera)."""
-    out: list[tuple[str, Word]] = [(SPEAKER_ME, w) for w in mic]
+    mas frecuente si es la primera); una del micro, «Yo»."""
+    mic_turns = _remote_turns(transcript, mic=True)
+    if any(sp != SPEAKER_ME for _a, _b, sp in mic_turns):
+        out: list[tuple[str, Word]] = [
+            (remote_speaker_for(w, mic_turns) or SPEAKER_ME, w) for w in mic
+        ]
+    else:
+        out = [(SPEAKER_ME, w) for w in mic]
     turns = _remote_turns(transcript)
     counts: dict[str, float] = {}
     for a, b, sp in turns:

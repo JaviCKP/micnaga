@@ -404,7 +404,7 @@ def required_groups(config: Config, *, include_optional: bool = False) -> list[s
         groups.append(PARAKEET_GROUP)
     elif config.processing.asr_engine == "whisper":
         groups.append(f"faster-whisper-{config.processing.whisper_model}")
-    if config.processing.diarization in ("onnx", "diarize"):
+    if config.processing.diarization == "diarize":
         groups.append(WESPEAKER_GROUP)
     if include_optional:
         groups.extend(g for g in OPTIONAL_GROUPS if g not in groups)

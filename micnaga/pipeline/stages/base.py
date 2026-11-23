@@ -89,13 +89,10 @@ class Deps:
     voiceprints: VoiceprintStore | None = None
     speech_probs: SpeechProbs | None = None
     """Si esta, la etapa 5 guarda las probabilidades (``05_probs.npz``) y los tramos salen de
-    ellas con los parametros de ``[vad]`` (identico a ``detect_speech``); el diarizador ONNX las
-    reutiliza en vez de volver a pasar el VAD por la pista remota."""
+    ellas con los parametros de ``[vad]`` (identico a ``detect_speech``)."""
     live_vad: Callable[[Config], Any] | None = None
     """VAD con estado (``vad.SileroVad.probs_from``) para el procesado en vivo; sin el, una
     sesion con ``work/live/`` se procesa por lotes."""
-    create_live_embedder: Callable[[Config], Any] = lambda _c: None
-    """Embedder de ventanas (diarizador ONNX) para el procesado en vivo, o ``None``."""
 
 
 def default_deps() -> Deps:
@@ -144,13 +141,6 @@ def default_deps() -> Deps:
 
         return load_model(config)
 
-    def create_live_embedder(config: Config) -> Any:
-        if config.processing.diarization != "onnx" or config.capture.sample_rate != 16000:
-            return None
-        from micnaga.pipeline.engines.diar.onnx import create
-
-        return create(config)
-
     def release_vad() -> None:
         try:
             from micnaga.pipeline.vad import release_model
@@ -168,7 +158,6 @@ def default_deps() -> Deps:
         release_vad=release_vad,
         speech_probs=speech_probs,
         live_vad=live_vad,
-        create_live_embedder=create_live_embedder,
     )
 
 

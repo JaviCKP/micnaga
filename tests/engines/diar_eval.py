@@ -1,7 +1,7 @@
 """Evaluacion SINTETICA de diarizadores (voces SAPI/OneCore de Windows; nunca grabaciones reales).
 
     $env:MICNAGA_MODELS = "<repo>\\.models"
-    python -m tests.engines.diar_eval --engine onnx --minutes 5 --speakers 3 [--n-known]
+    python -m tests.engines.diar_eval --engine diarize --minutes 5 --speakers 3 [--n-known]
 
 Cada ejecucion es un proceso nuevo (el pico de RAM no se contamina). Voces: Helena, Laura, Pablo
 (es-ES; Laura y Pablo son OneCore, accesibles por SAPI con su token) y Zira (en-US).
@@ -193,7 +193,7 @@ def run_one(engine: str, minutes: float, speakers: int, n_known: bool, seed: int
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--engine", default="onnx")
+    ap.add_argument("--engine", default="diarize")
     ap.add_argument("--minutes", type=float, default=1.0)
     ap.add_argument("--speakers", type=int, default=2)
     ap.add_argument("--n-known", action="store_true")

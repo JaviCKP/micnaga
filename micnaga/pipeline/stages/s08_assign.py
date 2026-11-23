@@ -1,8 +1,9 @@
 """Etapa 8: asignacion de palabras a hablantes y construccion de frases (spec 8.8).
 
-* Toda palabra de la pista del micro es ``"me"`` (Yo).
 * Cada palabra remota va al turno de diarizacion con el que **mas tiempo se solapa**; si no solapa
   con ninguno, al turno **mas cercano** en el tiempo. Sin turnos (sin diarizacion) todo es ``S1``.
+* Las palabras del micro, igual con los turnos del micro (``07_turns_mic.json``: ``me`` y las
+  personas de la sala ``P<n>`` de una reunion presencial). Sin turnos del micro todo es ``"me"``.
 
 * Un cambio de hablante que cae **dentro** de una oracion (la palabra anterior no acaba en
   ``. ? !``) y sin pausa se mueve al fin de oracion mas cercano si esta a <= ``SNAP_MAX_S``
@@ -28,6 +29,8 @@ from micnaga.pipeline.stages.base import StageContext, StageResult
 from micnaga.pipeline.stages.phrases import build_phrases, ends_sentence
 from micnaga.types import SPEAKER_ME, Turn, Word
 
+MIC_TURNS = "07_turns_mic.json"
+
 OUTPUT = "08_phrases.json"
 DEFAULT_REMOTE = "S1"
 SNAP_MAX_S = 0.6
@@ -36,10 +39,12 @@ SNAP_KEEP_WORDS = 2
 SNAP_PAUSE_S = 0.3
 
 
-def assign_speakers(words: Sequence[Word], turns: Sequence[Turn]) -> list[str]:
-    """Hablante de cada palabra remota (misma longitud y orden que ``words``)."""
+def assign_speakers(
+    words: Sequence[Word], turns: Sequence[Turn], default: str = DEFAULT_REMOTE
+) -> list[str]:
+    """Hablante de cada palabra (misma longitud y orden que ``words``); ``default`` sin turnos."""
     if not turns:
-        return [DEFAULT_REMOTE] * len(words)
+        return [default] * len(words)
     starts = np.array([t.start for t in turns])
     ends = np.array([t.end for t in turns])
     labels = [t.speaker for t in turns]
@@ -125,12 +130,27 @@ def run(ctx: StageContext) -> StageResult:
     me = [Word.from_dict(d) for d in ctx.read_json("06_words_me.json")]
     remote = [Word.from_dict(d) for d in ctx.read_json("06_words_remote.json")]
     turns = [Turn(t["speaker"], t["start"], t["end"]) for t in ctx.read_json("07_turns.json")]
+    mic_turns = (
+        [Turn(t["speaker"], t["start"], t["end"]) for t in ctx.read_json(MIC_TURNS)]
+        if ctx.exists(MIC_TURNS)
+        else []
+    )
     remote.sort(key=lambda w: (w.s, w.e))
+    me.sort(key=lambda w: (w.s, w.e))
     remote_speakers = snap_changes_to_sentence_ends(remote, assign_speakers(remote, turns))
-    pairs = [(SPEAKER_ME, w) for w in me] + list(zip(remote_speakers, remote, strict=True))
+    mic_speakers = assign_speakers(me, mic_turns, SPEAKER_ME)
+    if mic_turns:
+        mic_speakers = snap_changes_to_sentence_ends(me, mic_speakers)
+    pairs = list(zip(mic_speakers, me, strict=True)) + list(
+        zip(remote_speakers, remote, strict=True)
+    )
     phrases = build_phrases(pairs)
     ctx.write_json(OUTPUT, [p.to_dict() for p in phrases])
     return StageResult(
         [OUTPUT],
-        {"phrases": len(phrases), "remote_speakers": sorted(set(remote_speakers))},
+        {
+            "phrases": len(phrases),
+            "remote_speakers": sorted(set(remote_speakers)),
+            "room_speakers": sorted(set(mic_speakers) - {SPEAKER_ME}),
+        },
     )
