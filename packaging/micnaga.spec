@@ -58,6 +58,7 @@ hiddenimports += [
     "win32pipe",
     "win32gui",
     "win32process",
+    "win32timezone",  # win32cred importa este módulo al convertir el timestamp de CredRead
     "pythoncom",
     "pywintypes",
     "comtypes.client",
