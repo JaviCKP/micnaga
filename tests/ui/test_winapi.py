@@ -172,3 +172,169 @@ def test_real_system_queries_are_read_only_and_sane() -> None:
     assert isinstance(winapi.do_not_disturb(api), bool)
     mon = api.monitor_info(None)
     assert mon.scale > 0 and mon.work[2] > mon.work[0]
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+def test_rounded_region_covers_the_whole_window_minus_the_corners(scale: float) -> None:
+    """``CreateRoundRectRgn`` se queda 1 px corto por la derecha y por abajo: ``create_region``
+    lo compensa. La region llega justo hasta el borde de la ventana (ni falta ni sobra)."""
+    import ctypes
+
+    w, h = round(200 * scale), round(40 * scale)
+    radius = winapi.region_radius(scale)
+    rgn = winapi.create_region((0, 0, w, h), radius)
+    assert rgn
+    gdi = winapi._gdi32()
+    try:
+        inside = [(w - 1, h // 2), (w // 2, h - 1), (0, h // 2), (w // 2, 0), (radius, radius)]
+        outside = [(w, h // 2), (w // 2, h), (0, 0), (w - 1, h - 1), (w - 1, 0), (0, h - 1)]
+        assert all(gdi.PtInRegion(rgn, x, y) for x, y in inside)
+        assert not any(gdi.PtInRegion(rgn, x, y) for x, y in outside)
+    finally:
+        gdi.DeleteObject(ctypes.c_void_p(rgn))
+
+
+def test_clear_backdrop_removes_mica_on_windows_11_only() -> None:
+    w = FakeWin32()
+    assert winapi.clear_backdrop(9, w)
+    assert w.dwm == [(9, winapi.DWMWA_SYSTEMBACKDROP_TYPE, winapi.DWMSBT_NONE)]
+    w = FakeWin32()
+    w.build = 19045  # Windows 10: no hay Mica que quitar
+    assert winapi.clear_backdrop(9, w) and w.dwm == []
+    w = FakeWin32()
+    w.dwm_ok = False
+    assert not winapi.clear_backdrop(9, w)
+
+
+@pytest.mark.parametrize(
+    ("scale", "pill", "stage", "layout"),
+    [
+        (1.0, (860, 12, 200, 40), (750, 12, 420, 112), {"px": 210.0, "py": 0.0, "cardL": 24.0}),
+        (1.25, (835, 15, 250, 50), (698, 15, 525, 140), {"px": 209.6, "py": 0.0, "cardL": 23.6}),
+        (1.5, (810, 18, 300, 60), (645, 18, 630, 168), {"px": 210.0, "py": 0.0, "cardL": 24.0}),
+    ],
+)
+def test_stage_geometry_scales_with_dpi(
+    scale: float,
+    pill: tuple[int, int, int, int],
+    stage: tuple[int, int, int, int],
+    layout: dict[str, float],
+) -> None:
+    mon = winapi.MonitorInfo((0, 0, 1920, 1040), scale)
+    assert winapi.pill_rect(mon) == pill
+    assert winapi.stage_rect(pill, mon) == stage
+    assert winapi.stage_layout(pill, stage, scale) == layout
+
+
+def _rounded_distance(
+    x: float, y: float, rect: tuple[float, float, float, float], r: float
+) -> float:
+    """Distancia (px) de un punto al rectangulo redondeado (negativa dentro)."""
+    left, top, w, h = rect
+    cx, cy = left + w / 2, top + h / 2
+    qx, qy = abs(x - cx) - (w / 2 - r), abs(y - cy) - (h / 2 - r)
+    outside = float((max(qx, 0.0) ** 2 + max(qy, 0.0) ** 2) ** 0.5)
+    return outside + min(max(qx, qy), 0.0) - r
+
+
+@pytest.mark.parametrize("scale", [1.0, 1.25, 1.5])
+@pytest.mark.parametrize("box", [(109.6, 0.0, 200.0, 40.0), (23.6, 0.0, 372.0, 112.0)])
+def test_region_never_cuts_the_antialiased_corners(
+    scale: float, box: tuple[float, float, float, float]
+) -> None:
+    """El CSS dibuja las esquinas redondeadas con antialias; la region (GDI, borde duro) va un
+    poco por fuera: contiene todo pixel que la forma toca y deja fuera lo que esta lejos."""
+    import ctypes
+
+    region = winapi.css_region(box, scale)
+    radius = winapi.region_radius(scale)
+    rgn = winapi.create_region(region, radius)
+    assert rgn
+    gdi = winapi._gdi32()
+    shape = tuple(v * scale for v in box)
+    r = winapi.SURFACE_RADIUS * scale
+    try:
+        x0, y0 = int(shape[0]) - 8, int(shape[1]) - 8
+        for y in range(y0, int(shape[1] + shape[3]) + 8):
+            for x in range(x0, int(shape[0] + shape[2]) + 8):
+                d = _rounded_distance(x + 0.5, y + 0.5, shape, r)  # type: ignore[arg-type]
+                inside = bool(gdi.PtInRegion(rgn, x, y))
+                if d <= 0.75:  # la forma (o su antialias) toca este pixel
+                    assert inside, (x, y, d)
+                elif d >= winapi.REGION_OUTSET + 2.5:
+                    assert not inside, (x, y, d)
+    finally:
+        gdi.DeleteObject(ctypes.c_void_p(rgn))
+
+
+def test_pywebview_theme_updates_never_bring_mica_back_on_the_surface() -> None:
+    """pywebview pone Mica en ``update_title_bar_theme`` (al crear la ventana y en cada cambio
+    de preferencias del sistema): el gancho lo quita justo despues, solo en la superficie."""
+    from micnaga.ui import windows
+
+    w32 = FakeWin32()
+
+    class Handle:
+        def __init__(self, v: int) -> None:
+            self.v = v
+
+        def ToInt64(self) -> int:
+            return self.v
+
+    class Form:  # lo que hace pywebview con el tema oscuro
+        def __init__(self, hwnd: int) -> None:
+            self.Handle = Handle(hwnd)
+
+        def update_title_bar_theme(self) -> None:
+            w32.dwm_set(self.Handle.v, winapi.DWMWA_SYSTEMBACKDROP_TYPE, winapi.DWMSBT_MAINWINDOW)
+
+    class Win:
+        def __init__(self, hwnd: int) -> None:
+            self.native = Form(hwnd)
+
+    surface, other = Win(501), Win(502)
+    windows._keep_backdrop_clear(surface, 501, w32)
+    windows._keep_backdrop_clear(surface, 501, w32)  # idempotente: un solo gancho por clase
+    w32.dwm.clear()
+    surface.native.update_title_bar_theme()
+    other.native.update_title_bar_theme()
+    mica, none = winapi.DWMSBT_MAINWINDOW, winapi.DWMSBT_NONE
+    attr = winapi.DWMWA_SYSTEMBACKDROP_TYPE
+    assert w32.dwm == [(501, attr, mica), (501, attr, none), (502, attr, mica)]
+
+
+def test_hiding_an_overlay_stops_webview2_rendering() -> None:
+    """Las superposiciones se ocultan con Win32, que WinForms no ve: el control WebView2 se pone
+    invisible a mano (``IsVisible = false``) para que Chromium deje de dibujar oculto."""
+    from micnaga.ui.windows import PywebviewWindow, WindowSpec
+
+    class View:
+        Visible = True
+
+    class Hwnd:
+        def ToInt64(self) -> int:
+            return 77
+
+    class Native:
+        IsHandleCreated = True
+        InvokeRequired = False
+        Handle = Hwnd()
+
+        def __init__(self) -> None:
+            self.browser = type("B", (), {"webview": View()})()
+
+    class Win:
+        native = Native()
+
+    w32 = FakeWin32()
+    spec = WindowSpec(key="pill", page="pill.html", title="x", width=1, height=1, overlay=True)
+    win = PywebviewWindow(Win(), spec, w32)
+    view = Win.native.browser.webview
+    win.hide()
+    assert view.Visible is False
+    win.show(activate=False)
+    assert view.Visible is True
+    lib = WindowSpec(key="lib", page="l", title="l", width=1, height=1)
+    normal = PywebviewWindow(Win(), lib, w32)
+    normal.hide()
+    assert view.Visible is True, "solo las superposiciones (las ventanas normales las ve WinForms)"

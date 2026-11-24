@@ -593,6 +593,19 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                         folder=folders[0],
                         t="610",
                     )
+                    # presencial (etiqueta) y antigua con Parakeet (boton «Mejorar transcripcion»)
+                    for name, title in (("library_in_person", "Sync con"), ("library_hq", "Retro")):
+                        shot(
+                            name,
+                            theme,
+                            "library.html",
+                            "library",
+                            1120,
+                            720,
+                            1,
+                            wait=1.6,
+                            folder=next(f for f in folders if title.lower().replace(" ", "-") in f),
+                        )
                     shot(
                         "library_search",
                         theme,
@@ -620,7 +633,16 @@ def run(out_dir: Path, only: set[str] | None = None) -> list[Path]:
                     )
                     shot("library_empty", theme, "library.html", "library", 820, 540, 1, wait=1.4)
                 if want("settings"):
-                    for tab in ("general", "detection", "privacy", "diagnostics", "about"):
+                    for tab in (
+                        "general",
+                        "detection",
+                        "processing",
+                        "storage",
+                        "privacy",
+                        "secretaria",
+                        "diagnostics",
+                        "about",
+                    ):
                         suffix = "" if tab == "general" else "_" + tab
                         shot(
                             "settings" + suffix,

@@ -3,7 +3,7 @@
  * and gets events back through api.popup_* (see micnaga/ui/bridge.py:PopupApi).
  *
  *  show      -> rise 16 px + fade, 220 ms
- *  Grabar    -> check for 300 ms, then the card shrinks into the pill (400 ms)
+ *  Grabar    -> check for 300 ms, then the card shrinks into the pill (280 ms, pill.js)
  *  Ahora no  -> down + fade, 180 ms
  *  timeout   -> morphs into the pill labelled «provisional» (or leaves, if on_timeout=discard)
  *  end       -> fade, 180 ms (meeting ended before an answer)
@@ -36,8 +36,8 @@
   const embedded = () => (window.micnaga && window.micnaga.surface) || null;
   const clearTimers = () => { S.timers.forEach(clearTimeout); S.timers = []; };
 
-  const poll = mic.pollLevels((m, s) => {
-    const um = mic.levelToUi(m), us = mic.levelToUi(s);
+  const poll = mic.levelFeed((m, s) => {
+    const um = mic.levelToMeter(m), us = mic.levelToMeter(s);
     waves.mic.push(um);
     waves.sys.push(us);
     const t = performance.now();
@@ -307,7 +307,7 @@
       leave(reason === "answered" ? "leaving" : "fading");
     },
     accept, dismiss, end, expire,
-    setLevels(m, s) { waves.mic.fill(mic.levelToUi(m)); waves.sys.fill(mic.levelToUi(s)); },
+    setLevels(m, s) { waves.mic.fill(mic.levelToMeter(m)); waves.sys.fill(mic.levelToMeter(s)); },
     get phase() { return S.phase; },
     get authority() { return S.authority; },
   };

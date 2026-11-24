@@ -267,6 +267,9 @@ def test_popup_end_before_answer_fades(world: dict[str, Any]) -> None:
     p = page(world, "popup.html", "popup", 372, 112, timeout=40)
     p.eval("micnaga.popup.end()")
     assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    deadline = time.time() + 2  # the bridge calls are async HTTP posts in this harness
+    while time.time() < deadline and ("handle_popup_closed", ("fading",)) not in spy.calls:
+        time.sleep(0.05)
     assert ("handle_popup_closed", ("fading",)) in spy.calls
     assert not any(n == "handle_popup_decide" for n, _ in spy.calls)
 
@@ -314,15 +317,16 @@ def test_pill_hover_expands_and_buttons_route(world: dict[str, Any]) -> None:
     spy: Spy = world["spy"]
     spy.calls.clear()
     p = page(world, "pill.html", "pill", 320, 48, elapsed=65)
-    assert p.eval("document.getElementById('pill').getBoundingClientRect().width") == 200
+    assert p.eval("micnaga.surface.box().width") == 200
     assert p.eval("getComputedStyle(document.getElementById('pill')).opacity") == "0.6"
     assert p.eval("document.getElementById('time').textContent") in ("01:05", "01:06")
     p.mouse_move(150, 20)
-    assert p.wait_for("document.getElementById('pill').getBoundingClientRect().width > 290", 2)
+    assert p.wait_for("micnaga.surface.box().width > 290", 2)
     assert p.wait_for(
         "parseFloat(getComputedStyle(document.getElementById('pill')).opacity) > 0.95", 2
     )
     assert ("handle_pill_hover", (True,)) in spy.calls
+    time.sleep(0.35)  # the shape and the bar finish widening before clicking its buttons
     p.click(*p.center("#b-marker"))
     p.click(*p.center("#b-stop"))
     deadline = time.time() + 2  # the bridge calls are async HTTP posts in this harness
@@ -360,15 +364,20 @@ def test_pill_provisional_variant_shows_label(world: dict[str, Any]) -> None:
     assert p2.eval("getComputedStyle(document.getElementById('tag')).display") == "none"
 
 
-def test_pill_is_200_by_40_with_pulsing_dot(world: dict[str, Any]) -> None:
+def test_pill_is_200_by_40_with_a_still_dot(world: dict[str, Any]) -> None:
     p = page(world, "pill.html", "pill", 320, 48)
-    assert p.eval(
-        "(() => { const r = document.getElementById('pill').getBoundingClientRect(); return [r.width, r.height]; })()"  # noqa: E501
-    ) == [200, 40]
-    assert (
-        p.eval("getComputedStyle(document.querySelector('.rec-dot'), '::after').animationDuration")
-        == "1.2s"
-    )
+    assert p.eval("(() => { const b = micnaga.surface.box(); return [b.width, b.height]; })()") == [
+        200,
+        40,
+    ]
+    # a fully round capsule: radius = height / 2
+    assert "round 20px" in str(p.eval("getComputedStyle(document.getElementById('pill')).clipPath"))
+    # the red square stays still while recording (the user's call): no looping animation, so
+    # a pill at rest asks the browser for no frames at all
+    after = "getComputedStyle(document.querySelector('.rec-dot'), '::after')"
+    assert p.eval(f"{after}.display") == "none" and p.eval(f"{after}.animationName") == "none"
+    time.sleep(0.5)
+    assert p.eval("document.getAnimations().filter(a => a.playState === 'running').length") == 0
 
 
 def test_library_search_is_debounced_highlighted_and_opens_the_phrase(
@@ -457,7 +466,8 @@ def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any
     finished.clear()
     p = page(world, "wizard.html", "wizard", 600, 680)
     # no «Descargar» / «Continuar»: the download starts on its own
-    assert p.eval("document.querySelectorAll('button:not([hidden])').length") == 1  # retry only
+    # retry only («Cancelar» is just the way out while it downloads)
+    assert p.eval("document.querySelectorAll('button:not([hidden]):not(#cancel)').length") == 1
     assert p.eval("document.getElementById('fail').hidden") is True
     assert p.wait_for(
         "+document.getElementById('overall-bar').getAttribute('aria-valuenow') > 0", 4
@@ -470,29 +480,49 @@ def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any
 
 
 def _rect(p: Page) -> list[float]:
+    """La forma a la que va el CSS (caja del ``clip-path``), en px CSS del lienzo."""
     return p.eval(  # type: ignore[no-any-return]
-        "(() => { const r = document.getElementById('pill').getBoundingClientRect();"
-        " return [r.left, r.top, r.width, r.height].map(Math.round); })()"
+        "(() => { const b = micnaga.surface.box();"
+        " return [b.left, b.top, b.width, b.height].map(Math.round); })()"
+    )
+
+
+def _settled(p: Page) -> None:
+    """Espera a que no quede ninguna transicion en marcha en la superficie."""
+    assert p.wait_for(
+        "document.getAnimations().filter(a => a.playState === 'running'"
+        " && !(a.effect && a.effect.target && a.effect.target.closest"
+        " && a.effect.target.closest('.rec-dot'))).length === 0",
+        2,
     )
 
 
 def test_pill_grows_into_the_card_and_shrinks_back(world: dict[str, Any]) -> None:
     """La tarjeta nace de la pastilla: pill -> expanding -> card -> collapsing -> pill, con el
-    punto y el cronometro anclados a la esquina de la forma (son la cabecera de la tarjeta)."""
+    punto y el cronometro anclados a la esquina de la forma (son la cabecera de la tarjeta).
+    La forma es un ``clip-path`` redondo (20 px): la pastilla es una capsula y la tarjeta lleva
+    el mismo radio, asi que solo se mueven los bordes."""
     spy = world["spy"]
     spy.calls.clear()
     p = page(world, "pill.html", "surface", 420, 112, levels="0.3,0.1")
     p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
     assert _rect(p) == [110, 0, 200, 40] and p.eval("micnaga.surface.phase") == "pill"
+    clip = str(p.eval("getComputedStyle(document.getElementById('pill')).clipPath"))
+    assert clip.startswith("inset(") and "round 20px" in clip
+    _settled(p)
     dot0 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
     p.eval("micnaga.popup.show({title: 'Revisión semanal', code: 'abc-defg-hij', timeoutS: 40})")
     assert p.wait_for("micnaga.surface.phase === 'expanding'", 1)
+    assert p.eval("document.getElementById('pill').dataset.moving") == "true"
+    assert ("handle_surface_phase", ("expanding",)) in spy.calls
     assert p.wait_for("micnaga.surface.phase === 'card'", 2)
     assert _rect(p) == [24, 0, 372, 112]
+    _settled(p)
     # the dot rode the left edge: same offset from the shape's corner as in the pill
     dot1 = p.eval("document.querySelector('.state-ico').getBoundingClientRect().left")
-    assert dot0 - 110 == dot1 - 24
+    assert round(dot0 - 110) == round(dot1 - 24)
     assert p.eval("getComputedStyle(document.getElementById('lift')).opacity") == "1"
+    assert p.eval("document.getElementById('pill').dataset.moving") == "false"
     assert ("handle_surface_phase", ("card",)) in spy.calls
     assert not p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
     p.eval("micnaga.popup.dismiss()")
@@ -504,10 +534,97 @@ def test_pill_grows_into_the_card_and_shrinks_back(world: dict[str, Any]) -> Non
     assert p.eval("document.getElementById('pill').classList.contains('pywebview-drag-region')")
 
 
+def test_the_morph_animates_only_clip_and_transform(world: dict[str, Any]) -> None:
+    """Fluida: durante la morfosis solo cambian ``clip-path``, ``transform`` y ``opacity``
+    (nada de layout ni de radio), y la caja de la pastilla no cambia de tamano."""
+    p = page(world, "pill.html", "surface", 420, 112)
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    _settled(p)
+    p.eval(
+        "window.__props = new Set(); window.__boxes = new Set();"
+        "document.addEventListener('transitionrun', e => __props.add(e.propertyName));"
+        "document.addEventListener('animationstart', e => __props.add('@' + e.animationName));"
+        "(function f() { const r = document.getElementById('pill').getBoundingClientRect();"
+        " __boxes.add([r.width, r.height].join('x'));"
+        " if (!window.__stop) requestAnimationFrame(f); })();"
+    )
+    p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
+    p.eval("micnaga.popup.dismiss()")
+    assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    props = set(p.eval("(window.__stop = true, [...__props])"))
+    moving = {x for x in props if not x.startswith("@")}
+    assert {"clip-path", "transform"} <= moving
+    assert moving <= {"clip-path", "transform", "opacity", "visibility"}, moving
+    assert p.eval("[...__boxes]") == ["420x112"], "la caja nunca cambia: sin layout por fotograma"
+
+
+def test_morph_frame_timing_in_chromium(world: dict[str, Any]) -> None:
+    """Mide los fotogramas (``requestAnimationFrame``) de crecer y encoger. En headless la
+    cadencia la marca el navegador, asi que se exige poco: que anime (varios fotogramas, no un
+    salto) y que ningun fotograma se atasque."""
+    p = page(world, "pill.html", "surface", 420, 112)
+    p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
+    _settled(p)
+    p.eval(
+        "window.__t = []; window.__loaf = [];"
+        "try { new PerformanceObserver(l => l.getEntries().forEach(e => __loaf.push(e.duration)))"
+        ".observe({type: 'long-animation-frame', buffered: false}); } catch (e) {}"
+        "(function f(t) { __t.push(t); if (!window.__stop) requestAnimationFrame(f); })"
+        "(performance.now());"
+    )
+    p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
+    assert p.wait_for("micnaga.surface.phase === 'card'", 2)
+    p.eval("micnaga.popup.dismiss()")
+    assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    stats = p.eval(
+        "(() => { window.__stop = true; const d = [];"
+        " for (let i = 1; i < __t.length; i++) d.push(__t[i] - __t[i - 1]);"
+        " d.sort((a, b) => a - b);"
+        " return {n: d.length, p50: d[Math.floor(d.length / 2)], max: d[d.length - 1],"
+        " loaf: __loaf.length}; })()"
+    )
+    print("chromium morph frames:", stats)
+    assert stats["n"] >= 20, stats
+    assert stats["max"] < 100, stats
+
+
 def test_reduced_motion_cross_fades_instead_of_morphing(world: dict[str, Any]) -> None:
     p = page(world, "pill.html", "surface", 420, 112, motion="off")
     p.eval("micnaga.pill.layout({px: 210, py: 0, cardL: 24})")
     p.eval("micnaga.popup.show({title: 'x', code: '', timeoutS: 40})")
     assert p.wait_for("micnaga.surface.phase === 'card'", 1)
-    duration = p.eval("getComputedStyle(document.getElementById('pill')).transitionDuration")
-    assert str(duration).startswith("0s")
+    for sel in ("pill", "card"):
+        duration = p.eval(f"getComputedStyle(document.getElementById('{sel}')).transitionDuration")
+        assert set(str(duration).replace(" ", "").split(",")) == {"0s"}, (sel, duration)
+    row = p.eval("getComputedStyle(document.querySelector('.pill-row')).transitionDuration")
+    assert set(str(row).replace(" ", "").split(",")) == {"0s"}, row
+
+
+def test_pill_meter_follows_the_real_level_and_rests_in_silence(world: dict[str, Any]) -> None:
+    """La onda punteada de la pastilla refleja el audio real: en silencio solo la linea central
+    (quieta), hablando las filas exteriores se llenan segun el nivel (DECISIONS §34)."""
+    p = page(world, "pill.html", "pill", 320, 48)
+    p.eval("micnaga.pill.stop()")
+    # pixeles encendidos por fila de celdas: [exterior superior, centro, exterior inferior]
+    lit = (
+        "(() => { const c = document.getElementById('pm-mic'), x = c.getContext('2d');"
+        " const d = x.getImageData(0, 0, c.width, c.height).data, rows = [0, 0, 0];"
+        " for (let y = 0; y < c.height; y++) for (let i = 0; i < c.width; i++) {"
+        "  if (d[(y * c.width + i) * 4 + 3] < 128) continue;"
+        "  const f = y / c.height; rows[f < 0.25 ? 0 : f >= 0.75 ? 2 : 1]++; }"
+        " return rows; })()"
+    )
+    quiet = p.eval(lit)
+    assert quiet[0] == 0 and quiet[2] == 0 and quiet[1] > 0, quiet
+    p.eval("micnaga.pill.setLevels(0.1, 0.1)")  # -20 dBFS: hablar cerca
+    loud = p.eval(lit)
+    assert loud[0] > 0 and loud[2] > 0, loud
+    p.eval("micnaga.pill.setLevels(0.01, 0.01)")  # -40 dBFS: apenas
+    soft = p.eval(lit)
+    assert 0 < soft[0] < loud[0], (soft, loud)
+    w = p.eval("document.getElementById('pm-mic').width")
+    p.eval("micnaga.pill.setLevels(1, 1)")
+    assert p.eval("document.getElementById('pm-mic').width") == w, "la geometria no cambia"
+    assert p.eval("mic.levelToMeter(0)") == 0 and p.eval("mic.levelToMeter(0.0158)") > 0.15
+    assert p.eval("mic.levelToMeter(0.3)") == 1

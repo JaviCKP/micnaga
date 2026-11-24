@@ -20,6 +20,9 @@ Flujo (decide el usuario; DECISIONS §18, ``docs/state_machine.md``):
   en ``end_popup_timeout_s`` termina), sin confirmar «¿La guardo?» (Guardar / Descartar; sin
   respuesta se aparta sin transcribir). Si el micro vuelve antes de contestar, el popup de fin se
   retira y la grabacion sigue como estaba.
+* **Reunion presencial** (``RecordInPerson``, tray / biblioteca): sesion manual confirmada al
+  momento, sin popup; no la cierran las senales (no hay llamada) ni la molesta un Meet que
+  empiece mientras tanto. Solo la para el usuario.
 """
 
 from __future__ import annotations
@@ -102,6 +105,14 @@ class RecordNow:
 
 
 @dataclass(frozen=True)
+class RecordInPerson:
+    """Tray / biblioteca «Grabar reunion presencial»: sesion manual confirmada, sin llamada.
+
+    No adopta una pestana de Meet visible ni pregunta nada; solo la termina el usuario. Grabando
+    ya (cualquier fase de grabacion) no hace nada."""
+
+
+@dataclass(frozen=True)
 class UserStop:
     """Parar desde la pastilla / tray (vale en cualquier estado de grabacion)."""
 
@@ -143,6 +154,7 @@ Event: TypeAlias = (
     | PopupAnswer
     | PopupHover
     | RecordNow
+    | RecordInPerson
     | UserStop
     | PrivatePause
     | SuspendWatching
@@ -425,6 +437,8 @@ class WatcherStateMachine:
                 self._hover = event.hovering
         elif isinstance(event, RecordNow):
             self._on_record_now(now, actions)
+        elif isinstance(event, RecordInPerson):
+            self._on_record_in_person(actions)
         elif isinstance(event, UserStop):
             self._on_user_stop(now, actions)
         elif isinstance(event, PrivatePause):
@@ -905,12 +919,22 @@ class WatcherStateMachine:
                 meeting = MeetingInfo.from_tab(tab)
             else:
                 meeting = MeetingInfo(manual=True)
-            self._begin_session(meeting, generic=False)
-            self._phase = Phase.RECORDING_CONFIRMED
-            self._confirmed = True
-            self._pill_visible = True
-            actions.append(StartRecording(provisional=False, meeting=meeting))
-            actions.append(ShowPill(provisional=False, paused=False))
+            self._start_confirmed(meeting, actions)
+
+    def _start_confirmed(self, meeting: MeetingInfo, actions: list[Action]) -> None:
+        self._begin_session(meeting, generic=False)
+        self._phase = Phase.RECORDING_CONFIRMED
+        self._confirmed = True
+        self._pill_visible = True
+        actions.append(StartRecording(provisional=False, meeting=meeting))
+        actions.append(ShowPill(provisional=False, paused=False))
+
+    def _on_record_in_person(self, actions: list[Action]) -> None:
+        """Reunion presencial: manual (ni senales que la cierren ni popups de Meet), confirmada
+        desde el principio y sin adoptar ninguna pestana de Meet. Grabando ya, no hace nada."""
+        if self._phase not in (Phase.IDLE, Phase.CANDIDATE, Phase.SUSPENDED):
+            return
+        self._start_confirmed(MeetingInfo(manual=True, in_person=True), actions)
 
     def _on_user_stop(self, now: float, actions: list[Action]) -> None:
         if self._phase is Phase.PROMPTING:

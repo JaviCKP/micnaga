@@ -13,10 +13,13 @@ Modelo de hilos
 Superficie unica
 ----------------
 La tarjeta «¿Estás en una reu?» (y la de «Reunión terminada») nace de la pastilla: es la MISMA
-forma, que crece en CSS (ancho, alto, posicion) dentro de una ventana transparente de tamano
-fijo (``winapi.STAGE_SIZE``) y vuelve a encogerse. La ventana nunca se redimensiona durante la
-animacion: solo cambia su region (``SetWindowRgn``), que recorta lo que se ve y se pulsa, de modo
-que el hueco transparente deja pasar los clics. Fases (``surface_phase``):
+forma, que crece en CSS (``clip-path`` animado, sin tocar el layout) dentro de una ventana
+transparente de tamano fijo (``winapi.STAGE_SIZE``) y vuelve a encogerse. La ventana nunca se
+redimensiona: solo cambia su region (``SetWindowRgn``), que deja pasar los clics fuera de la
+forma; se agranda ANTES de crecer y se recoge DESPUES de encoger, sin ir y venir a Python durante
+la animacion. El fondo de sistema de DWM (Mica, que pywebview pone con el tema oscuro) se quita
+siempre: era el recuadro gris (DECISIONS §29). Si el equipo no permite transparencia, la ventana
+es opaca y la region sigue a la forma fotograma a fotograma. Fases (``surface_phase``):
 ``hidden -> pill -> expanding -> card -> collapsing -> pill`` (o ``undo`` / ``hidden``).
 * Biblioteca, Ajustes y asistente se crean bajo demanda y se destruyen al cerrarse.
 * Toda la API publica es segura desde cualquier hilo. Los callbacks de ``UiCallbacks`` se
@@ -33,6 +36,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -73,6 +77,15 @@ POPUP_VERIFY_S = 1.2
 """Tras mostrar un popup se comprueba que la ventana sigue visible; si no, se reintenta."""
 COLLAPSE_GUARD_S = 1.4
 """Red de seguridad: si el JS no avisa del fin del encogido, el host lo da por terminado."""
+GROW_S = 0.30
+"""Pastilla -> tarjeta (``--grow`` de pill.css)."""
+SHRINK_S = 0.24
+"""Tarjeta -> pastilla (``--shrink``), tras ``SHRINK_DELAY_S`` (el contenido sale antes)."""
+SHRINK_DELAY_S = 0.04
+HOVER_S = 0.22
+"""Pastilla <-> pastilla ancha / aviso «Deshacer» (``--dur``)."""
+SURFACE_EASE = winapi.cubic_bezier(0.2, 0.9, 0.25, 1.0)
+"""La curva de la forma (``--surface-ease``): sale rapida y se posa sin rebote."""
 VANISH_S = 0.2
 """La pastilla se desvanece (160 ms) antes de ocultar la ventana: al volver a mostrarla nunca
 asoma el ultimo fotograma viejo."""
@@ -83,8 +96,43 @@ seguidas en ``GUI_RESTART_WINDOW_S``; despues se sale, registrado)."""
 GUI_RESTART_WINDOW_S = 600.0
 SM_SHUTTINGDOWN = 0x2000
 THEME_POLL_S = 5.0
+LEVELS_HZ = 10
+"""Niveles reales (micro, sistema), ya suavizados, que se empujan a la superficie mientras esta en
+pantalla y suena algo. En silencio no hay llamadas ni la pagina dibuja nada (DECISIONS §34)."""
+LEVEL_GATE = 0.006
+"""Puerta de ruido (RMS lineal, ~-44 dBFS): por debajo es silencio y la onda no titila (el ruido
+de una sala tranquila ronda 0,001 con picos de 0,004)."""
+LEVEL_ATTACK_S = 0.05
+LEVEL_RELEASE_S = 0.2
+LEVEL_TAIL_S = 4.0
+"""Tras el silencio se siguen enviando ceros un rato: la onda (historia que se desplaza) se vacia
+hasta la linea quieta y despues ya no se envia nada."""
 _BG = {"light": "#f3f3f0", "dark": "#050507"}
+
+
+class LevelEnvelope:
+    """Suavizado de un nivel: puerta de ruido, ataque rapido y caida lenta (a ``hz`` pasos/s)."""
+
+    def __init__(self, hz: float = LEVELS_HZ) -> None:
+        dt = 1.0 / hz
+        self._attack = 1.0 - math.exp(-dt / LEVEL_ATTACK_S)
+        self._release = 1.0 - math.exp(-dt / LEVEL_RELEASE_S)
+        self.value = 0.0
+
+    def step(self, raw: float) -> float:
+        x = raw if raw >= LEVEL_GATE else 0.0
+        self.value += (x - self.value) * (self._attack if x > self.value else self._release)
+        if x == 0.0 and self.value < LEVEL_GATE / 4:
+            self.value = 0.0  # la caida termina en cero exacto: el silencio se reconoce
+        return self.value
+
+    def reset(self) -> None:
+        self.value = 0.0
+
+
 ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
+ENV_SURFACE = "MICNAGA_UI_SURFACE"
+"""``opaque`` fuerza la superficie opaca (la de los equipos sin transparencia): diagnostico."""
 
 
 class FileConfigStore:
@@ -110,12 +158,16 @@ class _Pill:
     monitor: winapi.MonitorInfo | None = None
     title: str | None = None
     """Titulo provisional de la Secretaria (la pastilla se ensancha mas al pasar el raton)."""
-    stage: Rect | None = None
+    shown: bool = False
+    """La superficie esta en pantalla (pastilla, tarjeta o aviso «Deshacer»)."""
+    frame: Rect | None = None
     """Rectangulo (fisico) de la ventana-lienzo que contiene la pastilla y la tarjeta."""
     layout: dict[str, float] | None = None
     """Posiciones CSS dentro del lienzo (``winapi.stage_layout``)."""
-    shown: bool = False
-    """La superficie esta en pantalla (pastilla, tarjeta o aviso «Deshacer»)."""
+    region_box: winapi.CssBox | None = None
+    """Caja CSS que cubre AHORA la region de la ventana."""
+    region_kind: str = "pill"
+    """Forma a la que va la region: ``pill`` | ``hover`` | ``undo`` | ``card``."""
 
 
 class UiHost:
@@ -151,6 +203,8 @@ class UiHost:
         self._config: Config = config if config is not None else self._store.load()
         self._cb = callbacks or UiCallbacks()
         self._levels = levels or (lambda: (0.0, 0.0))
+        self._lv_env = (LevelEnvelope(), LevelEnvelope())
+        self._lv_tail = round(LEVEL_TAIL_S * LEVELS_HZ)
         self._ops = library_ops
         self._download = download_models
         self._diagnostics = diagnostics
@@ -212,6 +266,12 @@ class UiHost:
         self.exit_reason: str = ""
         # pastilla
         self._pill = _Pill()
+        # ventana de la superficie
+        self._surface_hwnd = 0
+        self._surface_mode = "transparent"  # transparent | opaque (sin transparencia)
+        self._region_lock = threading.Lock()
+        self._region_gen = 0
+        self._logged: set[tuple[Any, ...]] = set()
 
     # ================================================================= ciclo de vida
 
@@ -281,8 +341,10 @@ class UiHost:
             if self._popup_state == "morphing":
                 self._popup_state = "idle"
             self._pill.shown = False
-            self._pill.stage = None
+            self._pill.frame = None
+            self._pill.region_box = None
             self._surface_phase = "hidden"
+            self._surface_hwnd = 0
         return True
 
     def _session_ending(self) -> bool:
@@ -325,10 +387,9 @@ class UiHost:
     def _bootstrap(self, on_ready: Callable[[UiHost], None] | None, *, first: bool = True) -> None:
         for win in self._overlays():
             if win is not None:
-                win.wait_loaded(15.0)
-                if win.hwnd:
-                    winapi.apply_no_activate(win.hwnd, self._w32)
-                    win.make_transparent()
+                if not win.wait_loaded(15.0):
+                    log.warning("surface page not loaded after 15 s; preparing it anyway")
+                self._prepare_surface(win)
                 # pywebview (edgechromium) hace ``form.Show()`` en cada navegacion de una ventana
                 # transparente aunque se creara oculta: sin esto, al arrancar quedaban una tarjeta
                 # vacia y una pastilla «00:00» visibles en la esquina superior izquierda.
@@ -346,6 +407,7 @@ class UiHost:
             )
             self._tray.start()
         self._start_theme_watch()
+        self._start_level_push()
         if on_ready is not None:
             try:
                 on_ready(self)
@@ -465,6 +527,7 @@ class UiHost:
             while not self._stopping.wait(THEME_POLL_S):
                 try:
                     self._push_theme()
+                    self._clear_surface_backdrop()
                 except Exception:
                     log.debug("theme poll failed", exc_info=True)
 
@@ -482,6 +545,44 @@ class UiHost:
 
     def set_levels_provider(self, provider: LevelsProvider) -> None:
         self._levels = provider
+
+    def _start_level_push(self) -> None:
+        """Un hilo empuja los niveles suavizados a la superficie (``micnaga.levels``) a
+        ``LEVELS_HZ`` mientras se ve (pastilla o tarjeta) y suena algo. Sin sondeo desde el JS:
+        con la superficie oculta o en silencio no se envia nada (DECISIONS §34)."""
+
+        def loop() -> None:
+            period = 1.0 / LEVELS_HZ
+            while not self._stopping.wait(period):
+                try:
+                    self._push_levels()
+                except Exception:
+                    log.debug("level push failed", exc_info=True)
+
+        threading.Thread(target=loop, name="micnaga-ui-levels", daemon=True).start()
+
+    def _push_levels(self) -> bool:
+        """Un paso del empuje; ``True`` si se envio algo. Oculta -> nada (y al volver se empieza
+        en reposo); silencio -> unos ceros para vaciar la onda y despues nada."""
+        win = self._pillwin
+        with self._lock:
+            shown = self._pill.shown and self._surface_phase != "hidden"
+        tail_max = round(LEVEL_TAIL_S * LEVELS_HZ)
+        if win is None or not shown:
+            self._lv_env[0].reset()
+            self._lv_env[1].reset()
+            self._lv_tail = tail_max
+            return False
+        m, sy = self.levels()
+        m, sy = self._lv_env[0].step(m), self._lv_env[1].step(sy)
+        if m == 0.0 and sy == 0.0:
+            if self._lv_tail >= tail_max:
+                return False
+            self._lv_tail += 1
+        else:
+            self._lv_tail = 0
+        win.post_message(f"lv:{m:.4f},{sy:.4f}")
+        return True
 
     def set_popup_state_provider(
         self, provider: Callable[[], tuple[float, bool] | None] | None
@@ -531,35 +632,262 @@ class UiHost:
         layout = winapi.stage_layout(pill_rect, stage, mon.scale)
         with self._lock:
             pill = self._pill
-            moved = stage != pill.stage
-            pill.base, pill.stage, pill.layout, pill.monitor = pill_rect, stage, layout, mon
+            moved = stage != pill.frame or not pill.shown
+            pill.base, pill.frame, pill.layout, pill.monitor = pill_rect, stage, layout, mon
             if moved:
                 pill.ignore_moves_until = time.monotonic() + 0.4
+        self._log_geometry(mon)
         if win is not None:
             win.run_js(f"micnaga.pill.layout({json.dumps(layout)})")
-            if moved or not pill.shown:
+            if moved:
                 win.place(stage)
         return layout
 
-    def _set_region(self, kind: str) -> None:
-        """Zona visible y clicable del lienzo: ``pill`` | ``hover`` | ``undo`` | ``card``."""
-        win = self._pillwin
+    def _shape_box(self, kind: str) -> winapi.CssBox | None:
+        """Caja CSS (dentro del lienzo) de la forma ``kind``: ``pill`` | ``hover`` | ``undo`` |
+        ``card``. La pastilla (y su version ancha o el aviso) se centra en ``px``."""
         pill = self._pill
-        lay, mon = pill.layout, pill.monitor
-        if win is None or lay is None:
-            return
-        scale = mon.scale if mon else 1.0
+        lay = pill.layout
+        if lay is None:
+            return None
         if kind == "card":
-            box = (lay["cardL"], 0.0, *winapi.CARD_SIZE)
+            return (lay["cardL"], 0.0, float(winapi.CARD_SIZE[0]), float(winapi.CARD_SIZE[1]))
+        if kind == "hover":
+            width = float(_hover_width(pill))
+        elif kind == "undo":
+            width = float(UNDO_SIZE[0])
         else:
-            if kind == "hover":
-                width = float(_hover_width(pill))
-            elif kind == "undo":
-                width = float(UNDO_SIZE[0])
-            else:
-                width = float(winapi.PILL_SIZE[0])
-            box = (lay["px"] - width / 2, lay["py"], width, float(winapi.PILL_SIZE[1]))
-        win.set_region(winapi.css_region(box, scale))
+            width = float(winapi.PILL_SIZE[0])
+        return (lay["px"] - width / 2, lay["py"], width, float(winapi.PILL_SIZE[1]))
+
+    def _region(self, kind: str, *, duration: float = 0.0, delay: float = 0.0) -> None:
+        """La region de la ventana va a la forma ``kind``, que el CSS anima en ``duration`` s
+        (tras ``delay``).
+
+        Transparente: la region nunca recorta la forma en movimiento: pasa YA a la union de la
+        forma actual y la nueva y se ajusta a la nueva cuando acaba la animacion (sin idas y
+        vueltas a Python durante ella). Opaca (equipo sin transparencia): lo que se ve ES la
+        region, asi que sigue a la forma en cada refresco de pantalla con la misma curva."""
+        win = self._pillwin
+        target = self._shape_box(kind)
+        mon = self._pill.monitor
+        if win is None or target is None or mon is None:
+            return
+        self._clear_surface_backdrop()  # cada cambio de forma: Mica fuera (pywebview lo reaplica)
+        with self._region_lock:
+            self._region_gen += 1
+            gen = self._region_gen
+        with self._lock:
+            current = self._pill.region_box
+            self._pill.region_kind = kind
+        total = duration + delay
+        if (
+            total <= 0
+            or current is None
+            or current == target
+            or not winapi.animations_enabled(self._w32)  # sin animaciones el CSS salta al destino
+        ):
+            self._apply_region(gen, target, mon.scale, kind)
+            return
+        if self._surface_mode == "opaque":
+            _spawn_thread(
+                lambda: self._animate_region(gen, current, target, duration, delay, mon.scale, kind)
+            )
+            return
+        union = winapi.css_union(current, target)
+        self._apply_region(gen, union, mon.scale, kind)
+        if union == target:
+            return
+        timer = threading.Timer(total, lambda: self._apply_region(gen, target, mon.scale, kind))
+        timer.daemon = True
+        timer.start()
+
+    def _apply_region(
+        self, gen: int, box: winapi.CssBox, scale: float, kind: str, *, frame: bool = False
+    ) -> bool:
+        """Aplica la region de ``box`` si nadie la ha cambiado despues (``gen``)."""
+        win = self._pillwin
+        if win is None:
+            return False
+        # opaca: lo que hay dentro de la region se ve (color de la ventana), asi que sin margen
+        outset = 0 if self._surface_mode == "opaque" else winapi.REGION_OUTSET
+        region = winapi.css_region(box, scale, outset)
+        radius = winapi.region_radius(scale, outset)
+        with self._region_lock:
+            if gen != self._region_gen:
+                return False
+            ok = win.set_region(region, radius)
+            with self._lock:
+                self._pill.region_box = box
+        if frame:
+            return ok
+        if not ok:
+            self._log_once(
+                ("region_failed", kind, region),
+                logging.WARNING,
+                "SetWindowRgn failed for the %s shape %s",
+                kind,
+                region,
+            )
+        self._log_once(
+            ("region", kind, region, radius),
+            logging.INFO,
+            "surface %s: region %s radius %d px in stage %s (scale %.3f, %s)",
+            kind,
+            region,
+            radius,
+            self._pill.frame,
+            scale,
+            self._surface_mode,
+        )
+        return ok
+
+    def _animate_region(
+        self,
+        gen: int,
+        start: winapi.CssBox,
+        end: winapi.CssBox,
+        duration: float,
+        delay: float,
+        scale: float,
+        kind: str,
+    ) -> None:
+        """Superficie opaca: la region sigue a la forma CSS (misma duracion y curva), un paso
+        por composicion de DWM; se para en cuanto otra orden cambia la region."""
+        t0 = time.monotonic() + delay
+        while True:
+            with self._region_lock:
+                if gen != self._region_gen:
+                    return
+            p = (time.monotonic() - t0) / duration if duration > 0 else 1.0
+            if p >= 1:
+                break
+            if p > 0:
+                box = winapi.lerp_box(start, end, SURFACE_EASE(p))
+                self._apply_region(gen, box, scale, kind, frame=True)
+            self._w32.dwm_flush()
+        self._apply_region(gen, end, scale, kind)
+
+    # -- ventana de la superficie: estilos, fondo de DWM y diagnostico
+
+    def _prepare_surface(self, win: UiWindow) -> None:
+        """Antes de mostrar la superficie: estilos sin foco y transparencia en el hwnd ACTUAL
+        (si WinForms lo recreo, se reaplica todo) y, SIEMPRE, sin fondo de sistema de DWM."""
+        hwnd = win.hwnd
+        if not hwnd:
+            log.warning("surface has no window handle yet")
+            return
+        with self._lock:
+            fresh = hwnd != self._surface_hwnd
+            recreated = fresh and self._surface_hwnd != 0
+            self._surface_hwnd = hwnd
+            if recreated:
+                self._pill.frame = None  # ventana nueva: sin posicion ni region
+                self._pill.region_box = None
+        if not fresh:
+            winapi.clear_backdrop(hwnd, self._w32)
+            return
+        if recreated:
+            log.warning("surface window handle changed to %#x; re-applying styles", hwnd)
+        winapi.apply_no_activate(hwnd, self._w32)
+        want = os.environ.get(ENV_SURFACE, "").strip().lower() != "opaque"
+        ok = bool(win.prepare_overlay(transparent=True)) if want else False
+        if not ok:
+            if want:
+                log.warning(
+                    "surface window %#x has no transparency; using the opaque surface", hwnd
+                )
+            win.prepare_overlay(transparent=False)
+        self._surface_mode = "transparent" if ok else "opaque"
+        self._log_once(
+            ("overlay", hwnd, self._surface_mode),
+            logging.INFO,
+            "surface window %#x prepared: %s, DWM backdrop cleared",
+            hwnd,
+            self._surface_mode,
+        )
+
+    def _clear_surface_backdrop(self) -> None:
+        """Red de seguridad periodica (y en cada aparicion): sin Mica en la superficie."""
+        hwnd = self._surface_hwnd
+        if hwnd and self._pillwin is not None:
+            winapi.clear_backdrop(hwnd, self._w32)
+
+    @property
+    def surface_mode(self) -> str:
+        """``transparent`` | ``opaque`` (equipo sin transparencia)."""
+        return self._surface_mode
+
+    def _log_geometry(self, mon: winapi.MonitorInfo) -> None:
+        """DPI de la superficie (INFO una vez por cambio; WARNING si el DPI de la ventana no es
+        el del monitor: los rectangulos se calculan con el del monitor)."""
+        hwnd = self._surface_hwnd
+        dpi = self._w32.window_dpi(hwnd) if hwnd else 0
+        self._log_once(
+            ("geometry", mon, self._pill.base, dpi),
+            logging.INFO,
+            "surface geometry: monitor work %s scale %.3f, window dpi %d, pill %s",
+            mon.work,
+            mon.scale,
+            dpi,
+            self._pill.base,
+        )
+        if dpi and abs(dpi / 96.0 - mon.scale) > 0.01:
+            self._log_once(
+                ("dpi_mismatch", dpi, mon.scale),
+                logging.WARNING,
+                "surface window dpi %d (%.3f) differs from monitor scale %.3f",
+                dpi,
+                dpi / 96.0,
+                mon.scale,
+            )
+
+    def handle_surface_metrics(self, width: float, height: float, dpr: float) -> None:
+        """El JS informa de su ventana CSS (``innerWidth`` x ``innerHeight``, ``devicePixelRatio``):
+        con el rectangulo fisico del lienzo dice si la escala de WebView2 es la que usa Python
+        para la region (solo diagnostico, al log)."""
+        win = self._pillwin
+        if win is None or width <= 0 or height <= 0:
+            return
+        left, top, right, bottom = win.rect()
+        pw, ph = right - left, bottom - top
+        if pw <= 0 or ph <= 0:
+            return
+        rw, rh = pw / width, ph / height
+        mon = self._pill.monitor
+        scale = mon.scale if mon else self._w32.window_dpi(self._surface_hwnd or win.hwnd) / 96.0
+        self._log_once(
+            ("metrics", round(width), round(height), round(dpr, 3), pw, ph),
+            logging.INFO,
+            "surface page %gx%g css px, devicePixelRatio %.3f, window %dx%d px -> %.3f "
+            "px per css px (geometry uses %.3f)",
+            width,
+            height,
+            dpr,
+            pw,
+            ph,
+            rw,
+            scale,
+        )
+        same_size = abs(rw - rh) <= rw * (1.0 / height + 0.02)  # medidas del mismo tamano
+        if same_size and abs(rw - scale) > 0.04 * scale:
+            self._log_once(
+                ("scale_mismatch", round(rw, 2), round(scale, 2)),
+                logging.WARNING,
+                "surface css scale %.3f differs from the geometry scale %.3f: "
+                "the region may cut the shape",
+                rw,
+                scale,
+            )
+
+    def _log_once(self, key: tuple[Any, ...], level: int, msg: str, *args: Any) -> None:
+        with self._lock:
+            if key in self._logged:
+                return
+            if len(self._logged) > 256:
+                self._logged.clear()
+            self._logged.add(key)
+        log.log(level, msg, *args)
 
     def _vanish(self) -> None:
         """La pastilla se desvanece y despues se oculta la ventana (si nadie la reclama)."""
@@ -659,8 +987,8 @@ class UiHost:
             )
             self._pill.expanded = False
             self._surface_phase = "expanding"
+        self._prepare_surface(win)
         layout = self._layout_stage(mon, self._pill_target(mon))
-        self._popup_rect = self._pill.stage
         motion = "true" if winapi.animations_enabled(self._w32) else "false"
         win.run_js(f"mic.setMotion({motion});")
         if born:
@@ -672,8 +1000,12 @@ class UiHost:
                 "enter": True,
             }
             win.run_js(f"micnaga.pill.show({json.dumps(pill_payload)})")
-        self._set_region("card")
-        # la pastilla recien nacida se deja ver un instante antes de crecer (lo decide el JS)
+            self._region("pill")
+        if self._surface_mode == "transparent":
+            # la region ya cubre la tarjeta: la forma crece sin que Python intervenga
+            self._region("card", duration=GROW_S)
+        # opaca: la region crece con la forma cuando el JS empieza (handle_surface_phase)
+        self._popup_rect = self._pill.frame
         win.run_js(self._popup_script)
         win.show(activate=False)
         with self._lock:
@@ -704,8 +1036,9 @@ class UiHost:
             return True
         log.warning("popup not visible %.1f s after show; re-presenting it", POPUP_VERIFY_S)
         if retry and rect is not None:
+            self._prepare_surface(win)
             win.place(rect)
-            self._set_region("card")
+            self._region("card")
             win.run_js(self._popup_script)
             win.show(activate=False)
             self._arm_popup_check_once(shown_at)
@@ -804,9 +1137,10 @@ class UiHost:
             shown = self._pill.shown
             seconds = self._undo_seconds
             self._surface_phase = "undo"
+        self._prepare_surface(win)
         if not shown:
             self._layout_stage(mon, self._pill_target(mon))
-        self._set_region("undo")
+        self._region("undo", duration=HOVER_S)
         win.run_js(f"micnaga.pill.undo({json.dumps({'seconds': seconds})})")
         win.show(activate=False)
         with self._lock:
@@ -827,7 +1161,7 @@ class UiHost:
         if pill_up:
             with self._lock:
                 self._surface_phase = "pill"
-            self._set_region("pill")
+            self._region("pill", duration=HOVER_S)
         else:
             self._vanish()
 
@@ -933,7 +1267,9 @@ class UiHost:
             self._w32.set_foreground(win.hwnd)
 
     def handle_surface_phase(self, phase: str) -> None:
-        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
+        """El JS empezo a abrir la tarjeta (``expanding``), termino (``card``) o empezo a
+        encogerla (``collapsing``). La region acompana: en la superficie transparente ya cubre
+        la forma (aqui solo se ajusta); en la opaca se anima con ella."""
         with self._lock:
             if self._popup_state == "idle":
                 return
@@ -942,6 +1278,14 @@ class UiHost:
             elif phase == "collapsing":
                 self._surface_phase = "collapsing"
                 self._popup_state = "morphing"
+            opaque = self._surface_mode == "opaque"
+            kind = self._pill.region_kind
+        if phase == "expanding" and opaque:
+            self._region("card", duration=GROW_S)
+        elif phase == "card" and kind != "card":
+            self._region("card")
+        elif phase == "collapsing":
+            self._region("pill", duration=SHRINK_S, delay=SHRINK_DELAY_S)
 
     def handle_popup_morph(self, provisional: bool) -> None:
         """La tarjeta vuelve a ser la pastilla (tras «Sí» o sin respuesta)."""
@@ -978,7 +1322,7 @@ class UiHost:
         elif pill_up:
             with self._lock:
                 self._surface_phase = "pill"
-            self._set_region("pill")
+            self._region("pill")  # la forma ya es la pastilla: la region se recoge
             self._update_tray()
         else:
             self._vanish()
@@ -1035,6 +1379,7 @@ class UiHost:
             pill.expanded = False
             self._undo_visible = False
             self._surface_phase = "pill"
+        self._prepare_surface(win)
         layout = self._layout_stage(mon, self._pill_target(mon))
         payload = {
             "elapsed": elapsed,
@@ -1042,7 +1387,7 @@ class UiHost:
             "paused": self._pill.paused,
             "layout": layout,
         }
-        self._set_region("pill")
+        self._region("pill")
         win.run_js(f"micnaga.pill.show({json.dumps(payload)})")
         win.show(activate=False)
         with self._lock:
@@ -1090,8 +1435,8 @@ class UiHost:
 
     # -- eventos del JS (SurfaceApi)
     def handle_pill_hover(self, hovering: bool) -> None:
-        """Al pasar el raton la pastilla se ensancha en CSS; aqui solo crece la region (antes de
-        ensancharse) o se recoge (cuando ya se estrecho)."""
+        """Al pasar el raton la pastilla se ensancha en CSS (hacia los dos lados): la region crece
+        antes que la forma y se recoge cuando la forma ya se estrecho (``_region``)."""
         with self._lock:
             pill = self._pill
             if (
@@ -1104,7 +1449,7 @@ class UiHost:
             ):
                 return
             pill.expanded = hovering
-        self._set_region("hover" if hovering else "pill")
+        self._region("hover" if hovering else "pill", duration=HOVER_S)
 
     def handle_pill_marker(self) -> None:
         self._cb.on_marker()
@@ -1122,23 +1467,29 @@ class UiHost:
     def handle_pill_stop(self) -> None:
         self._cb.on_stop()
 
-    def _on_pill_moved(self, x: int, y: int) -> None:
-        """El usuario arrastro la superficie (``x, y`` = esquina del lienzo): se recuerda la
-        posicion de la pastilla, que esta desplazada dentro del lienzo."""
+    def _on_pill_moved(self, _x: int, _y: int) -> None:
+        """El usuario arrastro la superficie: se recuerda la posicion de la pastilla, que esta
+        desplazada dentro del lienzo. La posicion se lee de la ventana (px fisicos): pywebview
+        avisa en px logicos (divididos por la escala DPI) y a 150 % la pastilla saltaba."""
+        win = self._pillwin
+        if win is None:
+            return
+        left, top, _right, _bottom = win.rect()
         with self._lock:
             pill = self._pill
             if (
                 not pill.visible
                 or pill.base is None
-                or pill.stage is None
+                or pill.frame is None
                 or self._card_busy()
                 or time.monotonic() < pill.ignore_moves_until
             ):
                 return
-            dx = pill.base[0] - pill.stage[0]
-            dy = pill.base[1] - pill.stage[1]
-            pill.stage = (x, y, pill.stage[2], pill.stage[3])
-            px, py = x + dx, y + dy
+            dx, dy = left - pill.frame[0], top - pill.frame[1]
+            if not dx and not dy:
+                return
+            pill.frame = (left, top, pill.frame[2], pill.frame[3])
+            px, py = pill.base[0] + dx, pill.base[1] + dy
             pill.user_pos = (px, py)
             pill.base = (px, py, pill.base[2], pill.base[3])
         self._cb.on_pill_moved(px, py)
@@ -1149,6 +1500,7 @@ class UiHost:
         cb = self._cb
         return UiCallbacks(
             on_record_now=cb.on_record_now,
+            on_record_in_person=cb.on_record_in_person,
             on_pause_watching=cb.on_pause_watching,
             on_resume_watching=cb.on_resume_watching,
             on_open_library=self._tray_open_library,
@@ -1308,6 +1660,7 @@ class UiHost:
             brain=self._brain,
             open_settings=self.open_settings,
             settings=self.settings_api,
+            record_in_person=self._cb.on_record_in_person,
         )
 
     def open_library(

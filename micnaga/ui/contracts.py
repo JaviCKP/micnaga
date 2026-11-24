@@ -57,6 +57,10 @@ def normalize_levels(raw: object) -> tuple[float, float]:
     return 0.0, 0.0
 
 
+InPersonResult: TypeAlias = Literal["started", "busy", "failed"]
+"""Resultado de «Grabar reunión presencial»."""
+
+
 def _noop(*_args: object, **_kwargs: object) -> None:
     return None
 
@@ -83,6 +87,10 @@ class UiCallbacks:
     on_pill_moved: Callable[[int, int], None] = _noop
     # bandeja (seccion 10)
     on_record_now: Callable[[], None] = _noop
+    on_record_in_person: Callable[[], InPersonResult] | None = None
+    """«Grabar reunión presencial» (bandeja y biblioteca): ``started`` | ``busy`` (ya se
+    grababa) | ``failed`` (no arranco la captura). ``None``: sin app detras (demo, pruebas):
+    la entrada de la bandeja sale desactivada y el boton de la biblioteca oculto."""
     on_pause_watching: Callable[[int], None] = _noop
     """Minutos de vigilancia en pausa (60)."""
     on_resume_watching: Callable[[], None] = _noop
@@ -99,6 +107,25 @@ class UiCallbacks:
     on_first_run_done: Callable[[], None] = _noop
     on_levels_monitor: Callable[[bool], None] = _noop
     """El asistente (paso 3) pide abrir/cerrar los dispositivos solo para medir niveles."""
+
+
+_APP_ACTIONS: dict[str, Callable[[], object]] = {}
+
+
+def set_app_action(name: str, action: Callable[[], object] | None) -> None:
+    """Registra (o quita, con ``None``) una accion de la app que la UI puede lanzar.
+
+    Canal para lo que no pasa por ``UiCallbacks`` (hoy, el descargador de modelos de Ajustes).
+    Lo registra la integracion (``application.py``) al arrancar y lo quita al cerrar."""
+    if action is None:
+        _APP_ACTIONS.pop(name, None)
+    else:
+        _APP_ACTIONS[name] = action
+
+
+def app_action(name: str) -> Callable[[], object] | None:
+    """La accion registrada con ``name`` o ``None`` (sin app detras: modo demo, pruebas)."""
+    return _APP_ACTIONS.get(name)
 
 
 @dataclass(frozen=True)

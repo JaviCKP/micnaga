@@ -11,7 +11,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from micnaga.config import Config
+from micnaga.config import AEC_MODES, ASR_ENGINES, WHISPER_MODELS, Config
 
 Kind = Literal["bool", "int", "float", "text", "choice", "list", "hotkey", "path"]
 
@@ -53,6 +53,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             _f("ui.sound", "bool"),
             _f("hotkeys.marker", "hotkey", restart=True),
             _f("hotkeys.private_pause", "hotkey", restart=True),
+            _f("updates.auto_check", "bool"),
         ),
     ),
     (
@@ -118,17 +119,16 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
     (
         "processing",
         (
-            _f("processing.asr_engine", "choice", choices=("parakeet", "whisper")),
-            _f("processing.whisper_model", "choice", choices=("tiny", "base", "small", "medium")),
+            _f("processing.asr_engine", "choice", choices=ASR_ENGINES),
+            _f("processing.whisper_model", "choice", choices=WHISPER_MODELS),
             _f("processing.hq_transcribe", "bool", advanced=True),
             _f(
                 "processing.hq_model",
                 "choice",
-                choices=("large-v3", "large-v3-turbo"),
+                choices=("large-v3-turbo", "large-v3"),
                 advanced=True,
             ),
-            _f("processing.diarization", "choice", choices=("onnx", "diarize", "pyannote")),
-            _f("processing.aec", "choice", choices=("auto", "webrtc", "speex", "off")),
+            _f("processing.aec", "choice", choices=AEC_MODES),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
             _f("processing.low_priority", "bool"),
             _f("processing.live", "bool"),
@@ -250,6 +250,8 @@ FIELDS: dict[str, FieldSpec] = {f.path: f for _g, fields in GROUPS for f in fiel
 
 
 INTERNAL_SECTIONS = frozenset({"meta"})
+INTERNAL_FIELDS = frozenset({"processing.diarization"})
+"""Campos sin control en Ajustes (un solo valor posible: ``diarize``)."""
 """Secciones de ``config.toml`` que no son ajustes (``[meta] version``)."""
 
 
@@ -261,7 +263,10 @@ def config_paths() -> list[str]:
         if sec.name in INTERNAL_SECTIONS:
             continue
         section = getattr(cfg, sec.name)
-        out.extend(f"{sec.name}.{f.name}" for f in dataclasses.fields(section))
+        for f in dataclasses.fields(section):
+            path = f"{sec.name}.{f.name}"
+            if path not in INTERNAL_FIELDS:
+                out.append(path)
     return out
 
 

@@ -44,12 +44,13 @@ asr = [
 diar = ["diarize>=0.1.2"]
 # Alternativa. NO se instala por defecto (torch + lightning + ...).
 pyannote = ["pyannote.audio>=4.0"]
-# Cancelacion de eco: webrtc -> aec-audio-processing (AEC3, wheel win_amd64 cp311);
-# speex -> pyaec (DLL con SpeexDSP, licencia sin verificar). Ver DECISIONS.md.
+# Cancelacion de eco: webrtc -> aec-audio-processing (AEC3, wheel win_amd64 cp311).
+# speex -> pyaec (DLL `aec.dll` con SpeexDSP) queda SOLO para desarrollo (extra `aec-speex`, incluido
+# en `dev`): su DLL no esta firmada y bloqueo la instalacion en un PC. Ver DECISIONS.md §31.
 aec = [
     "aec-audio-processing>=1.0",
-    "pyaec>=1.0",
 ]
+aec-speex = ["pyaec>=1.0"]
 ui = [
     "pywebview>=5.0",
     "pystray>=0.19",
@@ -71,6 +72,7 @@ dev = [
     "types-psutil",
     "types-pywin32",
     "pyinstaller>=6",
+    "pyaec>=1.0",             # motor speex (comparativas AEC); no viaja en el instalador
 ]
 
 [project.scripts]

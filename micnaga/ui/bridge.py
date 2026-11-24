@@ -15,6 +15,7 @@ Reglas
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -28,7 +29,7 @@ from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
 from micnaga.store.db import Database
 from micnaga.store.locate import meeting_dir
-from micnaga.types import SPEAKER_ME, Transcript
+from micnaga.types import SPEAKER_ME, Transcript, is_mic_speaker
 from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
     BrainPort,
@@ -37,11 +38,13 @@ from micnaga.ui.contracts import (
     DiagnosticsProvider,
     DownloadModels,
     HeldOps,
+    InPersonResult,
     LevelsProvider,
     LibraryOps,
     ModelProgress,
     UiCallbacks,
     Voiceprint,
+    app_action,
     normalize_levels,
 )
 from micnaga.ui.media import valid_folder_name
@@ -173,14 +176,25 @@ class SurfaceApi(PillApi, PopupApi):
     """``pywebview.api`` de la superficie unica: la pastilla que crece hasta la tarjeta
     «¿Estás en una reu?» / «Reunión terminada» y vuelve a encogerse (``pill.html``)."""
 
-    _PHASES = frozenset({"card", "collapsing"})
+    _PHASES = frozenset({"expanding", "card", "collapsing"})
 
     def surface_phase(self, phase: str) -> None:
-        """El JS termino de abrir la tarjeta (``card``) o empezo a encogerla (``collapsing``)."""
+        """El JS empezo a abrir la tarjeta (``expanding``), termino (``card``) o empezo a
+        encogerla (``collapsing``)."""
         if phase in self._PHASES:
             handler = getattr(self._c, "handle_surface_phase", None)
             if handler is not None:
                 handler(phase)
+
+    def surface_metrics(self, width: float, height: float, dpr: float) -> None:
+        """Tamano CSS de la pagina y ``devicePixelRatio`` (diagnostico de DPI, al log)."""
+        handler = getattr(self._c, "handle_surface_metrics", None)
+        try:
+            values = (float(width), float(height), float(dpr))
+        except (TypeError, ValueError):
+            return
+        if handler is not None:
+            handler(*values)
 
 
 # ============================================================================ secretaria
@@ -282,7 +296,9 @@ class LibraryApi:
         brain: BrainPort | None = None,
         open_settings: Callable[[], None] | None = None,
         settings: Callable[[], SettingsApi] | None = None,
+        record_in_person: Callable[[], InPersonResult] | None = None,
     ) -> None:
+        self._record_in_person = record_in_person
         self._db_factory = db_factory
         self._open_settings = open_settings
         self._settings_factory = settings
@@ -307,6 +323,7 @@ class LibraryApi:
             has_held=self._held is not None,
             secretaria=self._brain is not None,
             hq=cfg.processing.hq_transcribe and self._ops is not None,
+            in_person=self._record_in_person is not None,
         )
 
     def open_settings(self) -> Result:
@@ -319,6 +336,24 @@ class LibraryApi:
             log.exception("open_settings failed")
             return fail("library.err.not_found")
         return ok()
+
+    def record_in_person(self) -> Result:
+        """«Grabar reunión presencial» desde la biblioteca. ``started`` es ``False`` si ya habia
+        una grabacion en marcha (no se hace nada)."""
+        action = self._record_in_person
+        if action is None:
+            return fail("library.err.not_found")
+        try:
+            result = action()
+        except Exception:
+            log.exception("record_in_person failed")
+            return fail("library.err.op_failed")
+        if result == "started":
+            return ok(started=True)
+        if result == "busy":
+            return ok(started=False)
+        # La captura no arranco (el controlador ya avisa con su toast): nada de «Grabando…».
+        return fail("toast.error.capture_failed.title")
 
     def settings_call(self, name: str, args: list[Any] | None = None) -> Any:
         """Ajustes embebido en esta ventana: delega en ``SettingsApi`` (solo metodos publicos)."""
@@ -371,6 +406,7 @@ class LibraryApi:
         offset = max(0, int(offset))
         with self._db_factory() as db:
             records = db.list_meetings(limit, offset)
+        root = self._root()
         return [
             {
                 "folder": r.folder,
@@ -378,6 +414,7 @@ class LibraryApi:
                 "start": r.start,
                 "duration_s": r.duration_s,
                 "meet_code": r.meet_code,
+                "in_person": _in_person_folder(root, r.folder),
                 "speakers": [{"id": s.id, "name": s.name} for s in r.speakers],
             }
             for r in records
@@ -502,7 +539,9 @@ class LibraryApi:
 
     def merge_speakers(self, folder: str, keep_id: str, merge_id: str) -> Result:
         keep_id, merge_id = str(keep_id), str(merge_id)
-        if keep_id == merge_id or SPEAKER_ME in (keep_id, merge_id):
+        # «Yo» nunca se funde en otro; solo una persona de la sala (mismo micro) se funde en «Yo»
+        into_me = keep_id == SPEAKER_ME and is_mic_speaker(merge_id)
+        if keep_id == merge_id or merge_id == SPEAKER_ME or (keep_id == SPEAKER_ME and not into_me):
             return fail("library.err.cannot_merge")
         guard = self._guard(folder, keep_id) or self._guard(folder, merge_id)
         if guard is not None:
@@ -579,7 +618,11 @@ class LibraryApi:
                 status=self._hq_status(meeting),
             )
         if action == "status":
-            return ok(status=self._hq_status(meeting), previa=hq.has_previa(meeting))
+            return ok(
+                status=self._hq_status(meeting),
+                previa=hq.has_previa(meeting),
+                offer=_hq_improves(path, hq.model_name(cfg)),
+            )
         if action == "start":
             if self._hq_alive(meeting):
                 return ok(status=self._hq_status(meeting))
@@ -684,6 +727,39 @@ def _startfile(path: Path) -> None:  # pragma: no cover - abre el Explorador rea
 # ============================================================================== ajustes
 
 
+_WHISPER_RANK = {"small": 0, "large-v3-turbo": 1, "large-v3": 1}
+"""Calidad relativa de los Whisper (DECISIONS §32: large-v3 no mejora a turbo y es >2x lento)."""
+
+
+def _hq_improves(transcript_json: Path, hq_model: str) -> bool:
+    """«Mejorar transcripcion» solo se ofrece si el modelo HQ es estrictamente mejor que el que
+    transcribio la reunion (``engines.asr``): Parakeet (reuniones antiguas) o un Whisper menor.
+    Con el defecto (turbo transcribe y turbo mejoraria) no aporta nada y el boton se oculta."""
+    try:
+        data = json.loads(transcript_json.read_text(encoding="utf-8"))
+        asr = str(data.get("engines", {}).get("asr", ""))
+    except (OSError, ValueError, AttributeError):
+        return True  # sin saberlo, se ofrece (como antes)
+    prefix = "faster-whisper-"
+    if not asr.startswith(prefix):
+        return True  # Parakeet u otro motor
+    size = asr[len(prefix) :].removesuffix("-int8")
+    return _WHISPER_RANK.get(hq_model, 1) > _WHISPER_RANK.get(size, 1)
+
+
+def _in_person_folder(root: Path, folder: str) -> bool:
+    """Reunion presencial, para la etiqueta de la lista: solo mira si existe la marca
+    ``.micnaga-in-person.json`` (un ``stat`` por fila; sin leer JSON ni preguntar al indice)."""
+    from micnaga.capture.session import IN_PERSON_MARKER
+
+    if not valid_folder_name(folder):
+        return False
+    try:
+        return (root / folder / IN_PERSON_MARKER).is_file()
+    except OSError:
+        return False
+
+
 class SettingsApi:
     """``pywebview.api`` de Ajustes: todo ``config.toml`` con un formulario."""
 
@@ -782,6 +858,93 @@ class SettingsApi:
     def pick_folder(self, current: str = "") -> str | None:
         return self._picker(str(current)) if self._picker is not None else None
 
+    # ------------------------------------------------- version y actualizaciones (Acerca de)
+
+    def update_status(self) -> dict[str, Any]:
+        """Version, build y estado de las actualizaciones (``micnaga.updates``)."""
+        from micnaga import updates
+
+        svc = updates.service()
+        if svc is None:  # sin app detras (demo, pruebas): solo la version
+            return {
+                "current": updates.build_info()["version"],
+                "build": updates.build_info(),
+                "state": "unavailable",
+                "error": "",
+                "latest": "",
+                "available": False,
+                "skipped": False,
+                "notes": "",
+                "size": 0,
+                "done": 0,
+                "total": 0,
+                "pending": False,
+                "can_install": False,
+                "auto": False,
+                "checked_at": 0.0,
+                "whats_new": None,
+            }
+        return svc.status()
+
+    def update_check(self) -> dict[str, Any]:
+        """«Buscar actualizaciones» (a mano: un fallo de red se dice)."""
+        from micnaga import updates
+
+        svc = updates.service()
+        return svc.check(manual=True) if svc is not None else self.update_status()
+
+    def update_install(self) -> dict[str, Any]:
+        """«Instalar y reiniciar»: descarga, verifica y, sin grabar ni procesar, instala."""
+        from micnaga import updates
+
+        svc = updates.service()
+        return svc.request_install() if svc is not None else self.update_status()
+
+    def update_skip(self) -> dict[str, Any]:
+        """«Omitir esta version»."""
+        from micnaga import updates
+
+        svc = updates.service()
+        return svc.skip() if svc is not None else self.update_status()
+
+    def update_seen(self) -> Result:
+        """«Novedades de la X» ya mostradas: no se vuelven a abrir solas."""
+        from micnaga import updates
+
+        svc = updates.service()
+        if svc is not None:
+            svc.mark_whats_new_seen()
+        return ok()
+
+    # --------------------------------------------------------- modelos (Transcripcion)
+
+    def models_status(self) -> dict[str, Any]:
+        """Si estan los modelos que pide la configuracion GUARDADA y la descarga en curso."""
+        from micnaga import models
+
+        cfg: Config = self._store.load()
+        try:
+            missing = models.missing_models(cfg)
+            total = models.total_size(cfg)
+        except Exception:
+            log.exception("cannot check models")
+            missing, total = [], 0
+        need = sum(f.size for f in missing)
+        job = _settings_job()
+        return {
+            "ready": not missing,
+            "total_text": human_bytes(total),
+            "need_text": human_bytes(need),
+            "can_download": job.available,
+            "job": job.status(),
+        }
+
+    def models_download(self) -> Result:
+        return _settings_job().start()
+
+    def models_cancel(self) -> Result:
+        return _settings_job().cancel()
+
 
 def _only_known(values: dict[str, Any]) -> dict[str, Any]:
     """Descarta secciones/claves desconocidas (el JS no puede introducir campos nuevos)."""
@@ -794,6 +957,178 @@ def _only_known(values: dict[str, Any]) -> dict[str, Any]:
 
 
 # ============================================================================== asistente
+
+ACTION_MODEL_DOWNLOADER = "model_downloader"
+"""``app_action`` que devuelve el ``DownloadModels`` de la app (lo registra la integracion):
+Ajustes lo usa para bajar los modelos que falten tras cambiar de motor."""
+
+SPEED_WINDOW_S = 6.0
+
+
+class _DownloadCancelled(Exception):
+    """Lanzada desde el callback de progreso: corta la descarga (los ``.part`` se quedan)."""
+
+
+def human_bytes(n: float) -> str:
+    """``1,6 GB`` / ``734 MB`` / ``12 KB`` (decimal, coma espanola)."""
+    for unit, size in (("GB", 1e9), ("MB", 1e6), ("KB", 1e3)):
+        if n >= size:
+            v = n / size
+            text = f"{v:.1f}" if v < 10 else f"{v:.0f}"
+            return f"{text.replace('.', ',')} {unit}"
+    return f"{max(0, int(n))} B"
+
+
+class ModelDownloadJob:
+    """Una descarga de modelos en un hilo, con progreso, velocidad, tiempo restante y cancelar.
+
+    La comparten el asistente (``WizardApi``) y Ajustes (``SettingsApi.models_*``). El error de
+    ``micnaga.models`` llega con ``key`` (``models.err.*``) e ``info``: la UI lo ensena traducido.
+    """
+
+    def __init__(
+        self,
+        download: DownloadModels | None,
+        *,
+        on_done: Callable[[], None] | None = None,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._download = download
+        self._on_done = on_done
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._models: dict[str, ModelProgress] = {}
+        self._state = "idle"  # idle | running | done | failed | cancelled
+        self._error = ""
+        self._error_key = ""
+        self._error_args: dict[str, str] = {}
+        self._cancel = threading.Event()
+        self._net = 0
+        self._samples: list[tuple[float, int]] = []
+        self.thread: threading.Thread | None = None
+
+    @property
+    def available(self) -> bool:
+        return self._download is not None
+
+    def start(self) -> Result:
+        if self._download is None:
+            return fail("wizard.err.no_downloader")
+        with self._lock:
+            if self._state == "running":
+                return ok()
+            self._state, self._error, self._error_key, self._models = "running", "", "", {}
+            self._error_args = {}
+            self._net, self._samples = 0, [(self._clock(), 0)]
+            self._cancel.clear()
+        self.thread = threading.Thread(target=self._run, name="micnaga-models", daemon=True)
+        self.thread.start()
+        return ok()
+
+    def cancel(self) -> Result:
+        """Para la descarga en curso; lo ya bajado se conserva (``.part``) y se reanuda luego."""
+        with self._lock:
+            running = self._state == "running"
+        if running:
+            self._cancel.set()
+        return ok()
+
+    def _run(self) -> None:
+        assert self._download is not None
+        try:
+            self._download(self._on_progress)
+        except _DownloadCancelled:
+            with self._lock:
+                self._state = "cancelled"
+            return
+        except Exception as exc:
+            key = str(getattr(exc, "key", "") or "")
+            if key == "models.err.cancelled":
+                with self._lock:
+                    self._state = "cancelled"
+                return
+            log.exception("model download failed")
+            info = getattr(exc, "info", None)
+            with self._lock:
+                self._state, self._error, self._error_key = "failed", str(exc), key
+                self._error_args = _error_args(info if isinstance(info, dict) else {})
+            return
+        with self._lock:
+            bad = [m for m in self._models.values() if m.state == "failed"]
+            self._state = "failed" if bad else "done"
+            if bad:
+                self._error = bad[0].message or bad[0].name
+            finished = self._state == "done"
+        if finished and self._on_done is not None:
+            self._on_done()
+
+    def _on_progress(self, ev: ModelProgress) -> None:
+        if self._cancel.is_set():
+            raise _DownloadCancelled()
+        with self._lock:
+            old = self._models.get(ev.name)
+            if ev.state == "downloading" and old is not None and old.state == "downloading":
+                self._net += max(0, ev.done - old.done)  # solo lo que llega por la red
+            self._models[ev.name] = ev
+            now = self._clock()
+            self._samples.append((now, self._net))
+            while len(self._samples) > 2 and now - self._samples[0][0] > SPEED_WINDOW_S:
+                self._samples.pop(0)
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            models = [dataclasses.asdict(m) for m in self._models.values()]
+            done = sum(m.done for m in self._models.values())
+            total = sum(m.total for m in self._models.values())
+            verified = sum(1 for m in self._models.values() if m.state in ("verified", "skipped"))
+            verifying = any(m.state == "verifying" for m in self._models.values())
+            overall = (
+                1.0 if self._state == "done" else (min(1.0, done / total) if total > 0 else 0.0)
+            )
+            speed = 0.0
+            if self._state == "running" and len(self._samples) >= 2:
+                (t0, b0), (t1, b1) = self._samples[0], self._samples[-1]
+                if t1 - t0 >= 1.0:
+                    speed = (b1 - b0) / (t1 - t0)
+            eta = (total - done) / speed if speed > 0 and total > done else None
+            return {
+                "state": self._state,
+                "error": self._error,
+                "error_key": self._error_key,
+                "error_args": dict(self._error_args),
+                "models": models,
+                "overall": overall,
+                "verified": verified,
+                "verifying": verifying,
+                "done": done,
+                "total": total,
+                "done_text": human_bytes(done),
+                "total_text": human_bytes(total),
+                "speed": round(speed),
+                "speed_text": human_bytes(speed) if speed > 0 else "",
+                "eta_s": round(eta) if eta is not None else None,
+            }
+
+
+def _error_args(info: dict[str, Any]) -> dict[str, str]:
+    """Variables del texto de error (bytes -> «1,6 GB»)."""
+    out: dict[str, str] = {}
+    for k, v in info.items():
+        out[str(k)] = human_bytes(v) if isinstance(v, int | float) else str(v)
+    return out
+
+
+_SETTINGS_JOB: ModelDownloadJob | None = None
+
+
+def _settings_job() -> ModelDownloadJob:
+    """Descarga de modelos de Ajustes (una por proceso); el ``DownloadModels`` lo da la app."""
+    global _SETTINGS_JOB
+    provider = app_action(ACTION_MODEL_DOWNLOADER)
+    if _SETTINGS_JOB is None or (not _SETTINGS_JOB.available and provider is not None):
+        download = provider() if provider is not None else None
+        _SETTINGS_JOB = ModelDownloadJob(download if callable(download) else None)
+    return _SETTINGS_JOB
 
 
 class WizardApi:
@@ -809,70 +1144,27 @@ class WizardApi:
         auto_finish: bool = False,
     ) -> None:
         self._auto_finish = auto_finish
-        self._download = download_models
         self._levels = levels
         self._cb = callbacks
         self._play_test = play_test or (lambda: sound.play_chime(enabled=True, dnd=lambda: False))
-        self._lock = threading.Lock()
-        self._models: dict[str, ModelProgress] = {}
-        self._state = "idle"  # idle | running | done | failed
-        self._error = ""
-        self._thread: threading.Thread | None = None
+        self._job = ModelDownloadJob(download_models, on_done=self._downloaded)
 
     # ---- paso 2
     def start_download(self) -> Result:
-        if self._download is None:
-            return fail("wizard.err.no_downloader")
-        with self._lock:
-            if self._state == "running":
-                return ok()
-            self._state, self._error, self._models = "running", "", {}
-        self._thread = threading.Thread(
-            target=self._run_download, name="micnaga-models", daemon=True
-        )
-        self._thread.start()
-        return ok()
+        return self._job.start()
 
-    def _run_download(self) -> None:
-        assert self._download is not None
-        try:
-            self._download(self._on_progress)
-        except Exception as exc:
-            log.exception("model download failed")
-            with self._lock:
-                self._state, self._error = "failed", str(exc)
-            return
-        with self._lock:
-            bad = [m for m in self._models.values() if m.state == "failed"]
-            self._state = "failed" if bad else "done"
-            if bad:
-                self._error = bad[0].message or bad[0].name
-            finished = self._state == "done"
-        if finished and self._auto_finish:
+    def cancel_download(self) -> Result:
+        """«Cancelar»: para la descarga; «Reanudar» sigue donde iba."""
+        return self._job.cancel()
+
+    def _downloaded(self) -> None:
+        if self._auto_finish:
             # Sin decisiones: terminada la descarga se cierra el asistente y la app pasa a la
             # bandeja (equivale a pulsar «Terminar»).
             self.finish()
 
-    def _on_progress(self, ev: ModelProgress) -> None:
-        with self._lock:
-            self._models[ev.name] = ev
-
     def download_status(self) -> dict[str, Any]:
-        with self._lock:
-            models = [dataclasses.asdict(m) for m in self._models.values()]
-            done = sum(m.done for m in self._models.values())
-            total = sum(m.total for m in self._models.values())
-            verified = sum(1 for m in self._models.values() if m.state in ("verified", "skipped"))
-            overall = (
-                1.0 if self._state == "done" else (min(1.0, done / total) if total > 0 else 0.0)
-            )
-            return {
-                "state": self._state,
-                "error": self._error,
-                "models": models,
-                "overall": overall,
-                "verified": verified,
-            }
+        return self._job.status()
 
     # ---- paso 3
     def levels(self) -> list[float]:

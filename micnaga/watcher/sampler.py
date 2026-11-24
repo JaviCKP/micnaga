@@ -84,9 +84,10 @@ class SignalSampler:
 
     def close(self) -> None:
         """Suelta objetos COM (llamar desde el hilo que creo las fuentes)."""
-        close = getattr(self._tabs, "close", None)
-        if callable(close):
-            close()
+        for source in (self._tabs, self._mic):
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()
 
 
 def build_default_sampler(

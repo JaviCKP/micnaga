@@ -46,6 +46,11 @@ def _dynamic_keys() -> set[str]:
     keys |= set(ERR_KEY.findall(_read(UI / "bridge.py")))
     keys |= {"settings.err.save_failed", "settings.err.invalid", "settings.err.startup_failed"}
     keys |= {"wizard.err.no_downloader", "wizard.err.generic"}
+    # actualizaciones y descarga de modelos: Python devuelve la clave del error (``key``) y la UI
+    # la traduce; se sacan del codigo para que ninguna se quede sin texto.
+    root = UI.parent
+    keys |= set(re.findall(r"updates\.err\.[a-z_]+", _read(root / "updates.py")))
+    keys |= set(re.findall(r"models\.err\.[a-z_]+", _read(root / "models.py")))
     # Secretaria: tarjeta de Odoo (CARD_OF por ruta) y textos que el JS elige de un mapa o
     # compone con el estado/el error que devuelve Python.
     keys.add("settings.cards.odoo")

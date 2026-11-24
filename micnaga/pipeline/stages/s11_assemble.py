@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from micnaga.capture.session import is_in_person
+from micnaga.gates import SOURCE_IN_PERSON
 from micnaga.pipeline import output
 from micnaga.pipeline.stages.base import StageContext, StageResult
 from micnaga.pipeline.stages.phrases import build_speakers, merge_segments
@@ -54,7 +56,7 @@ def build_transcript(ctx: StageContext) -> Transcript:
             title=(meta.meet_title or "").strip() or DEFAULT_TITLE,
             start=meta.started_at,
             duration_s=round(float(align.get("duration_s", 0.0)), 3),
-            source="meet",
+            source=SOURCE_IN_PERSON if is_in_person(ctx.session, meta.extra) else "meet",
             meet_code=meta.meet_code,
             output_device=meta.output_kind,
         ),

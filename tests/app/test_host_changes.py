@@ -82,16 +82,17 @@ def _boot(rig: Rig) -> None:
     host._factory.start(lambda: host._bootstrap(None), icon=None)  # type: ignore[arg-type]
 
 
-def test_surface_gets_real_transparency_and_no_acrylic() -> None:
-    """La superficie es un lienzo mayor que la forma visible: el acrilico de DWM pintaria el
-    lienzo entero, asi que la forma la dibuja el CSS y la recorta la region."""
+def test_surface_gets_real_transparency_and_no_backdrop() -> None:
+    """La superficie es un lienzo mayor que la forma visible: el acrilico (o el Mica que
+    pywebview pone con el tema oscuro) pintaria el lienzo entero, asi que la forma la dibuja el
+    CSS, la recorta la region y el fondo de sistema se quita (DECISIONS §29)."""
     rig = Rig()
     _boot(rig)
     host = rig.host
     assert host is not None and not host.acrylic
-    assert ("make_transparent", None) in rig.pill.log
+    assert rig.pill.spec.transparent and host.surface_mode == "transparent"
+    assert ("prepare_overlay", True) in rig.pill.log
     assert not any("setBackdrop" in js for js in rig.js(rig.pill))
-    assert not [c for c in rig.w32.dwm if c[1] == 38]
 
 
 def test_collapse_guard_closes_the_card_if_the_js_never_answers(monkeypatch) -> None:  # type: ignore[no-untyped-def]

@@ -10,7 +10,8 @@ Definiciones
   **en el orden temporal de cada pista**: en la pista remota (todos los ``S<n>``) una frase de
   ``S1`` se corta en cuanto aparece una palabra de ``S2``, aunque el hueco sea pequeno (antes cada
   hablante se agrupaba por separado y una frase de ``S1`` podia «saltar» por encima de la
-  respuesta de ``S2``). La pista del micro (``me``) va aparte: puede solaparse con la remota.
+  respuesta de ``S2``). La pista del micro (``me`` y las personas de la sala ``P<n>``) va aparte:
+  puede solaparse con la remota.
 * **Segmento / parrafo** (etapa 11): frases consecutivas del mismo hablante con hueco
   < ``merge_gap_s`` (1,5 s) se unen; un parrafo se parte, en un fin de frase, cuando ya dura
   ``MAX_PARAGRAPH_S`` (45 s) o ``MAX_PARAGRAPH_CHARS`` (700) caracteres. Un punto del ASR seguido
@@ -27,7 +28,7 @@ from collections.abc import Iterable, Sequence
 
 from rapidfuzz import fuzz
 
-from micnaga.types import SPEAKER_ME, SPEAKER_ME_NAME, Segment, Speaker, Word
+from micnaga.types import SPEAKER_ME, SPEAKER_ME_NAME, Segment, Speaker, Word, is_mic_speaker
 
 PHRASE_GAP_S = 0.8
 MAX_PARAGRAPH_S = 45.0
@@ -64,12 +65,12 @@ def build_phrases(
     """Agrupa palabras (``(hablante, palabra)``) en frases; el resultado va ordenado por inicio.
 
     Cada pista se recorre por separado y en orden temporal (micro y sistema son independientes
-    y pueden solaparse): ``me`` por un lado y todos los hablantes remotos juntos por otro, de
-    modo que un cambio de hablante remoto siempre corta la frase.
+    y pueden solaparse): el micro (``me`` y ``P<n>``) por un lado y todos los hablantes remotos
+    juntos por otro, de modo que un cambio de hablante siempre corta la frase.
     """
     per_track: dict[str, list[tuple[str, Word]]] = {}
     for speaker, word in words_by_speaker:
-        track = SPEAKER_ME if speaker == SPEAKER_ME else "remote"
+        track = "mic" if is_mic_speaker(speaker) else "remote"
         per_track.setdefault(track, []).append((speaker, word))
     phrases: list[Segment] = []
     for items in per_track.values():
@@ -194,18 +195,20 @@ def drop_echo(
     similarity: float = 0.8,
     tolerance_s: float = ECHO_TIME_TOLERANCE_S,
 ) -> tuple[list[Segment], list[Segment]]:
-    """Etapa 9: descarta las frases de ``me`` que coinciden en el tiempo con voz remota y se le
-    parecen >= ``similarity``. Devuelve ``(conservadas, descartadas)``.
+    """Etapa 9: descarta las frases del micro (``me`` y personas de la sala) que coinciden en el
+    tiempo con voz remota y se le parecen >= ``similarity``.
 
-    Cada frase de ``me`` se compara con (a) cada frase remota que solape su ventana
+    Devuelve ``(conservadas, descartadas)``.
+
+    Cada frase del micro se compara con (a) cada frase remota que solape su ventana
     ``[inicio - tolerancia, fin + tolerancia]`` y (b) el texto de las palabras remotas dentro de
     esa ventana (el eco puede trocearse distinto que el original).
     """
-    remote = [p for p in phrases if p.speaker != SPEAKER_ME]
+    remote = [p for p in phrases if not is_mic_speaker(p.speaker)]
     kept: list[Segment] = []
     dropped: list[Segment] = []
     for p in phrases:
-        if p.speaker != SPEAKER_ME:
+        if not is_mic_speaker(p.speaker):
             kept.append(p)
             continue
         lo, hi = p.start - tolerance_s, p.end + tolerance_s

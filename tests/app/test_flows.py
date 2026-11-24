@@ -52,10 +52,11 @@ def test_meet_path_popup_record_stop_enqueues_confirmed_job() -> None:
     _to_popup(rig)
     assert rig.rec.calls[0][0] == "start" and rig.rec.calls[0][1][0] is False  # provisional
     assert rig.popup.visible
-    # Meet: aun no hay pastilla de grabacion; la superficie nace como pastilla y crece
+    # Meet: aun no hay pastilla de grabacion; la superficie nace como pastilla provisional y
+    # la ventana ya mide la tarjeta (opaca, DECISIONS §29)
     assert not _host(rig).pill_visible
     born = next(js for js in rig.js(rig.pill) if js.startswith("micnaga.pill.show("))
-    assert json.loads(born[len("micnaga.pill.show(") : -1])["enter"] is True
+    assert json.loads(born[len("micnaga.pill.show(") : -1])["provisional"] is True
 
     _answer(rig, "record")  # «Grabar»
     assert ("set_confirmed", True) in rig.rec.calls

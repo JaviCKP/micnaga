@@ -25,6 +25,46 @@ from micnaga.ui.media import LocalServer
 
 log = logging.getLogger(__name__)
 
+OVERLAY_OPAQUE_BG = "#0a090f"
+"""Formulario de la superficie cuando no hay transparencia: el color de noche de ``.pill``."""
+
+_overlay_hwnds: set[int] = set()
+_theme_hooked: set[type] = set()
+_hook_lock = threading.Lock()
+
+
+def _keep_backdrop_clear(win: Any, hwnd: int, w32: winapi.Win32) -> None:
+    """pywebview reaplica Mica en ``BrowserForm.update_title_bar_theme`` al crear la ventana y
+    en cada ``SystemEvents.UserPreferenceChanged`` (cambio de tema, de colores...). Se envuelve
+    ese metodo (una vez por clase) para que, justo despues, las superficies vuelvan a quedarse
+    sin fondo de sistema: el recuadro gris no puede volver (DECISIONS §29)."""
+    with _hook_lock:
+        _overlay_hwnds.add(hwnd)
+        try:
+            cls = type(win.native)
+        except Exception:
+            return
+        if cls in _theme_hooked:
+            return
+        original = getattr(cls, "update_title_bar_theme", None)
+        if original is None:
+            return
+
+        def update_title_bar_theme(self: Any) -> None:
+            original(self)
+            try:
+                handle = int(self.Handle.ToInt64())
+            except Exception:
+                return
+            if handle in _overlay_hwnds:
+                winapi.clear_backdrop(handle, w32)
+
+        try:
+            cls.update_title_bar_theme = update_title_bar_theme
+            _theme_hooked.add(cls)
+        except Exception:
+            log.warning("cannot hook pywebview's theme update; backdrop cleared on show only")
+
 
 @dataclass
 class WindowSpec:
@@ -58,6 +98,11 @@ class UiWindow(Protocol):
 
     def run_js(self, script: str) -> None: ...
 
+    def post_message(self, text: str) -> None:
+        """Mensaje de texto a la pagina (``chrome.webview`` «message»), sin esperar: lo mas
+        barato para datos frecuentes (niveles). No compila ni evalua nada en la pagina."""
+        ...
+
     def show(self, *, activate: bool) -> None: ...
 
     def hide(self) -> None: ...
@@ -68,8 +113,9 @@ class UiWindow(Protocol):
 
     def rect(self) -> Rect: ...
 
-    def set_region(self, rect: Rect | None) -> None:
-        """Zona visible y clicable (coordenadas de la ventana, px fisicos); ``None`` = toda."""
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
+        """Zona visible y clicable (coordenadas de la ventana, px fisicos, esquinas de
+        ``radius`` px); ``None`` = toda. ``False`` si Windows no la aplico."""
         ...
 
     def destroy(self) -> None: ...
@@ -82,9 +128,12 @@ class UiWindow(Protocol):
 
     def pick_folder(self, current: str) -> str | None: ...
 
-    def make_transparent(self) -> bool:
-        """Transparencia real de una ventana sin marco (popup/pastilla): formulario negro +
-        marco DWM extendido al cliente. ``False`` si no se pudo."""
+    def prepare_overlay(self, transparent: bool = True) -> bool:
+        """Ventana superpuesta (pastilla/tarjeta). ``transparent``: formulario negro + marco DWM
+        extendido al cliente (transparencia real; el CSS dibuja la forma). Si no, formulario
+        opaco del color de la pastilla. En los dos casos sin fondo de sistema de DWM (Mica, que
+        pywebview pone con el tema oscuro), tambien cuando pywebview lo reaplique. Idempotente.
+        ``False`` si no se pudo (con ``transparent``: no hay transparencia en este equipo)."""
         ...
 
 
@@ -106,14 +155,24 @@ class PywebviewWindow:
         self._spec = spec
         self._w32 = w32
         self._hwnd = 0
+        self._rendering: bool | None = None
 
     @property
     def hwnd(self) -> int:
+        """El ``Handle`` ACTUAL del formulario (WinForms puede recrearlo: un hwnd guardado
+        apuntaria a una ventana muerta). Nunca lo crea: ``Handle`` sin crear lo crearia en este
+        hilo, que no es el de la interfaz."""
+        try:
+            native = self._win.native
+            if native is not None and native.IsHandleCreated:
+                handle = int(native.Handle.ToInt64())
+                if handle:
+                    self._hwnd = handle
+                    return handle
+        except Exception:
+            log.debug("no native handle for %s", self.key, exc_info=True)
         if not self._hwnd:
-            try:
-                self._hwnd = int(self._win.native.Handle.ToInt32())
-            except Exception:
-                self._hwnd = self._w32.find_window(self._spec.title)
+            self._hwnd = self._w32.find_window(self._spec.title)
         return self._hwnd
 
     def wait_loaded(self, timeout: float = 10.0) -> bool:
@@ -125,7 +184,31 @@ class PywebviewWindow:
         except Exception:
             log.debug("run_js failed on %s", self.key, exc_info=True)
 
+    def post_message(self, text: str) -> None:
+        """``CoreWebView2.PostWebMessageAsString`` en el hilo de la interfaz (como hace pywebview
+        con ``evaluate_js``, pero sin compilar script ni esperar respuesta). A ~10 veces por
+        segundo, ``evaluate_js`` (envuelto, serializado y esperando respuesta) costaba ~2 % de un
+        nucleo en Python (medido)."""
+        try:
+            native = self._win.native
+            from System import Action  # type: ignore[import-not-found,unused-ignore]
+        except Exception:
+            log.debug("post_message unavailable on %s", self.key, exc_info=True)
+            return
+
+        def send() -> None:  # en el hilo de la interfaz: CoreWebView2 solo vive ahi
+            try:
+                native.browser.webview.CoreWebView2.PostWebMessageAsString(text)
+            except Exception:
+                log.debug("post_message failed on %s", self.key, exc_info=True)
+
+        try:
+            native.browser.webview.Invoke(Action(send))
+        except Exception:
+            log.debug("post_message not delivered on %s", self.key, exc_info=True)
+
     def show(self, *, activate: bool) -> None:
+        self._set_rendering(True)
         if activate:
             self._win.show()
             with contextlib.suppress(Exception):
@@ -135,6 +218,31 @@ class PywebviewWindow:
 
     def hide(self) -> None:
         winapi.hide(self.hwnd, self._w32)
+        self._set_rendering(False)
+
+    def _set_rendering(self, on: bool) -> None:
+        """Las superposiciones se ocultan con Win32 (``ShowWindow``), que WinForms no ve: el
+        control WebView2 seguia «visible» y Chromium pintaba fotogramas (GPU incluida) con la
+        ventana oculta. ``Visible`` del control pone ``CoreWebView2Controller.IsVisible``: oculto,
+        el navegador deja de dibujar y de dar fotogramas (DECISIONS §34)."""
+        if not self._spec.overlay or self._rendering is on:
+            return
+        try:
+            native = self._win.native
+            view = native.browser.webview
+
+            def apply() -> None:
+                view.Visible = on
+
+            if getattr(native, "InvokeRequired", False):
+                from System import Action  # type: ignore[import-not-found,unused-ignore]
+
+                native.Invoke(Action(apply))
+            else:
+                apply()
+            self._rendering = on
+        except Exception:
+            log.debug("WebView2 visibility not set on %s", self.key, exc_info=True)
 
     def is_visible(self) -> bool:
         return bool(self.hwnd) and self._w32.is_visible(self.hwnd)
@@ -145,9 +253,9 @@ class PywebviewWindow:
     def rect(self) -> Rect:
         return self._w32.get_window_rect(self.hwnd)
 
-    def set_region(self, rect: Rect | None) -> None:
-        if self.hwnd:
-            winapi.set_region(self.hwnd, rect, self._w32)
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
+        hwnd = self.hwnd
+        return bool(hwnd) and winapi.set_region(hwnd, rect, self._w32, radius=radius)
 
     def destroy(self) -> None:
         try:
@@ -165,31 +273,38 @@ class PywebviewWindow:
         with contextlib.suppress(Exception):
             self._win.set_title(title)
 
-    def make_transparent(self) -> bool:  # pragma: no cover - necesita una ventana real
-        """``BackColor = Black`` en el formulario WinForms + ``DwmExtendFrameIntoClientArea``.
+    def prepare_overlay(self, transparent: bool = True) -> bool:
+        hwnd = self.hwnd
+        if not hwnd:
+            return False
+        _keep_backdrop_clear(self._win, hwnd, self._w32)
+        ok = self._set_back_color("#000000" if transparent else OVERLAY_OPAQUE_BG)
+        if transparent:
+            ok = winapi.make_overlay_transparent(hwnd, self._w32) and ok
+        winapi.clear_backdrop(hwnd, self._w32)
+        return ok
 
-        Sin esto pywebview deja el recuadro gris del formulario detras del WebView2 transparente.
-        """
-        ok = False
+    def _set_back_color(self, color: str) -> bool:  # pragma: no cover - necesita WinForms
+        """``BackColor`` del formulario: negro = transparente con el marco DWM extendido; sin
+        el, pywebview deja un recuadro gris detras del WebView2 transparente."""
         try:
             native = self._win.native
             from System import Action  # type: ignore[import-not-found,unused-ignore]
-            from System.Drawing import Color  # type: ignore[import-not-found,unused-ignore]
+            from System.Drawing import (  # type: ignore[import-not-found,unused-ignore]
+                ColorTranslator,
+            )
 
             def set_back() -> None:
-                native.BackColor = Color.Black
+                native.BackColor = ColorTranslator.FromHtml(color)
 
             if getattr(native, "InvokeRequired", False):
                 native.Invoke(Action(set_back))
             else:
                 set_back()
-            ok = True
+            return True
         except Exception:
             log.debug("BackColor not set on %s", self.key, exc_info=True)
-        hwnd = self.hwnd
-        if hwnd:
-            ok = winapi.make_overlay_transparent(hwnd, self._w32) and ok
-        return ok
+            return False
 
     def pick_folder(self, current: str) -> str | None:  # pragma: no cover - dialogo nativo
         import webview
@@ -220,7 +335,8 @@ class PywebviewFactory:
             resizable=spec.resizable,
             frameless=spec.frameless,
             easy_drag=False,  # la pastilla usa .pywebview-drag-region
-            shadow=not spec.transparent,
+            # sin sombra en la pastilla/tarjeta: pywebview la hace extendiendo el marco de DWM
+            shadow=not spec.transparent and not spec.overlay,
             focus=spec.focus,  # focus=False => WS_EX_NOACTIVATE (pywebview 6)
             hidden=spec.hidden,
             on_top=spec.on_top,
@@ -261,6 +377,10 @@ class FakeWindow:
         self.alive = True
         self.current_rect: Rect = (0, 0, spec.width, spec.height)
         self.region: Rect | None = None
+        self.region_radius = 0
+        self.region_ok = True
+        self.overlay_ok = True
+        """``prepare_overlay(transparent=True)`` funciona (hay transparencia)."""
         self._closed: list[Callable[[], None]] = []
         self._moved: list[Callable[[int, int], None]] = []
 
@@ -285,6 +405,9 @@ class FakeWindow:
     def is_visible(self) -> bool:
         return self.visible
 
+    def post_message(self, text: str) -> None:
+        self.log.append(("post", text))
+
     def place(self, rect: Rect) -> None:
         self.current_rect = rect
         self.log.append(("place", rect))
@@ -293,9 +416,11 @@ class FakeWindow:
         x, y, w, h = self.current_rect
         return (x, y, x + w, y + h)
 
-    def set_region(self, rect: Rect | None) -> None:
+    def set_region(self, rect: Rect | None, radius: int = 0) -> bool:
         self.region = rect
+        self.region_radius = radius
         self.log.append(("region", rect))
+        return self.region_ok
 
     def destroy(self) -> None:
         self.alive = False
@@ -313,9 +438,9 @@ class FakeWindow:
     def set_title(self, title: str) -> None:
         self.log.append(("title", title))
 
-    def make_transparent(self) -> bool:
-        self.log.append(("make_transparent", None))
-        return True
+    def prepare_overlay(self, transparent: bool = True) -> bool:
+        self.log.append(("prepare_overlay", transparent))
+        return self.overlay_ok or not transparent
 
     def pick_folder(self, current: str) -> str | None:
         self.log.append(("pick_folder", current))
@@ -326,6 +451,8 @@ class FakeWindow:
         return [str(a) for k, a in self.log if k == "js"]
 
     def fire_moved(self, x: int, y: int) -> None:
+        """El usuario arrastro la ventana: su esquina queda en ``x, y`` (px fisicos)."""
+        self.current_rect = (x, y, *self.current_rect[2:])
         for cb in self._moved:
             cb(x, y)
 

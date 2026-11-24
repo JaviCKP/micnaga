@@ -1,8 +1,9 @@
 """Cancelacion de eco por trozos (procesado en vivo) frente a la pista entera.
 
-El estado de Speex no se puede guardar entre trozos: cada trozo de 60 s se cancela con un Speex
-nuevo y ``AEC_PREROLL_S`` de audio previo para que el filtro converja. Con fuga de altavoz, el
-eco que queda debe ser equivalente al de cancelar la pista de una vez.
+El estado del cancelador no se puede guardar entre trozos: cada trozo de 60 s se cancela con un
+cancelador nuevo y ``AEC_PREROLL_S`` de audio previo para que el filtro converja. Con fuga de
+altavoz, el eco que queda debe ser equivalente al de cancelar la pista de una vez. Se prueba con
+webrtc (AEC3, el que lleva el instalador y elige ``auto``) y con speex (solo desarrollo).
 """
 
 from __future__ import annotations
@@ -16,13 +17,17 @@ from tests.pipeline.test_echo_check import _room, _talk
 SR = 16000
 
 
-def _speex() -> object:
+def _canceller(name: str) -> object:
     try:
+        if name == "webrtc":
+            from micnaga.pipeline.aec.webrtc import WebRtcEchoCanceller
+
+            return WebRtcEchoCanceller()
         from micnaga.pipeline.aec.speex import SpeexEchoCanceller
 
         return SpeexEchoCanceller()
-    except Exception as exc:  # pyaec sin instalar
-        pytest.skip(f"speex not available: {exc}")
+    except Exception as exc:  # aec-audio-processing / pyaec sin instalar
+        pytest.skip(f"{name} not available: {exc}")
 
 
 def _echo_only_residual_db(out: np.ndarray, echo: np.ndarray, near_gate: np.ndarray) -> float:
@@ -31,8 +36,9 @@ def _echo_only_residual_db(out: np.ndarray, echo: np.ndarray, near_gate: np.ndar
     return 10 * float(np.log10(np.sum(echo[mask] ** 2) / max(np.sum(out[mask] ** 2), 1e-12)))
 
 
-def test_chunked_aec_with_preroll_matches_whole_track_aec() -> None:
-    speex = _speex()
+@pytest.mark.parametrize("engine", ["webrtc", "speex"])
+def test_chunked_aec_with_preroll_matches_whole_track_aec(engine: str) -> None:
+    canceller = _canceller(engine)
     total = 130.0
     remote_spans = [(a, a + 6) for a in np.arange(1, total - 7, 13.0)]
     me_spans = [(a + 7, a + 11) for a in np.arange(1, total - 12, 13.0)]
@@ -48,13 +54,13 @@ def test_chunked_aec_with_preroll_matches_whole_track_aec() -> None:
     echo = _room(system, 0.12, 0.3)
     mic = (near + echo).astype(np.float32)
 
-    whole = np.asarray(speex.process(mic, system, SR), dtype=np.float32)  # type: ignore[attr-defined]
+    whole = np.asarray(canceller.process(mic, system, SR), dtype=np.float32)  # type: ignore[attr-defined]
     slice_len, pre = int(SLICE_S * SR), int(AEC_PREROLL_S * SR)
     chunked = np.zeros(n, dtype=np.float32)
     for start in range(0, n, slice_len):
         end = min(n, start + slice_len)
         lo = max(0, start - pre)
-        out = speex.process(mic[lo:end], system[lo:end], SR)  # type: ignore[attr-defined]
+        out = canceller.process(mic[lo:end], system[lo:end], SR)  # type: ignore[attr-defined]
         chunked[start:end] = np.asarray(out, dtype=np.float32)[start - lo :]
 
     gate = (np.abs(near) > 0).astype(np.int8)

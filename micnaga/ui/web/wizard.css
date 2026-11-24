@@ -31,6 +31,11 @@
   transition: color var(--dur) var(--ease);
 }
 .wiz[data-state="done"] .status { color: var(--accent); }
+/* bytes · speed · time left, quieter than the main line; «Cancelar» only while it runs */
+.status.detail { color: var(--text-3); margin-top: -6px; }
+.status.detail:empty { display: none; }
+.overall .cancel { justify-self: center; margin-top: 2px; }
+.overall .cancel[hidden] { display: none; }
 .wiz[data-state="failed"] .progress > i { background: var(--warm); }
 .wiz[data-state="done"] .progress > i { clip-path: inset(0); }
 .wiz[data-state="done"] .progress::after, .wiz[data-state="failed"] .progress::after { opacity: 0; }

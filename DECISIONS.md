@@ -1307,3 +1307,578 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    animación se leía como un destello.
 5. **No hecho:** abrir la tarjeta antes de tiempo con un clic en la pastilla (necesita un evento
    nuevo del vigilante; un «Sí/No» sin él no haría nada).
+
+## 29. El recuadro gris de la superficie: fondo de DWM quitado, morfosis fluida y esquinas redondas
+
+1. **El fallo (otro PC):** un recuadro gris ancho detrás de la tarjeta «¿Estás en una reu?» que
+   seguía en pantalla al volver a la pastilla. **Causa (medida en este PC):** pywebview
+   (`BrowserForm.update_title_bar_theme`) pone Mica (`DWMWA_SYSTEMBACKDROP_TYPE = 2`) en toda
+   ventana cuando las apps usan el **tema oscuro**, al crearla y en cada
+   `SystemEvents.UserPreferenceChanged`. Con el marco DWM extendido al cliente (la transparencia)
+   DWM pinta ese Mica —gris liso, la ventana nunca está activa— en el lienzo ENTERO de 420 x 112,
+   y la región (`SetWindowRgn`) **no lo recorta**. Este PC usa tema claro: por eso no se veía.
+2. **Primer intento descartado:** ventana opaca del tamaño de la forma y sin morfosis (dos
+   estados con fundido). El usuario lo corrigió tras verlo: la animación de crecer **tiene que
+   existir**; lo que no gustaba eran las esquinas afiladas, y debe ser muy fluida y ágil.
+3. **Arreglo de la causa, manteniendo la transparencia:** `winapi.clear_backdrop`
+   (`DWMSBT_NONE`) al preparar la ventana, en **cada cambio de forma** (`UiHost._region`) y en el
+   sondeo del tema (5 s); además `windows._keep_backdrop_clear` envuelve una vez
+   `update_title_bar_theme` en la clase del formulario y, justo después de que pywebview ponga
+   Mica, lo quita en las superficies. Segunda red: la región sigue a la forma visible con solo
+   2 px físicos de margen (`REGION_OUTSET`), así que aunque el fondo volviera solo asomaría un
+   filo. Comprobado en la ventana real sobre una ventana magenta propia: Mica forzado → 38 542 px
+   grises fuera de la pastilla; el cambio de tema de pywebview (simulado con tema oscuro) →
+   atributo de nuevo a 1 y 0 px grises; tarjeta con Mica forzado → el siguiente cambio de forma
+   lo limpia (0 px).
+4. **Sin transparencia en el equipo** (`DwmExtendFrameIntoClientArea` falla, o
+   `MICNAGA_UI_SURFACE=opaque` para diagnosticar): ventana opaca (`#0a090f`) cuya región se anima
+   con la forma, con la misma curva y duración que el CSS, un paso por composición de DWM
+   (`DwmFlush`), sin margen. Esquinas de GDI (sin antialias): limitación aceptada del modo de
+   emergencia. Comprobado forzándolo: nada fuera de la forma, fotogramas limpios.
+5. **Morfosis restaurada (la de §28) y hecha barata:** `.pill` cubre el lienzo y la forma es su
+   `clip-path: inset(... round 20px)`; el relleno es un `::before` con el mismo clip 1 px hacia
+   dentro (el filo es el hueco). El punto y el cronómetro van con `transform: translate` en la
+   esquina de la forma. Nada de ancho, alto, posición ni radio por fotograma (sin layout);
+   `will-change` solo mientras se mueve; ningún trabajo JS ni ida y vuelta a Python durante la
+   animación: la región se agranda ANTES (unión de forma actual y nueva) y se recoge DESPUÉS.
+   Crecer 300 ms, encoger 240 ms (+40 ms en que sale el contenido), curva `.2,.9,.25,1` (sale
+   rápida y se posa sin rebote); el contenido de la tarjeta entra escalonado (70–140 ms) mientras
+   se abre. Ratón y «Deshacer» usan el mismo clip. Movimiento reducido: fundido cruzado.
+6. **Esquinas:** pastilla redonda del todo (radio = alto / 2 = 20 px) y tarjeta con el mismo
+   radio (así en la morfosis solo se mueven los bordes); controles dentro concéntricos (marco del
+   botón grabar 14 px, botón 9 px, botones de la pastilla y «Deshacer» redondos). El CSS dibuja
+   las esquinas con antialias; la región, con su margen, nunca las corta (test a 1–1,5 de escala).
+7. **Fotogramas (WebView2 real, pantalla de 75 Hz):** crecer 56 fotogramas, p50 13,3 ms, p95
+   13,5, máx 13,5, ninguno > 20 ms y ningún `long-animation-frame`; encoger 98 fotogramas, máx
+   13,5. El primer crecimiento de cada página tenía UN fotograma de 70–160 ms (primer dibujo del
+   contenido de la tarjeta; no eran fuentes ni `will-change`): se ensaya la tarjeta una vez,
+   invisible, al aparecer la pastilla (`warmUp`), y desaparece. Chromium headless (tests):
+   p50 16,7 ms, máx 16,8.
+8. **Se conserva:** geometría en px físicos del DPI, arrastre leyendo la ventana (pywebview avisa
+   en px lógicos: a 150 % saltaba), `hwnd` leído en cada uso (si WinForms lo recrea se reaplica
+   todo) y el diagnóstico en el log (DPI, región de cada forma, modo, escala CSS frente a px).
+
+## 30. «Grabar reunión presencial» (rama `claude/in-person-meetings-fixes`)
+
+1. **Qué es:** una acción explícita para grabar una reunión en una sala, sin llamada detrás. Está
+   en la bandeja («Grabar reunión presencial», justo debajo de «Grabar ahora»; desactivada
+   mientras se graba) y en la biblioteca (botón con el icono `users` en la cabecera de la lista,
+   junto a Ajustes; da un aviso «Grabando reunión presencial…» o «Ya hay una grabación en
+   marcha»). Graba micro + sistema como siempre (el sistema no estorba).
+2. **Vigilante:** evento nuevo `RecordInPerson` → `MeetingInfo(manual=True, in_person=True)`,
+   confirmada al momento, sin popup y **sin adoptar** una pestaña de Meet visible (al contrario
+   que «Grabar ahora»). Reutiliza la sesión manual: no la cierran las señales ni la molesta un
+   Meet o una app que empiece después; solo la para el usuario (pastilla). Grabando ya, es un
+   no-op; `Watcher.record_in_person()` devuelve si empezó a grabar (`_submit` devuelve ahora las
+   acciones del evento). **Sin tope de duración:** no existe ninguno en la app (tampoco para
+   «Grabar ahora»); no se ha inventado uno.
+3. **Marca de la sesión:** el título por defecto es «Reunión presencial» (lo pone el
+   controlador; la IA puede renombrarla). El grabador reescribe `capture.json` entero mientras
+   graba (`extra` incluido), así que el controlador escribe al empezar la marca
+   `.micnaga-in-person.json` en la carpeta y, con el grabador ya parado, pasa
+   `extra.in_person = true` a `capture.json` (`capture.session.apply_in_person`; `finalize_session`,
+   el recorte y «Recuperar» conservan `extra`). Si la app muere grabando, la marca sigue en la
+   carpeta y `capture.session.is_in_person(carpeta, extra)` la ve.
+4. **Pipeline:** etapa 1: una presencial cuenta como confirmada (solo la duración mínima; nunca
+   se aparta por falta de voz remota o de turnos; `gates.evaluate_gates(..., in_person=True)`).
+   Etapa 7: el micro se diariza con ≥ 5 s de voz (`s07_diarize.IN_PERSON_MIN_MIC_SPEECH_S`) en
+   vez de `room.MIN_MIC_SPEECH_S` (20 s); el etiquetado de `room.py` no cambia. Etapa 11:
+   `meeting.source = "presencial"` (`gates.SOURCE_IN_PERSON`; el resto sigue en `"meet"`). La
+   biblioteca muestra la etiqueta «Presencial» junto a la fecha.
+5. **Canal UI → app (pasada final):** el camino de siempre. `UiCallbacks.on_record_in_person`
+   (`None` por defecto = sin app detrás: demo y pruebas, con la entrada de la bandeja desactivada
+   y el botón de la biblioteca oculto); `UiHost._tray_callbacks()` lo pasa a la bandeja y
+   `library_api()` a `LibraryApi(record_in_person=...)`. Devuelve `started` | `busy` | `failed`:
+   `Application._record_in_person` mira `controller.recording` después del evento (el vigilante
+   despacha el arranque antes de volver), así que si la captura no arranca la biblioteca no dice
+   «Grabando…» (el aviso «No se pudo grabar» ya lo da el controlador). El registro de
+   `ui/contracts.py` (`set_app_action`) queda solo para el descargador de modelos de Ajustes;
+   `tests/conftest.py` lo vacía tras cada test (una `Application` de prueba sin cerrar lo dejaba
+   puesto y otro test veía «Descargar» activo).
+6. **Etiqueta en la lista:** `LibraryApi.list_meetings` añade `in_person` mirando solo si existe
+   la marca `.micnaga-in-person.json` en la carpeta (un `stat` por fila, sin leer JSON ni el
+   índice); la fila muestra «Presencial» tras la duración. No hecho: la etiqueta en la pastilla.
+
+## 31. Instalador sin `aec.dll`, con `diarize` + torch recortado y firma opcional
+
+1. **`aec.dll` fuera.** A un compañero le bloquearon la instalación por `aec.dll` (rueda `pyaec`,
+   SpeexDSP): DLL sin firmar y sin editor. `pyaec` sale del instalador (excludes, sin
+   hiddenimport/DLL, `aec.dll` en `DROP_BINARIES` y en los binarios prohibidos de
+   `gen_licenses.py --check --dist`, `BANNED_IMPORTS` en el `--selftest`) y del extra `aec`
+   (pasa a `aec-speex` y a `dev`; `gen_licenses.py` lo marca `not-bundled` mientras la instalación
+   editable vieja lo declare). `AUTO_ORDER = ("webrtc", "speex")`; `processing.aec = "speex"` sin
+   `pyaec` cae al orden de `auto` con un aviso (una config vieja sigue cancelando eco); `webrtc`
+   pedido y ausente sigue fallando con claridad. Ajustes ya no ofrece «SpeexDSP» (`config.py` lo
+   sigue aceptando). **Coste:** la comparativa sintética de F1 daba ventaja a Speex en doble habla
+   (§7.2); `test_live_aec` ahora prueba el troceado en vivo también con webrtc y pasa.
+   **Ojo:** `webrtc-audio-processing-2-1.dll` tampoco está firmada, ni los tres `.exe`,
+   `python311.dll` (el Python de uv/python-build-standalone no viene firmado), OpenSSL, SQLite,
+   `ctranslate2.dll`, las OpenBLAS ni las DLL de torch (`torch_cpu.dll`, `c10.dll`...): quitar
+   Speex elimina un culpable, no la clase. El arreglo real es firmar.
+2. **Firma opcional en `scripts\build.ps1`:** con `MICNAGA_SIGN_THUMBPRINT` (certificado del
+   almacén, p. ej. token EV) o `MICNAGA_SIGN_PFX` (+ `_PASSWORD`) firma con `signtool` (Windows
+   SDK o `MICNAGA_SIGNTOOL`; sello RFC 3161 `MICNAGA_SIGN_TIMESTAMP`, por defecto DigiCert) los
+   `.exe` y toda DLL/`.pyd` de `dist\micnaga` sin firma válida (las de Microsoft/Intel se dejan),
+   antes del selftest, y pasa a Inno `/DSign=1 /Smicnaga=...` (`SignTool=micnaga`,
+   `SignedUninstaller=yes` dentro de `#ifdef Sign`). Sin certificado: aviso y build sin firmar.
+   **No hay certificado**: no se ha probado firmando. Con PFX la contraseña aparece en la línea de
+   órdenes de `iscc` (preferir la huella).
+3. **Un único producto con `diarize` + torch CPU** (el diarizador ONNX y pyannote se retiraron,
+   commit 5893910). El `.spec` ya no tiene variantes (`MICNAGA_VARIANT=torch` se acepta como alias),
+   `build.ps1` pierde `-Variant` (gana `-Python`) e Inno pierde `Variant`. El `--selftest` importa
+   diarize/torch/torchaudio/silero/sklearn, carga el VAD Silero (TorchScript), calcula fbank con
+   torchaudio y pinta y guarda en ICO los iconos de la bandeja; `--selftest-diarize WAV` diariza de
+   verdad (prueba manual; necesita WeSpeaker en `MICNAGA_MODELS`).
+4. **Recorte, medido** (este PC, PyInstaller 6.22.3; «antes» = la variante `torch` de antes):
+
+   | | Antes | Después |
+   | --- | --- | --- |
+   | Carpeta `dist` | 787,6 MiB | 646,3 MiB |
+   | Estimación LZMA (`measure_dist.py`) | 278,9 MiB | 131,0 MiB |
+   | Instalador real (`iscc`) | 168,5 MiB | **123,7 MiB** (< 150 MB de la spec §2) |
+   | Cada `.exe` | 51 MiB | 0,4 MiB |
+
+   * `noarchive=True`: los módulos van como `.pyc` sueltos y los tres `.exe` los comparten (con PYZ
+     cada uno llevaba su copia: 3 × 51 MiB). Los paquetes que también llevan su `.py` (torch y
+     torchaudio: su hook usa `pyz+py`, TorchScript lo necesita) quedarían como `X.py` + `X.pyc` y
+     Python cargaría el `.py` y lo recompilaría en cada arranque (el congelado no escribe bytecode):
+     el `.spec` mueve cada `.pyc` a `__pycache__/X.cpython-311.pyc` en modo *unchecked hash*
+     (PEP 552, válido aunque el instalador cambie fechas). Selftest congelado: 12,2 s frente a
+     12,9 s antes (mediana de 4, con ruido de otros procesos).
+   * Fuera: `torch/bin` (`protoc.exe` y DLL duplicadas), `torch._inductor`, `_dynamo`, `onnx`,
+     `_numpy`, `_lazy`, `contrib`, partes de `torch.distributed`/`torch.utils` y todo
+     `torch.testing._internal` salvo `logging_tensor` (lo importa `import torch`),
+     `torchaudio.prototype`, 12 subpaquetes de sklearn, pandas, sympy/networkx/jinja2/click,
+     pygments (solo CLI de httpx2), 6 de los 7 modelos de `silero_vad/data` (solo se usa
+     `silero_vad.jit`), los codecs AVIF/WebP/FreeType/LCMS/Tk de Pillow y `pyaec`.
+   * **Método:** volcar `sys.modules` tras `diarize` + `embed` reales (dev) y repetir la diarización
+     (37 s auto, 37 s con 2 hablantes, 5 min auto, `embed`, `load_silero_vad`) bloqueando esos
+     módulos con un *meta path finder* (como un exclude: el módulo no existe; poner `None` en
+     `sys.modules` no vale, sklearn mira `sys.modules["pandas"]`). Luego el ejecutable congelado:
+     `--selftest` (192 importaciones, 0 fallos) y `--selftest-diarize` sobre el mismo WAV: auto
+     (6 turnos, como en dev), con 2 hablantes (S1/S2 + huellas) y 5 min con 3 hablantes (59 turnos,
+     3 huellas), es decir, también la rama de clustering con varios hablantes. El WAV es TTS SAPI
+     (Helena + Zira) y en automático diarize lo deja en un solo hablante también en dev: es la
+     calidad de diarize con voces sintéticas, no el empaquetado. `scripts\build.ps1 -SkipInstaller
+     -Python <venv>` se ejecutó entero (sin certificado: avisa y sigue).
+   * `torch_cpu.dll` (256 MiB) es la mayor parte y no se puede recortar sin compilar torch.
+   * Con el recorte se sigue cumpliendo la spec §2 (< 150 MB) aun llevando torch; sin él, no.
+     `measure_dist.py` lo vigila (`BUDGET_MIB = 150`, sobre la estimación).
+5. **Inno Setup:** `[InstallDelete]` borra `{app}\_internal` al actualizar (Inno solo sobrescribe:
+   `aec.dll` y los módulos retirados sobrevivirían); va después de `PrepareToInstall`, que ya cerró la
+   app. Aviso si falta el runtime de WebView2 (clave `EdgeUpdate\Clients\{F3017226-...}`, valor
+   `pv`; comprobado en este PC en `HKLM\SOFTWARE\WOW6432Node`), nunca en silencio, con enlace a la
+   descarga oficial; no bloquea. Ya eran por usuario sin UAC y ya cerraban la app al actualizar.
+   El instalador registra ahora el host de native messaging por usuario (HKCU de Chrome, Edge y
+   Brave → `{app}\es.micnaga.host.json`, escrito en `[Code]` con el ID fijo de la extensión; un test
+   lo compara con `extension/manifest.json`); antes solo lo hacía a mano
+   `scripts
+egister_native_host.ps1`. El desinstalador borra manifiesto y claves. **Actualización
+   automática** (`micnaga/updates.py`, otro agente: `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART
+   /CLOSEAPPLICATIONS`): la entrada de `[Run]` no lleva `postinstall` ni `skipifsilent`, así que relanza
+   `micnaga.exe app` también en silencio; el cierre de la app lo hace `PrepareToInstall` (taskkill +
+   espera al mutex), no el Restart Manager (`CloseApplications=no`, así que `/CLOSEAPPLICATIONS` no
+   cambia nada). `build.ps1` escribe `dist\installer\SHA256SUMS.txt` (`<sha256>  <fichero>`, ASCII,
+   LF). **Sin migración por equipo:** 0.1.0 y 0.1.1 ya eran `PrivilegesRequired=lowest` en
+   `{localappdata}\Programs\Micnaga` sin `PrivilegesRequiredOverridesAllowed` (nunca hubo instalación
+   en HKLM) y el `AppId` no cambia. Compilado con `iscc` (sin firma y con una orden de firma de
+   prueba, que Inno invoca y rechaza por no firmar: la directiva está bien enganchada); el instalador
+   NO se ha ejecutado.
+6. **Proceso de la bandeja en reposo** (desarrollo, `micnaga app` con datos de prueba; RSS a los
+   60 s de «bandeja lista», CPU durante los 120 s siguientes; `psutil`):
+
+   | | Antes | Después |
+   | --- | --- | --- |
+   | CPU del proceso Python | 2,25 % de un núcleo | 0,43 % |
+   | RSS / privada | 139,8 / 99,7 MiB | 126,9 / 87,7 MiB |
+   | Módulos pesados cargados | numpy, scipy, soxr, soundfile, PIL, rapidfuzz | sin scipy |
+   | WebView2 (proceso GPU + render) | 7,4 % + 3,3 % | 9,0 % + 2,8 % (sin tocar) |
+
+   * `micnaga.capture` ya no importa `capture.sync` al cargarse (exportaciones perezosas con
+     `__getattr__`): `sync` trae `scipy.ndimage` (~20 MiB de RSS) y solo lo usan el pipeline (worker)
+     y `micnaga record`. El precalentado de la bandeja (numpy + captura, para que el primer popup
+     tarde < 3 s) se mantiene: la grabación es en este proceso y necesita numpy/soxr/soundfile.
+   * `Tray.set_state` no redibuja el icono si el estado no cambia: el supervisor del worker lo
+     llamaba cada 15 s (3 s con trabajo) y cada vez se pintaba con Pillow, se codificaba en ICO y
+     se cargaba con `LoadImage`. El menú se sigue reconstruyendo (sus entradas dinámicas, como la de
+     reunión presencial, solo se evalúan en `update_menu`).
+   * Vigilante: `CachedCaptureLister` reutiliza la lista de micros y sus gestores de sesión WASAPI
+     10 s (`EnumAudioEndpoints` + `Activate` eran ~3,5 de los ~5 ms de cada tick); las sesiones se
+     siguen leyendo cada segundo, cualquier error tira la caché y `close()` suelta los objetos COM
+     antes del `CoUninitialize`. Un micro enchufado a mitad tarda hasta 10 s en contar en ESTA señal
+     secundaria (el registro de privacidad sigue cada tick).
+   * **Lo que más gasta en reposo es WebView2** (~12 % de un núcleo entre GPU y render, sin reunión
+     ni ventanas abiertas). Sospecha no verificada: la animación infinita `.rec-dot::after`
+     (`dot-pulse`, `tokens.css`) en la ventana de la pastilla, que sigue componiéndose aunque esté
+     oculta; y algo del JS hace peticiones periódicas al servidor HTTP local (`micnaga-ui-http`,
+     ~0,3 % de CPU). Arreglo propuesto (fuera de este cambio: `host.py`, `pill.*`): pausar
+     animaciones/temporizadores con la pastilla oculta y poner `CoreWebView2Controller.IsVisible =
+     false` (o `TrySuspendAsync`) en las ventanas ocultas.
+   * «Bandeja lista»: 1,35–1,7 s en el app.log del usuario; en estas medidas 3,9 s antes y 4,2 s
+     después, con el PC cargado por compilaciones (ruido, no regresión: el camino de importación no
+     cambia salvo quitar scipy). numpy se sigue importando al arrancar por `micnaga.types` →
+     `store.db` (~0,1 s; fuera de este cambio).
+
+## 32. Whisper large-v3-turbo como motor de transcripción por defecto (rama `claude/in-person-meetings-fixes`)
+
+Origen: «el parakeet me está dando resultados bastante malos». Reunión real de 47 min (Meet, 19/11,
+2 hablantes, auriculares) con «Mapón», «el bueno me vamos a venir a verte», «Claudio con el
+prometto», «Dia Q», «Inkruger», «show, dancensi», frases en inglés inventadas…
+
+1. **Causa principal de esa transcripción: el AEC estropeó el micro**, no Parakeet.
+   `transcripcion.json` dice `aec: speexdsp-pyaec`: se procesó (18:15) antes de que existiera la
+   medida de eco (§24, commit de las 19:12) y Speex se aplicó al micro aunque llevaba auriculares.
+   Parakeet sobre el micro cancelado reproduce exactamente esos errores («me vamos a ir a verte»,
+   «Claudio con el prometto», «Dia Q»); sobre el crudo, no. WER del micro del tramo A (punto 2):
+   crudo 13,4 %, Speex 19,6 %, **WebRTC 24,5 %** (71 palabras borradas de 530). Hoy `echo_check`
+   da «sin eco» en los 47 trozos de 60 s (con la ventana de 5 min del vivo) y en la pista entera
+   (coherencia 0,06), así que rehacer esa reunión ya no pasaría AEC. Para quien toque `aec/`: con
+   eco real el AEC hace falta, pero un falso positivo con WebRTC (el nuevo primero de `auto`)
+   cuesta más palabras que con Speex.
+2. **Banco sobre la reunión real** (copia en temporal; el original no se tocó). Dos tramos densos,
+   cada uno en las dos pistas: A = 70–280 s (sobre todo «Yo»), B = 285–470 s (técnico: TLS, SSH,
+   VPN; Manu explica las *rules of engagement*). Referencia corregida a mano: 1284 palabras seguras
+   (≈ 4,5 min de voz); las dudosas van entre corchetes y no cuentan (ni sus sustituciones ni las
+   inserciones pegadas a ellas): «con Claude» / «de Claude» donde pudo ser «cloud», el apodo del
+   saludo, «tumbar», muletillas solapadas… WER con `jiwer` en minúsculas, sin tildes ni
+   puntuación, cifras = palabras («TLS 1.2» = «TLS uno punto dos») y compuestos juntos o separados
+   iguales («post cuántico»). Camino real de la etapa 6: acondicionado, Silero, bloques, motor; int8,
+   6 hilos, i7-12700F **con otros agentes usando la CPU** (tiempos orientativos, peores que con el
+   equipo libre). El glosario de prueba tiene 10 términos («Claude, PQC, Shodan, Censys, Día Q,
+   Dunning-Kruger, TLS, SSH, VPN, Amazon»); el del usuario está vacío.
+
+   | Motor | WER micro | WER sistema | **WER total** | Términos (26)¹ | Cálculo / s de audio | RAM pico | Descarga |
+   | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+   | Parakeet TDT 0.6B v3 int8 | 15,1 % | 6,9 % | **11,9 %** | 12 | 0,034 | 1,2 GB | 0,67 GB |
+   | Parakeet, bloques sin «llenar» (como antes) | 14,9 % | 4,5 % | 10,9 % | 15 | 0,046 | 1,3 GB | |
+   | Whisper large-v3-turbo int8 | 7,2 % | 2,6 % | **5,5 %** | 18 | 0,25 | 2,1 GB | 1,62 GB |
+   | turbo + glosario (`hotwords`) | 7,0 % | 2,4 % | **5,2 %** | **22** | 0,32 | 2,1 GB | |
+   | turbo, bloques sin «llenar» (como antes) | 7,1 % | 3,4 % | 5,7 % | 19 | 0,27 | 2,1 GB | |
+   | Whisper large-v3 int8 + glosario | 6,8 % | 3,2 % | 5,5 % | 22 | 0,71 | 3,5 GB | 3,09 GB |
+
+   ¹ Apariciones bien escritas de Claude, Dunning-Kruger, Shodan, Censys, Día Q, PQC, SaaS, wrapper,
+   TLS, SSH, VPNs, Amazon, postcuántico, *rules of engagement*, Castellón, QCS, handshakes, proxy y
+   logs. Sin glosario turbo ya escribe «Claude» (Parakeet: «Claudio»), pero «Linkruger»,
+   «showdown, censis» y «DIAQ» siguen mal (Parakeet: «Inkruger», «show and census», «DIA Q»); con
+   el glosario salen bien. Ninguno acierta «wrapper» («rapper»), «handshakes» («Hanshi») ni «logs»
+   («blogs»).
+
+   **Veredicto: turbo es claramente mejor que Parakeet en esta reunión: la mitad de errores (5,5 %
+   frente a 10,9–11,9 %; 5,2 % con glosario) y más términos bien escritos; large-v3 no mejora a
+   turbo y es más del doble de lento.** Sesgo a tener en cuenta: la referencia se hizo comparando
+   las salidas de los motores (no se escuchó el audio) y donde discrepaban suele seguir la redacción
+   de Whisper; la prueba que no depende de la referencia son los términos («Claude» frente a
+   «Claudio», «TLS uno punto tres» frente a «teléfono punto tres», «rules of engagement» frente a
+   «software engagement»). El precio: unas 9 veces más CPU que Parakeet y el doble de RAM.
+   Parakeet sin AEC no es «bastante malo» (11–12 %): la mala experiencia vino sobre todo del AEC.
+   Antes de compactar silencios, turbo inventó «Gracias por ver el video» y «¡Gracias por ver!» en
+   dos silencios largos del micro (Manu hablando en la otra pista) y después siguió sin puntuación
+   (punto 4).
+3. **Decisión (del usuario): Whisper `large-v3-turbo` por defecto.** Parakeet sigue como opción
+   («unas 9 veces más rápido, el doble de errores»).
+4. **Cambios:**
+   * `config.py`: `asr_engine = "whisper"`, `whisper_model = "large-v3-turbo"`, formato **v3**. La
+     migración pasa a turbo solo un `config.toml` con los dos valores de ASR en el defecto viejo
+     (`parakeet` + `small`); Whisper o un tamaño elegidos a mano se respetan. `whisper_model` se
+     valida contra el manifiesto (`small`, `large-v3-turbo`, `large-v3`); `tiny`/`base`/`medium`
+     (la interfaz los ofrecía pero nunca funcionaron) pasan a turbo al cargar.
+   * `models.py`: `required_groups` ya pedía `faster-whisper-<tamaño>`; ahora el defecto baja turbo
+     (1,62 GB) en vez de Parakeet (0,67 GB). Total del asistente: 1,66 GB.
+   * `engines/asr/whisper.py`: idioma **forzado** (`ui.language` si Whisper lo conoce, si no
+     `es`; sin forzarlo Whisper detecta el idioma en cada bloque). Glosario (`glossary.txt` +
+     `processing.glossary`, `Glossary.prompt()`: «Glosario: A, B, C.», ≤ 600 caracteres) como
+     `hotwords`, no como `initial_prompt`: con `condition_on_previous_text=False` faster-whisper
+     solo pone el `initial_prompt` en la primera pasada del bloque (`prompt_reset_since`), y las
+     `hotwords` en todas. Guardas de «Mejorar transcripción» (§26) también en el pipeline, más dos
+     nuevas: frases de cierre de vídeo/subtítulos (`KNOWN_HALLUCINATIONS`, segmento entero) y
+     segmentos hechos solo de palabras del glosario que traen «Glosario» o 3+ términos (un «San
+     Francisco.» real se conserva). `hq.create_engine` usa las mismas opciones.
+   * `hq.drop_loops`: una palabra sola necesita 5 repeticiones (antes 3), así «sí, sí, sí» y
+     «justo, justo, justo» se respetan; los n-gramas de 2-4 siguen con 3.
+   * **Silencios dentro del bloque** (`s06_asr.compact`): un bloque va del primer tramo de voz al
+     último y puede llevar silencios largos. Con los tramos de `05_vad.json` cada silencio de más
+     de `vad.MAX_GAP_S` (1 s) se acorta a 1 s (0,5 s de audio real a cada lado) antes del ASR y los
+     tiempos de las palabras vuelven a la pista (`to_track_span`: el fin de una palabra no pasa del
+     trozo donde empieza; sin eso, en la reunión entera 23 palabras de turbo y 64 de Parakeet
+     duraban de 2 a 23 s porque su final estirado cruzaba un corte). `hq.speech_seconds` (el «~N
+     min» del aviso) cuenta ya el audio compacto. Lo usan la etapa 6, el vivo y «Mejorar». Quita las
+     alucinaciones de arriba (micro del tramo A con turbo: 11,2 % → 9,3 % con la referencia
+     antigua); con Parakeet no cambia nada medible.
+   * **Bloques llenos** (`vad.group_regions`): cada silencio cuenta como mucho 1 s al agrupar, así
+     que el audio compacto de un bloque sigue ≤ 30 s aunque abarque más pista. Whisper cobra la
+     ventana de 30 s entera esté o no llena: en la reunión de 47 min, 191 → 137 bloques (−28 %).
+     Calidad igual (turbo 5,5 % frente a 5,7 %; Parakeet 11,9 % frente a 10,9 %, dentro del ruido
+     de ±1 punto de un banco de 1284 palabras); en los tramos densos del banco ahorra solo un 7 %.
+   * **Vivo:** usa el mismo motor (turbo), los mismos bloques y la misma compactación
+     (`LiveProcessor.speech_regions`), así que lo calculado mientras se graba sirve tal cual al
+     colgar (la prueba vivo = lote sigue pasando). `live.FORMAT` 2 invalida cachés viejas.
+     Decisión: no hay «vista previa» con Parakeet: sus bloques no valdrían para el final y al
+     colgar habría que transcribir toda la reunión con turbo.
+5. **Coste en la reunión de 47 min completa** (camino de la etapa 6, 6 hilos, i7-12700F con otros
+   procesos): turbo **1745 s de ASR = 37 min por hora de reunión**, RAM pico 2,5 GB (con las dos
+   pistas enteras en memoria); Parakeet 197 s = 4,2 min por hora, 1,8 GB. Con el vivo, la mayor
+   parte se hace mientras se graba (≈ 0,6 núcleos-hora de 6 hilos por hora en este equipo: el i7
+   lo absorbe; el i5-1245U de referencia probablemente no llegue a tiempo real y el resto se hará
+   al colgar). Sin vivo, una reunión de 1 h tarda ~37 min más (ASR) frente a ~4 con Parakeet.
+6. **Pendiente / fuera de alcance de esta rama:**
+   * Instalaciones que se actualizan: la migración deja turbo sin descargar; `missing_models`
+     abre el asistente al arrancar y la cola y el vivo esperan a que baje (1,62 GB). No hay paso
+     a Parakeet mientras tanto (`integration/`).
+   * `brain/live_title.py` crea el motor de `processing.asr_engine` para el título provisional
+     del minuto 2: ahora carga turbo (≈ 2 GB) en otro proceso a la vez que el vivo. Mejor Parakeet
+     si está, o `small` (no se toca: `brain/`).
+   * Textos fuera de las claves de ASR: `settings.about.models` (licencias) y la maqueta del
+     asistente (`wizard.js`, solo sin host) siguen nombrando Parakeet; `THIRD_PARTY_LICENSES`
+     debería citar Whisper large-v3-turbo (MIT) como modelo por defecto.
+   * `brain/live_title.py` agrupa con `vad.group_regions` y transcribe los bloques sin compactar:
+     con el nuevo defecto un bloque puede abarcar más de 30 s de pista (dos ventanas de Whisper y
+     silencios largos dentro). Debería usar `s06_asr.transcribe_block(..., regions)`.
+   * ~~«Mejorar transcripción» sigue con `large-v3` por defecto~~ Resuelto en la pasada final:
+     `hq_model` = `large-v3-turbo` (la migración v2 -> v3 cambia solo el `large-v3` sin tocar) y
+     el botón solo sale si el modelo HQ es estrictamente mejor que el que transcribió la reunión
+     (`engines.asr` de `transcripcion.json`; `bridge._hq_improves`): las reuniones antiguas con
+     Parakeet (o con Whisper `small`). Con el defecto no aparece. Ojo: una `config.toml` que ya
+     estaba en v3 (solo builds de desarrollo de esta rama) conserva `large-v3`.
+   * Sin medir en el i5-1245U ni con el equipo libre; la referencia es de una sola reunión y un
+     solo corrector.
+
+## 33. Actualizaciones automáticas, descargas robustas, icono de anillos y versión visible
+
+1. **Actualizaciones (`micnaga/updates.py`, solo stdlib).** `GET /repos/JaviCKP/micnaga/releases/latest`
+   un minuto después de arrancar y cada 12 h (solo la app congelada y con `[updates] auto_check`,
+   por defecto activo) y con «Buscar actualizaciones». Cabeceras: `User-Agent: Micnaga/<versión>`,
+   `Accept`, `X-GitHub-Api-Version` e `If-None-Match` (ETag: un 304 no gasta cuota). Sin red o con
+   403/429 no avisa (espera a `X-RateLimit-Reset`/`Retry-After`, como poco 1 h); a mano dice «No hay
+   conexión…». Se ignoran borradores, prereleases y etiquetas que no sean `vX.Y.Z`; el activo debe
+   llamarse exactamente `Micnaga-Setup-<X.Y.Z>.exe`. «Omitir esta versión» guarda esa versión.
+   El estado (omitida, ETag, release en caché, última comprobación, novedades pendientes) vive en
+   `<datos>/updates.json`, no en `config.toml` (Ajustes guarda la config entera desde el JS).
+2. **Verificación antes de ejecutar nada:** descarga solo `https` a `github.com`, `api.github.com`
+   o `*.githubusercontent.com` (una redirección a otro host aborta), a `%TEMP%\Micnaga-update\<v>`
+   vía `.part` con `Range` y 5 intentos (2/5/15/30 s); tamaño igual al publicado (tope 1 GiB);
+   SHA-256 igual al de `SHA256SUMS.txt` (activo de la release, formato `sha256sum`) y/o al `digest`
+   que GitHub calcula para cada activo (las releases v0.1.x solo tienen este); si están los dos deben
+   coincidir y sin ninguno no se instala. Firma Authenticode (`Get-AuthenticodeSignature`, la ruta va
+   por variable de entorno): una firma presente debe ser `Valid` y, si la app que corre está
+   firmada, del mismo CN (`EXPECTED_PUBLISHER` lo fija cuando haya certificado); firmada → sin
+   firmar se rechaza siempre (`REFUSE_SIGNED_TO_UNSIGNED`) y `REQUIRE_SIGNATURE` (hoy `False`, no
+   hay certificado, §31.2) rechazará cualquier instalador sin firma. Justo antes de lanzarlo se
+   vuelve a hashear y a comprobar la firma.
+3. **Instalar solo en reposo:** «Instalar y reiniciar» (Ajustes, bandeja «Actualizar a la versión X»
+   o el toast) descarga y verifica; si se graba, procesa (trabajos o worker) o se bajan modelos,
+   queda «Se instalará en cuanto Micnaga termine…» y lo reintenta cada 20 s. Lanza el instalador
+   separado del proceso (`DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB`)
+   con `/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /SP- /LOG=…`, para la app
+   (`shutdown(reason="update")`) y sale; el `PrepareToInstall` del `.iss` cierra lo que quede y su
+   `[Run]` (sin `postinstall`, también en silencio) vuelve a abrir `micnaga.exe app`. En desarrollo
+   no se instala nada (`updates.err.dev`). `MICNAGA_NO_UPDATES=1` lo apaga todo.
+4. **Novedades:** antes de instalar se guardan las notas de la release; el primer arranque de una
+   versión mayor que la anterior muestra un toast «Micnaga se ha actualizado» y Ajustes abre
+   «Acerca de» una vez con «Novedades de la X» (Markdown pasado a texto plano: sin HTML, enlaces,
+   URLs ni caracteres bidi; máx. 14 líneas / 1200 caracteres; se pinta con `textContent`).
+5. **Lo que debe publicar cada release:** el instalador `Micnaga-Setup-<X.Y.Z>.exe`, la etiqueta
+   `vX.Y.Z` (no prerelease) y `SHA256SUMS.txt` generado con `python scripts/release_checksums.py
+   dist/installer/Micnaga-Setup-<X.Y.Z>.exe` (`--check` lo comprueba). Las notas de la release son
+   las «Novedades».
+6. **Descarga de modelos robusta (`models.download_models`):** comprobación de espacio libre antes
+   de empezar (lo que falta + 200 MB), cortes de red/timeouts/HTTP 5xx-429 reintentados 4 veces
+   (2/5/15/30 s) reanudando con `Range` (el `.part` sobrevive a un reinicio), un tamaño anunciado
+   distinto no se reintenta, fase `verify` visible al hashear, `cancel` (o una excepción del
+   callback) para sin borrar el `.part`. `ModelError.key` (`models.err.*`) + `info` → texto en
+   castellano. `ModelDownloadJob` (bridge) añade velocidad (solo bytes de red, ventana de 6 s),
+   tiempo restante y «Cancelar»/«Reanudar» al asistente y a la nueva tarjeta «Modelos» de
+   Ajustes › Transcripción (descarga lo que pida la configuración guardada; el descargador llega por
+   `app_action("model_downloader")`).
+7. **Icono:** los anillos concéntricos de los nodos de la marca Bitnaga. App: baldosa nocturna lisa
+   con filo de 1 px, tres anillos blancos finos (mismo trazo, mismo hueco, de dentro afuera al 100,
+   66 y 36 % de opacidad) y un punto violeta, el único acento; a 16-24 px, dos anillos. Cada tamaño
+   del `.ico` (16-256) se dibuja a su resolución con tabla propia, centro en esquina de píxel y
+   radios `k+0,5` (trazo impar) para que los anillos caigan en la rejilla; simetría exacta (se
+   promedia la máscara con sus reflejos). Bandeja: monocromo como los iconos del sistema, tinta
+   blanca o casi negra según `SystemUsesLightTheme`, violeta solo al grabar (punto lleno) y en
+   provisional (anillo); `make_pystray_icon` carga el fotograma de `SM_CXSMICON` de
+   `tray-<estado>-<tema>.ico` (pystray cargaba 32 px y Windows lo reducía). `scripts/make_icons.py`
+   lo regenera todo (`--preview` hoja clara/oscura).
+8. **Versión visible:** tooltip «Micnaga 0.1.1 · vigilando»; «Acerca de» con «Versión X · Compilación
+   <commit> · <fecha>» (`micnaga/_build_info.py`, que debe escribir el build; en desarrollo, `git`).
+9. **Pendiente / fuera de este cambio:** `host.py` no usa aún el estado «provisional» de la bandeja
+   (el icono existe); el tema de la barra se relee al cambiar de estado, no al cambiar el tema; la
+   línea «Nada sale de tu equipo…» de «Acerca de» ya no es exacta (se añadió otra sobre GitHub);
+   `/CLOSEAPPLICATIONS` con `CloseApplications=no` en el `.iss`: sin probar si reactiva el Restart
+   Manager (inocuo: la app ya salió y `PrepareToInstall` hace `taskkill`). No se ha instalado
+   ninguna actualización real en este PC.
+
+## 34. La pastilla en reposo no gasta: WebView2 que deja de pintar, cuadrado quieto y nivel real
+
+1. **Por qué gastaba.** Medido con `psutil` sobre los `msedgewebview2` hijos (% de un núcleo):
+   9,3 % con la pastilla *oculta* (GPU 6,9, renderer 2,1). Las superposiciones se ocultan con
+   `ShowWindow` de Win32, que WinForms no ve: el control WebView2 seguía «visible» y Chromium
+   seguía produciendo fotogramas. Además el `::after` del cuadrado rojo (`dot-pulse`) era una
+   animación infinita: cada fotograma suyo era trabajo de GPU con la pastilla en pantalla.
+2. **Arreglo.** `PywebviewWindow.show/hide` ponen `webview.Visible` (=
+   `CoreWebView2Controller.IsVisible`) a la par que `ShowWindow`, en el hilo de la interfaz y solo
+   en superposiciones: oculta, la página no pinta nada. No se pausa por foco/blur (la pastilla es
+   `WS_EX_NOACTIVATE`), solo por visibilidad. El reloj solo toca el DOM cuando cambia el segundo.
+3. **Cuadrado rojo quieto** (decisión del usuario: «no me gusta que esté constantemente botando»).
+   `.pill .rec-dot::after { display: none; animation: none }`; nada en la pastilla se anima en
+   reposo (test: `document.getAnimations()` vacío tras 0,5 s).
+4. **Medidor reactivo, con el mismo aspecto de antes.** Se probó a cambiarlo por barras verticales
+   (`scaleY`) y el usuario prefirió el de siempre («horizontal y con el dither»): se mantiene la onda
+   punteada (Bayer 1-bit, `mic.wave` con `data-dither`), pero ahora refleja el audio real:
+   - *Por qué parecía enlatado:* en 8 px de alto caben 3-4 filas de celdas; el nivel pasaba por una
+     curva `^2,2` y la punta difuminada se dibujaba aun con nivel 0, así que la densidad apenas
+     variaba y lo que se veía era el patrón Bayer desplazándose con cada sondeo, sonara o no.
+   - *Ahora:* la fila (o filas) central es la línea quieta del silencio; cada fila exterior se
+     llena (difuminada) en proporción al nivel. Sin curva: `mic.levelToMeter` mapea -50..-14 dBFS a
+     0..1 (una conversación cae hacia la mitad). La tarjeta usa lo mismo; el asistente comparte
+     `mic.wave` (y por tanto el nuevo dibujo de celdas) pero sigue con su `levelToUi`: sin revisar.
+   - *Suavizado en Python* (`LevelEnvelope`, sobre el RMS por bloque de la grabadora o del monitor):
+     puerta de ruido en `LEVEL_GATE` = 0,006 (~-44 dBFS; el ruido de la sala aquí ronda 0,001 con
+     picos de 0,004), ataque 50 ms, caída 200 ms; así no titila.
+   - *Empuje, no sondeo:* un hilo envía `"lv:<micro>,<sistema>"` con `PostWebMessageAsString` a
+     `LEVELS_HZ` = 10 solo mientras la superficie está en pantalla y suena algo; tras el silencio
+     manda ceros `LEVEL_TAIL_S` (4 s) para vaciar la onda y después nada. La página no redibuja una
+     onda que ya está vacía. Oculta: nada. Fuera de la app (capturas, tests HTTP) se sigue sondeando.
+   - *Geometría constante:* el lienzo mide siempre lo mismo y las celdas se pintan en píxeles de
+     dispositivo enteros; solo cambia qué celdas se encienden.
+   - *Por qué 10 Hz y no 15:* con sonido continuo en los dos canales, 15 Hz costaba 3,7-4,8 % de
+     WebView2 y 10 Hz 2,7-3,3 % (casi todo el proceso GPU: cada paso es un fotograma de la ventana);
+     el lienzo con `willReadFrequently` (se pinta en CPU, mide 52×8) lo baja a ~2,4 %.
+5. **Medido (este PC, % de un núcleo; WebView2 = todos sus procesos; app = el proceso de Micnaga):**
+
+   | Escenario | Antes (WebView2) | Ahora (WebView2) | Ahora (app) |
+   |---|---|---|---|
+   | Pastilla oculta, en reposo | 9,27 | 0,5-1,1 | 0,3-0,6 |
+   | Pastilla visible, silencio | 4,72 | 0,2-0,6 | 0,4-0,7 |
+   | Grabando, sonido continuo en ambos canales | 3,05 | 2,4 | 0,5 |
+   | Oculta otra vez | 0,0 | 0,0-0,8 | 0,3-1,1 |
+
+   «Antes» se midió con las animaciones de Windows desactivadas y «Ahora» con ellas activadas (el
+   usuario las cambió entre medias); el ahorro en reposo no depende de eso. «Grabando» es el peor
+   caso (sonido sin pausas en micro y sistema); con voz real hay pausas y la onda se detiene en cada
+   una. La onda se desplaza a 10 columnas/s (antes 20 por sondeo).
+6. **Verificado en la ventana real** con niveles WASAPI reales (`LevelMonitor`) y un tono por los
+   altavoces: silencio = solo la línea central y 0 redibujados; con el tono la onda de «ellos» se
+   llena (filas exteriores 0 → ~50 celdas) y al acabar vuelve sola a la línea (~2 s); el lienzo mide
+   lo mismo en todas las muestras. La morfosis sigue animando (§29).
+7. **Pendiente:** con sonido continuo seguimos algo por encima del objetivo de 1-2 % (el coste es la
+   composición de la ventana transparente en cada paso); si molesta, bajar `LEVELS_HZ` a 8. La fila
+   del micro no se pudo ver moverse con audio real en este PC (el micro no captaba el tono de los
+   altavoces); el camino es el mismo que el del sistema y lo cubre el test DOM.
+
+## 35. El vivo de verdad durante la reunión y el AEC solo donde se mide eco (rama `claude/in-person-meetings-fixes`)
+
+Origen: reuniones grabadas en otro PC (instalador v0.1.1) «no parecían acabar rápido al colgar, como
+si no se hubiera transcrito nada durante la reunión»; y una reunión real con **auriculares** a la que
+se aplicó Speex porque la salida era `unknown` (§32.1).
+
+### Procesado en vivo
+
+1. **Camino completo (sin cambios de diseño):** el controlador llama a `LiveRunner.start` al empezar
+   a grabar (provisional o confirmada); `spawn_live` lanza `[sys.executable, "live", carpeta]`
+   (congelado: `micnaga.exe live …`, `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+   BELOW_NORMAL`); `cli.run_live` → `pipeline.live.run_live` trocea cada 60 s, mide eco, acondiciona,
+   VAD y transcribe los bloques estables; al colgar `LiveRunner.stop` y el worker
+   (`runner._finish_live` → `live.finish`) solo hace la cola. **El ejecutable congelado funciona:**
+   `dist\micnaga\micnaga.exe live` lanzado con la misma `Popen` que la app sobre una grabación que
+   crece (copia de la reunión real) arrancó, escribió trozos y bloques con turbo y respetó la orden
+   de parar. Su primer arranque en este PC tardó > 60 s antes de escribir nada (después, 3 s). Es la
+   prioridad baja con la CPU saturada: `run_live` baja la prioridad **antes** de importar numpy/scipy
+   y abrir el log; medido aquí con otros procesos al 85–95 %, importar numpy+scipy tarda 0,6–1,6 s con
+   prioridad normal y 66 s (o > 160 s) con `BELOW_NORMAL`. Ahora `live.log` se abre lo primero y apunta
+   el tiempo hasta estar listo.
+2. **Causas de que «no se transcribiera nada durante la reunión»** (medidas en este PC):
+   * **Esperaba sin fin si la CPU iba por encima del 85 %** (`run_live`): espera sin límite, sin log, y
+     midiendo la CPU de todo el equipo, **incluido el propio vivo** (justo después de un paso de ASR
+     se veía a sí mismo como «equipo ocupado»). En la simulación con el ejecutable congelado el
+     vivo no gastó ni 1 s de CPU en los primeros 100 s de reunión. Ahora: solo cuenta la CPU de los
+     demás (`other_cpu_percent`) y tras `MAX_BUSY_WAIT_S` (60 s) seguidos hace un paso igualmente
+     (va con prioridad baja: el sistema da la CPU antes a la reunión). Pausa, reanudación y motivo
+     quedan en `live.log`.
+   * **2 hilos no bastan para Whisper turbo** (`worker.live_threads`, pensado para Parakeet). Tramo
+     denso de la reunión real (70–310 s, 224 s de voz en 240 s de reunión, dos pistas), camino real
+     del vivo: turbo cuesta **~2 s de CPU por segundo de reunión** (1,6–2,1). RTF (s de cálculo por s
+     de reunión): 2 hilos **1,11** con prioridad normal y **2,35** con prioridad baja y el equipo
+     ocupado; 4 hilos **0,79** (prioridad normal, equipo al 89 %). Ahora `live_threads` = un tercio de
+     los núcleos físicos, entre 2 y 4 y nunca más que `processing.threads`: 4 en el i7-12700F, 3 en el
+     i5-1245U, 2 en un portátil de 4 núcleos. En el i5 probablemente siga sin llegar en una
+     conversación densa: el vivo avanza en orden y al colgar solo queda la parte que no alcanzó.
+   * **Cada «colgar» esperaba hasta 20 s** (`STOP_WAIT_S`) a que el vivo acabase su bloque (solo mira
+     la orden de parar entre bloques; un bloque de turbo con 2 hilos tarda 20–30 s): medido, se agotó
+     y se mató. Ahora 5 s; matarlo pierde como mucho ese bloque (escrituras atómicas) y el worker lo
+     rehace en segundos.
+   * **Fallos silenciosos:** `LiveRunner.start` no decía nada si el vivo estaba apagado, sin modelos
+     (p. ej. turbo aún sin bajar tras actualizar, §32.6) o a otra frecuencia; `cli.run_live` salía sin
+     log si otro proceso tenía el mutex o no había VAD. Ahora todo deja una línea en `app.log` /
+     `live.log`, y al parar se apunta si el vivo ya había salido (con su código) o cuánto tardó.
+3. **Logs nuevos (`live.log`):** arranque (hilos, motor, modo de AEC, segundos hasta estar listo),
+   carga del motor ASR, cada paso («minutes a-b, backlog N s de M grabados, K bloques (S s de voz) en
+   W s; RTF paso / total»), pausas por CPU, decisión de eco cuando cambia y un resumen al salir
+   (trozos, voz, tiempo trabajando, RTF, tiempo en pausa). En `worker.log`, `live processing
+   finished …` y el resumen del AEC.
+4. **Cola al colgar, reunión de 10 min** (primeros 600 s de la reunión real, simulación a tiempo real
+   con el vivo de este código y el pipeline entero en otro proceso como el worker; **este PC estaba
+   saturado por otros procesos (85–95 % de CPU ajena)**, así que son cifras pesimistas):
+   * **Con vivo:** el vivo (4 hilos, prioridad baja) cubrió 6 de 10 min y 11 bloques; pausado 200 s
+     por CPU ajena y aun así avanzó (antes: espera sin fin). Al colgar: parar 15 s (la simulación
+     espera 20; la app ahora mata a los 5 s), FLAC 1 s y worker 613 s = **631 s** (cola de 4 min de
+     reunión: 543 s, con 46 s solo para cargar turbo; diarización 69 s).
+   * **Sin vivo:** la medida se cortó (reinicio de la sesión). Estimación con el coste medido (~2 s
+     de CPU por s de reunión, 0,62 s de ASR por s de reunión con 6 hilos en §32.5): ~370 s de ASR +
+     ~70 s de diarización ≈ **7–8 min con el equipo libre**, bastante más con esta carga.
+   * Con el equipo libre y 4 hilos (RTF 0,79 medido) el vivo llega y la cola sería el último minuto
+     (~40–60 s de ASR) + diarización (~70 s por 10 min) + carga del modelo: **~2–3 min**. Sin medir
+     con el equipo libre: este PC nunca lo estuvo durante la prueba.
+5. **Lo que pedir al otro PC:** `%APPDATA%\Micnaga\logs\live.log` (si no existe, el vivo nunca
+   arrancó: buscar en `app.log` «live processing not started: …») y las líneas `live processing
+   finished` / `live processing completed` de `worker.log`. Con v0.1.1 el `live.log` no dice por qué
+   esperaba; con esta versión sí.
+
+### Cancelación de eco por medida (`pipeline/aec/policy.py`)
+
+6. **Una sola regla, en el lote y en el vivo.** Antes el lote decidía todo o nada con la pista entera
+   y el vivo trozo a trozo con 5 min de contexto: podían discrepar y lo del vivo es lo que se usa al
+   colgar. Ahora los dos recorren la pista alineada en trozos de 60 s; para cada trozo se mide el eco
+   en los 5 min anteriores (`measure_echo`) y, si toca, se cancela `[S − 8 s, E)` con un cancelador
+   nuevo y se queda `[S, E)`; el vivo usa la misma función (`decide_slice`) con los mismos límites
+   (`slice_bounds`). Test: con fuga desde el minuto 2 solo se cancelan los trozos 2 y 3, y vivo y lote
+   dan las mismas decisiones (con eco, sin eco y con auriculares). `live.FORMAT` 3 invalida cachés.
+7. **Modos (Ajustes › Transcripción › «Cancelación de eco», no avanzado):** «Automática» (`auto`, por
+   defecto): solo donde se mide eco; con auriculares en todo el tramo no se mira el audio
+   (`output_kinds_during`, sigue los cambios de dispositivo); `unknown` decide la medida, no se trata
+   como altavoces. «Siempre» (`always`): todo tramo en el que suene el sistema, también con
+   auriculares (es lo que pide el nombre; sin audio del sistema no hay nada que cancelar).
+   «Desactivada» (`off`). Valores antiguos: `webrtc`/`speex` → `always` (al cargar, sin subir
+   `CONFIG_VERSION`); `create_echo_canceller(config, "webrtc")` sigue existiendo para el banco.
+   **Efecto secundario:** quien eligió «WebRTC AEC3» en la interfaz antigua pasa a «Siempre» (antes
+   también se medía el eco).
+8. **Umbral de coherencia 0,1 → 0,3** (`echo_check.ECHO_MIN_COHERENCE`). En la reunión real con
+   auriculares, las 139 ventanas de 5 min (rejilla de 60 s desplazada 0/20/40 s) llegan a 0,098 con
+   `echo_db` −28,5 dB y la ventana 70–190 s da **0,105 / −20,9 dB: con 0,1 el vivo activaba WebRTC
+   ahí sin eco**. Un eco audible da mucho más: fuga simulada sobre la reunión real 0,86–0,95 (de −12 a
+   −35 dB respecto a la voz) y sintética 0,42 con −28 dB.
+9. **WebRTC (AEC3) revisado:** solo AEC (`enable_ns/agc/vad=False`, `mobile_mode=false`), formato
+   16 kHz, la referencia se alinea antes con GCC-PHAT (sin `set_stream_delay`: AEC3 estima el resto) y
+   se compensan sus 8 ms de latencia. **WER del micro, tramo A (70–280 s, 530 palabras seguras, turbo,
+   referencia de §32)**, AEC sobre 0–300 s con la rejilla de 60 s; eco simulado = pista del sistema
+   retrasada 60 ms, sala de 300 ms y paso banda de altavoz de portátil, a −12 / −6 dB de la voz:
+
+   | Micro | Desactivada | Automática | Siempre |
+   | --- | ---: | ---: | ---: |
+   | sin eco (auriculares, real) | 8,7 % | **8,7 %** (no aplica) | 16,2 % (D 15 → 51) |
+   | eco −12 dB | 17,7 % (43 inserciones) | **11,7 %** | 11,7 % |
+   | eco −6 dB | 18,3 % (49 inserciones) | **13,4 %** | 13,4 % |
+
+   Con eco, WebRTC quita casi todas las palabras del remoto que se colaban (43–49 → 4) a cambio de
+   unas pocas propias; sin eco solo borra palabras propias. «Automática» se queda con lo mejor de cada
+   fila. (Las inserciones sin AEC las limpiaría en parte la etapa 9; aquí se mide solo el micro.)
+10. **Coste:** la medida por trozo cuesta ~0,4–0,9 s por minuto de reunión en el lote (ventanas de
+   20 s en caché, `measure_echo(offset, cache)`: mismo resultado que sin caché, comprobado), ~1–2 s
+   por minuto en el vivo. Log por reunión: «echo canceller (mode auto): applied with webrtc-aec3 in
+   4/47 min: …; reasons {...}, max coherence …» o «not applied (no echo)»; la marca de la etapa 3
+   lleva `mode`, `applied_slices`, `reasons` y `max_coherence`.
+11. **Pendiente / sin verificar:** el otro PC (no hay sus logs); el i5-1245U real; el ejecutable
+    congelado con este código (`dist` es anterior: hay que reconstruir); una reunión con altavoces de
+    verdad (solo eco simulado); la cola sin vivo de 10 min (cortada) y todo con el equipo libre;
+    `pipeline/cli.py` (fuera de la lista de ficheros de esta tarea) cambió solo para abrir el log
+    antes y registrar las salidas tempranas.

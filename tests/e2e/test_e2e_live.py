@@ -56,7 +56,7 @@ def test_live_and_batch_transcripts_match_on_a_tts_meeting(tmp_storage: Path) ->
 
     cfg = Config()
     cfg.processing.threads = 6
-    cfg.processing.diarization = "onnx"
+    cfg.processing.diarization = "diarize"
     save_config(cfg)
     session = build_session(tmp_storage / "_rec_live", seconds=215.0, confirmed=True).folder
     batch = tmp_storage / "_rec_batch"

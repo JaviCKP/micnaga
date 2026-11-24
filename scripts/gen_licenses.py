@@ -115,6 +115,10 @@ MANUAL_LICENSES: dict[str, tuple[str, str]] = {
 NOT_BUNDLED: dict[str, str] = {
     "av": "PyAV: sus ruedas traen FFmpeg con libx264/libx265 (GPL-2.0+). Sustituido por "
     "packaging/stubs/av; faster-whisper solo recibe arrays.",
+    "pyaec": "pyaec (SpeexDSP, `aec.dll`): su DLL no esta firmada ni declara editor y Windows/antivirus "
+    "bloquearon la instalacion en un PC. Solo para desarrollo (extra `aec-speex`); el instalador "
+    "usa webrtc (aec-audio-processing). Mientras la instalacion de desarrollo lo declare en el "
+    "extra `aec` aparece en la clausura, pero no viaja.",
     "kaldiio": "kaldiio (nttcslab-sp): su LICENSE es un «Software License Agreement for Evaluation» "
     "(uso interno de evaluacion, prohibe redistribuir) verificado en el paquete y en el repo "
     "upstream. Solo la importa wespeakerruntime en `extract_embedding_kaldiio`, que Micnaga no "
@@ -128,6 +132,7 @@ FORBIDDEN_BINARIES: tuple[tuple[str, str], ...] = (
     (r"cudnn", "NVIDIA cuDNN: licencia propietaria; solo sirve con CUDA"),
     (r"^(dbghelp|dbgcore)\.dll$", "DLL de depuracion de Windows"),
     (r"libfdk", "FDK-AAC: licencia no libre"),
+    (r"^aec\.dll$", "pyaec/SpeexDSP: DLL sin firmar (bloqueada por antivirus); solo desarrollo"),
 )
 
 # --------------------------------------------------------------------------- SPDX
@@ -524,17 +529,17 @@ README.
 
 | Modelo | Autor / origen | Licencia | Notas y atribucion |
 | --- | --- | --- | --- |
-| **Parakeet TDT 0.6B v3** (int8, ONNX) | NVIDIA, `nvidia/parakeet-tdt-0.6b-v3`; conversion ONNX: `istupakov/parakeet-tdt-0.6b-v3-onnx` | **CC-BY-4.0** | Atribucion obligatoria: © NVIDIA. Modelo derivado (conversion ONNX/int8) de terceros. |
-| **WeSpeaker voxceleb ResNet34-LM** (ONNX) | WeSpeaker, `Wespeaker/wespeaker-voxceleb-resnet34-LM` | **CC-BY-4.0** (segun la ficha de Hugging Face); codigo WeSpeaker: Apache-2.0 | Atribucion obligatoria: WeSpeaker. Embeddings de hablante para la diarizacion (variante `full`). |
+| **Parakeet TDT 0.6B v3** (int8, ONNX; motor opcional) | NVIDIA, `nvidia/parakeet-tdt-0.6b-v3`; conversion ONNX: `istupakov/parakeet-tdt-0.6b-v3-onnx` | **CC-BY-4.0** | Atribucion obligatoria: © NVIDIA. Modelo derivado (conversion ONNX/int8) de terceros. |
+| **WeSpeaker voxceleb ResNet34-LM** (ONNX) | WeSpeaker, `Wespeaker/wespeaker-voxceleb-resnet34-LM` | **CC-BY-4.0** (segun la ficha de Hugging Face); codigo WeSpeaker: Apache-2.0 | Atribucion obligatoria: WeSpeaker. Embeddings de hablante para la diarizacion (`diarize`) y las huellas de voz. |
 | **Silero VAD** (ONNX) | Silero Team, `snakers4/silero-vad`; conversion: `istupakov/silero-vad-onnx` | MIT | |
-| **faster-whisper small** (opcional) | Systran, `Systran/faster-whisper-small` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Solo si el usuario elige Whisper. |
-| **pyannote speaker-diarization community-1** (opcional, **no instalado**) | pyannote.audio / pyannoteAI | **CC-BY-4.0** | Alternativa de diarizacion (extra `pyannote`); atribucion: pyannote.audio / pyannoteAI. |
+| **faster-whisper large-v3-turbo** (por defecto) | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Motor de transcripcion por defecto y de «Mejorar transcripcion». |
+| **faster-whisper small / large-v3** (opcionales) | Systran, `Systran/faster-whisper-small`, `Systran/faster-whisper-large-v3` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Solo si el usuario los elige. |
 
 ### Bibliotecas nativas de cancelacion de eco (no son modelos)
 
 | Componente | Origen | Licencia |
 | --- | --- | --- |
-| `pyaec` (`aec.dll`) | https://github.com/thewh1teagle/aec | MIT. Envuelve **SpeexDSP** (BSD-3-Clause, Xiph.Org). |
+| `pyaec` (`aec.dll`) | https://github.com/thewh1teagle/aec | MIT. Envuelve **SpeexDSP** (BSD-3-Clause, Xiph.Org). **No se incluye en el instalador** (DLL sin firmar; solo desarrollo). |
 | `aec-audio-processing` (`webrtc-audio-processing-2-1.dll`) | enlace de WebRTC Audio Processing (AEC3) | BSD-3-Clause; **WebRTC** (BSD-3-Clause, The WebRTC project authors) incluye abseil (Apache-2.0). |
 """
 

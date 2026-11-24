@@ -1,21 +1,18 @@
-"""Etapa 3: eliminacion de eco, solo con altavoces (spec 8.3).
+"""Etapa 3: eliminacion de eco, solo donde hace falta (spec 8.3, DECISIONS §35).
 
-Se aplica si ``output_kind != "headphones"`` (altavoces o desconocido) **o** si algun cambio de
-dispositivo de la pista del sistema paso a algo que no son auriculares (caso trampa «cambio de
-auriculares a altavoces a mitad»). El cancelador (``registry``/``processing.aec``) limpia la pista
-del micro usando la del sistema como referencia; la del sistema no cambia.
-
-Antes de cancelar se **mide** si hay eco (``aec.echo_check.measure_echo``: pico de GCC-PHAT +
-coherencia entre pistas, ~1 s): con auriculares o un altavoz que no llega al micro el
-cancelador solo gasta tiempo (2 min en una reunion de 47 min), asi que se salta y la decision
-queda en el log y en la marca (``info.echo``). Si se oye el sistema en el micro se cancela como
-siempre. La segunda capa (etapa 9) sigue siendo la red de seguridad.
+La regla esta en ``aec.policy`` y es la misma que usa el vivo: segun el modo de
+``processing.aec`` («Automatica» / «Siempre» / «Desactivada») y, en «Automatica», segun el eco
+**medido** (``aec.echo_check``) en cada trozo de 60 s (mirando los 5 min anteriores). Con
+auriculares en «Automatica» no se mira el audio; una salida desconocida no se trata como
+altavoces: decide la medida. El cancelador (``registry``/``processing.aec``) limpia la pista
+del micro usando la del sistema como referencia; la del sistema no cambia. La decision de cada
+trozo queda en el log y en la marca (``info.applied_slices``, ``info.reasons``).
 
 Degradacion: con ``aec = "off"`` o si no hay ninguna implementacion instalada
 (``EngineUnavailableError``) la etapa termina sin salida y deja constancia en su marca; la segunda
 capa (etapa 9) es la red de seguridad.
 
-Salida: ``work/03_mic_aec.wav`` (si se aplico).
+Salida: ``work/03_mic_aec.wav`` (si se cancelo algun trozo).
 """
 
 from __future__ import annotations
@@ -28,7 +25,7 @@ import numpy as np
 
 from micnaga.pipeline.stages.base import StageContext, StageResult
 from micnaga.registry import EngineUnavailableError
-from micnaga.types import AudioArray, CaptureMeta
+from micnaga.types import CaptureMeta
 
 log = logging.getLogger(__name__)
 
@@ -36,25 +33,10 @@ OUTPUT = "03_mic_aec.wav"
 
 
 def needs_aec(meta: CaptureMeta) -> bool:
-    if meta.output_kind != "headphones":
-        return True
-    return any(c.track == "system" and c.output_kind != "headphones" for c in meta.device_changes)
+    """``False`` solo con auriculares toda la reunion (en «Automatica» no se mira el audio)."""
+    from micnaga.pipeline.aec.policy import headphones_only
 
-
-def check_echo(mic: AudioArray, ref: AudioArray, sr: int) -> dict[str, Any]:
-    """Mide el eco y lo deja en el log (solo metricas). ``info["echo"]`` dice si cancelar."""
-    from micnaga.pipeline.aec.echo_check import measure_echo
-
-    result = measure_echo(mic, ref, sr).to_dict()
-    log.info(
-        "echo check: %s (coherence=%.3f, echo=%.1f dB, delay=%.0f ms, system speech=%.0f s)",
-        "echo, cancelling" if result["echo"] else "negligible, AEC skipped",
-        result["coherence"],
-        result["echo_db"],
-        result["delay_ms"],
-        result["active_s"],
-    )
-    return result
+    return not headphones_only(meta)
 
 
 def _close(canceller: Any) -> None:
@@ -64,10 +46,13 @@ def _close(canceller: Any) -> None:
 
 
 def run(ctx: StageContext) -> StageResult:
-    if not needs_aec(ctx.meta):
-        return StageResult([], {"skipped": "headphones"})
-    if ctx.config.processing.aec == "off":
-        return StageResult([], {"skipped": "off"})
+    from micnaga.pipeline.aec.policy import aec_mode, cancel_track, precheck
+
+    mode = aec_mode(ctx.config.processing.aec)
+    skip = precheck(mode, ctx.meta)
+    if skip is not None:
+        log.info("echo canceller (mode %s): not applied (%s)", mode, skip)
+        return StageResult([], {"skipped": skip})
     try:
         canceller = ctx.deps.create_aec(ctx.config)
     except EngineUnavailableError as exc:
@@ -78,17 +63,20 @@ def run(ctx: StageContext) -> StageResult:
     try:
         mic = ctx.read_work_audio("02_mic.wav")
         ref = ctx.read_work_audio("02_system.wav")
-        echo = check_echo(mic, ref, ctx.sr)
-        if not echo["echo"]:
-            return StageResult([], {"skipped": "no echo", "echo": echo})
-        ctx.progress(0.3)
-        cleaned = np.asarray(canceller.process(mic, ref, ctx.sr), dtype=np.float32)
-        if len(cleaned) != len(mic):
-            raise ValueError(f"echo canceller returned {len(cleaned)} samples, expected {len(mic)}")
-        engine_name = canceller.name
+        cleaned, summary = cancel_track(
+            mode, ctx.meta, mic, ref, ctx.sr, canceller, progress=ctx.progress
+        )
     finally:
         _close(canceller)
         del canceller
         gc.collect()
-    ctx.write_audio(OUTPUT, cleaned)
-    return StageResult([OUTPUT], {"aec": engine_name, "echo": echo})
+    log.info("%s", summary.describe())
+    info = summary.info()
+    if cleaned is None:
+        return StageResult([], info)
+    out = np.zeros(len(mic), dtype=np.float32)
+    out[: len(cleaned)] = cleaned
+    if len(mic) > len(cleaned):
+        out[len(cleaned) :] = mic[len(cleaned) :]
+    ctx.write_audio(OUTPUT, out)
+    return StageResult([OUTPUT], info)

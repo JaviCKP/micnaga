@@ -86,14 +86,25 @@ def test_long_region_is_split_at_probability_valley() -> None:
 
 def test_group_regions_packs_blocks_up_to_max() -> None:
     regs = [SpeechRegion(0, 10), SpeechRegion(12, 20), SpeechRegion(22, 31), SpeechRegion(40, 45)]
-    blocks = group_regions(regs, 30.0)
+    blocks = group_regions(regs, 30.0, max_gap_s=None)  # silencios enteros: tramo de la pista
     assert blocks == [(0, 20), (22, 45)]
     assert all(b - a <= 30.0 + 1e-6 for a, b in blocks)
 
 
 def test_group_regions_exact_blocks() -> None:
     regs = [SpeechRegion(0, 10), SpeechRegion(12, 20), SpeechRegion(22, 31)]
-    assert group_regions(regs, 30.0) == [(0, 20), (22, 31)]
+    assert group_regions(regs, 30.0, max_gap_s=None) == [(0, 20), (22, 31)]
+
+
+def test_group_regions_counts_long_silences_as_max_gap() -> None:
+    """Por defecto un silencio cuenta como mucho ``MAX_GAP_S`` (1 s): es lo que queda tras
+    ``s06_asr.compact``, asi que un bloque puede abarcar mas de 30 s de pista con <= 30 s de
+    audio para el ASR."""
+    regs = [SpeechRegion(0, 10), SpeechRegion(12, 20), SpeechRegion(22, 31), SpeechRegion(40, 45)]
+    assert group_regions(regs, 30.0) == [(0, 31), (40, 45)]  # 10 + 1 + 8 + 1 + 9 = 29 s
+    # dos tramos de 14 s separados por 20 s de silencio: 14 + 1 + 14 = 29 s de audio compacto
+    assert group_regions([SpeechRegion(0, 14), SpeechRegion(34, 48)], 30.0) == [(0, 48)]
+    assert group_regions([SpeechRegion(0, 15), SpeechRegion(35, 50)], 30.0) == [(0, 15), (35, 50)]
 
 
 def test_group_regions_splits_oversize_region_evenly() -> None:

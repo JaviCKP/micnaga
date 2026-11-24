@@ -28,6 +28,11 @@
 .side-head .settings-btn { margin-left: auto; }
 .side-head .horas-btn:not([hidden]) + .settings-btn { margin-left: 0; }
 .side-head .settings-btn .ico { width: 17px; height: 17px; }
+/* «Grabar reunión presencial»: el primero de los botones de la derecha cuando se ve */
+.side-head .in-person-btn { margin-left: auto; }
+.side-head .in-person-btn .ico { width: 17px; height: 17px; }
+.side-head .in-person-btn:not([hidden]) ~ .horas-btn,
+.side-head .in-person-btn:not([hidden]) ~ .settings-btn { margin-left: 0; }
 .count { font: 700 26px/1 var(--display); color: var(--text-3); font-variant-numeric: tabular-nums; }
 
 .search {
@@ -80,6 +85,9 @@
   font: 500 11px/1.3 var(--mono); letter-spacing: 0.01em; color: var(--text-3); font-variant-ligatures: none;
 }
 .row-sub .dot { opacity: 0.6; }
+.row-sub { flex-wrap: wrap; row-gap: 3px; }
+.row-sub > span { white-space: nowrap; }
+.row-sub .tag-mono { flex: none; padding: 0 5px; font-size: 10px; line-height: 15px; }
 .who-dots { display: none; }
 
 .res-info { padding: 12px 10px 6px; }
@@ -231,6 +239,10 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
 .play[aria-pressed="true"] .swap > svg.a { opacity: 0; transform: scale(0.4) rotate(20deg); }
 .play[aria-pressed="true"] .swap > svg.b { opacity: 1; transform: none; }
 
+/* the speed control inside the bar has no box of its own (a box in the bar read as a card in a
+   card): a hairline divider separates it from the scrubber */
+.player .seg { position: relative; padding: 0 0 0 12px; border-radius: 0; box-shadow: none; }
+.player .seg::before { content: ""; position: absolute; left: 0; top: 4px; bottom: 4px; width: 1px; background: var(--line); }
 .clock { font: 500 12px/1 var(--mono); letter-spacing: 0.02em; min-width: 40px; color: var(--text); font-variant-numeric: tabular-nums; font-variant-ligatures: none; }
 .clock.dim { color: var(--text-3); text-align: right; }
 .scrub { position: relative; flex: 1; height: 32px; display: flex; align-items: center; touch-action: none; border-radius: 2px; }
@@ -377,7 +389,7 @@ body:has(.settings-view:not([hidden])) .ambient {
 }
 
 /* «Mejorar transcripcion»: icono discreto, confirmacion en linea y una linea de progreso */
-.hq-btn { align-self: center; opacity: 0.55; }
+.hq-btn { opacity: 0.55; } /* top-aligned, like the folder button beside it */
 .hq-btn:hover, .hq-btn:focus-visible, .hq-btn[aria-pressed="true"] { opacity: 1; }
 .hq-bar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; min-height: 22px; }
 .hq-bar[hidden] { display: none; }

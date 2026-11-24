@@ -20,8 +20,8 @@ de seguimiento. **Nada se escribe en ningún sitio hasta que pulsas «Aplicar».
 
 ## Instalar
 
-1. Descarga **[Micnaga-Setup-0.1.1.exe](https://github.com/JaviCKP/micnaga/releases/latest)** (70 MB) y ábrelo. Se instala con un clic y arranca con Windows.
-2. La primera vez descarga los modelos de voz (~700 MB) y comprueba tu micro y tu audio.
+1. Descarga **[Micnaga-Setup-0.1.1.exe](https://github.com/JaviCKP/micnaga/releases/latest)** (~124 MB) y ábrelo. Se instala con un clic, para tu usuario y sin permisos de administrador, y arranca con Windows. Se actualiza solo: cuando hay versión nueva te la ofrece y la instala con un clic.
+2. La primera vez descarga los modelos de voz (~1,7 GB) y comprueba tu micro y tu audio.
 3. Ya está. Vive en la bandeja del sistema y no tienes que abrirlo para que funcione.
 
 Requisitos: Windows 10 22H2 u 11, de 64 bits. Para la Secretaria, tener [Claude Code](https://claude.com/claude-code) con tu sesión iniciada. Todos los pasos (Odoo, Google y cómo dejarlo siempre encendido) están en **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
@@ -48,8 +48,12 @@ Cuando sueltas el micro sale *«Reunión terminada»*, y la grabación se recort
 Graba **tu micro y el audio del sistema en pistas separadas**, así que sabe qué dijiste tú y qué dijeron los demás.
 Va transcribiendo por trozos durante la reunión, en local y con prioridad baja. Al colgar solo le queda el final.
 Separa a los hablantes sin «fantasmas» y quita el eco solo cuando hay eco (con cascos se lo salta). Para una
-reunión importante, **«Mejorar transcripción»** la vuelve a escuchar entera con Whisper large-v3, y la versión
-anterior se conserva.
+reunión antigua (transcrita con Parakeet), **«Mejorar transcripción»** la vuelve a escuchar entera con Whisper
+large-v3-turbo, y la versión anterior se conserva.
+
+¿Una reunión en una sala, sin llamada? **«Grabar reunión presencial»** (en la bandeja o en la biblioteca) graba
+hasta que la paras en la píldora, sin preguntar ni cortar sola, y separa también a las personas que hablan por
+tu micro. En la biblioteca sale con la etiqueta *Presencial*.
 
 ### 3 · Primero lo esencial
 
@@ -164,12 +168,12 @@ Extras (`pyproject.toml`):
 | Extra | Qué trae |
 | --- | --- |
 | *(núcleo)* | captura, vigilante, almacén SQLite, VAD (Silero en ONNX), utilidades del pipeline |
-| `asr` | Parakeet (`onnx-asr`) y Whisper (`faster-whisper`); incluye `sherpa-onnx`, hoy sin uso |
+| `asr` | Whisper (`faster-whisper`, por defecto) y Parakeet (`onnx-asr`); incluye `sherpa-onnx`, hoy sin uso |
 | `diar` | diarización con `diarize`. **Arrastra torch (~1,3 GB).** Sin este extra todo lo remoto es `S1` |
-| `aec` | cancelación de eco: Speex (`pyaec`, ganador) y WebRTC (`aec-audio-processing`) |
+| `aec` | cancelación de eco WebRTC (`aec-audio-processing`); Speex (`pyaec`) solo en `aec-speex`/`dev`, no viaja en el instalador |
 | `ui` | `pywebview` (WebView2), `pystray`, `windows-toasts`, `Pillow` |
 | `bench` / `dev` | métricas WER/DER; herramientas de desarrollo (ruff, mypy, pytest, PyInstaller) |
-| `pyannote` | alternativa de diarización (no instalada por defecto; también torch) |
+| `pyannote` | solo para comparativas de diarización (la app usa únicamente `diarize`) |
 
 ### Primer arranque
 
@@ -178,12 +182,13 @@ verificación SHA-256) y comprueba el micro y el audio del sistema:
 
 | Modelo | Tamaño | |
 | --- | --- | --- |
-| Parakeet TDT 0.6B v3 (int8, ONNX) | ~670 MB | por defecto |
+| faster-whisper `large-v3-turbo` | ~1,6 GB | por defecto (transcripción) |
 | Silero VAD (ONNX) | ~2 MB | por defecto |
-| WeSpeaker ResNet34-LM (ONNX) | ~25 MB | por defecto (variante con diarización) |
-| faster-whisper `small` | ~486 MB | opcional (`processing.asr_engine = "whisper"`) |
+| WeSpeaker ResNet34-LM (ONNX) | ~25 MB | por defecto (diarización con `diarize`) |
+| Parakeet TDT 0.6B v3 (int8, ONNX) | ~670 MB | opcional (`processing.asr_engine = "parakeet"`) |
+| faster-whisper `small` / `large-v3` | ~486 MB / ~3,1 GB | opcionales (`processing.whisper_model`) |
 
-Total por defecto ≈ 700 MB. Se guardan en `%APPDATA%\Micnaga\models` (o `MICNAGA_MODELS`).
+Total por defecto ≈ 1,7 GB. Se guardan en `%APPDATA%\Micnaga\models` (o `MICNAGA_MODELS`).
 
 ### Uso
 
@@ -278,10 +283,9 @@ variables de entorno:
 
 ```powershell
 .\scripts\build.ps1                  # PyInstaller onedir + instalador Inno Setup (dist\installer)
-.\scripts\build.ps1 -Variant torch   # respaldo de desarrollo (diarize + torch); no se distribuye
 ```
 
-* **Un solo instalador** `Micnaga-Setup-<version>.exe` (~69 MiB): programa completo sin torch, con diarización ONNX; los modelos (~700 MB) se descargan solos en el primer arranque. La variante `torch` es solo un respaldo de desarrollo.
+* **Un solo instalador** `Micnaga-Setup-<version>.exe` (~124 MiB): programa completo con la diarización `diarize` (torch CPU recortado); los modelos (~1,7 GB) se descargan solos en el primer arranque. Detalles en `DECISIONS.md` §31.
 * Inno Setup 6 es necesario para el instalador (`winget install JRSoftware.InnoSetup`); sin `iscc.exe` solo se genera `dist\micnaga`.
   Instalación **de un clic**, por usuario y sin administrador; acceso directo con `AppUserModelID` para los toasts;
   «Arrancar con Windows» siempre activo (se apaga en Ajustes); al desinstalar se pregunta antes de borrar tus datos.
@@ -304,12 +308,11 @@ Código de Micnaga: [MIT](LICENSE). Dependencias: [`THIRD_PARTY_LICENSES.md`](TH
 Modelos (se descargan en el primer arranque; no se redistribuyen con el código). **La atribución es
 obligatoria** (CC-BY-4.0) y se muestra también en «Acerca de»:
 
-* **NVIDIA Parakeet TDT 0.6B v3**: © NVIDIA, licencia **CC-BY-4.0**
+* **NVIDIA Parakeet TDT 0.6B v3** (motor opcional): © NVIDIA, licencia **CC-BY-4.0**
   (`nvidia/parakeet-tdt-0.6b-v3`; conversión ONNX int8 de `istupakov/parakeet-tdt-0.6b-v3-onnx`).
 * **WeSpeaker ResNet34-LM (VoxCeleb)**: WeSpeaker, licencia **CC-BY-4.0** según su ficha de Hugging Face
   (`Wespeaker/wespeaker-voxceleb-resnet34-LM`; el código de WeSpeaker es Apache-2.0).
-* **pyannote speaker-diarization community-1** (alternativa opcional, no instalada por defecto):
-  pyannote.audio / pyannoteAI, licencia **CC-BY-4.0**.
-* Silero VAD (MIT), faster-whisper small de Systran y los pesos de OpenAI Whisper (MIT).
+* Silero VAD (MIT) y los pesos de OpenAI Whisper (MIT): `large-v3-turbo` (conversión de mobiuslabsgmbh),
+  `small` y `large-v3` (conversiones de Systran).
 
-Cancelación de eco: `pyaec` (MIT) sobre SpeexDSP (BSD-3) y WebRTC Audio Processing (BSD-3).
+Cancelación de eco: WebRTC Audio Processing (BSD-3); `pyaec` (MIT) sobre SpeexDSP (BSD-3) solo en desarrollo.

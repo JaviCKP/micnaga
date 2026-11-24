@@ -28,8 +28,10 @@ from micnaga.watcher.machine import (
     PopupHover,
     PrivatePause,
     RecordingFailed,
+    RecordInPerson,
     RecordNow,
     ResumeWatching,
+    StartRecording,
     SuspendWatching,
     Tick,
     Undo,
@@ -150,7 +152,12 @@ class Watcher:
                 "ignored": sorted(m.ignored_keys),
                 "session": None
                 if session is None
-                else {"title": session.title, "code": session.code, "manual": session.manual},
+                else {
+                    "title": session.title,
+                    "code": session.code,
+                    "manual": session.manual,
+                    "in_person": session.in_person,
+                },
             }
         info["poll_errors"] = self._poll_errors
         info["last_error"] = self._last_error
@@ -171,6 +178,12 @@ class Watcher:
     def record_now(self) -> None:
         """Tray «Grabar ahora» (tambien confirma una grabacion provisional)."""
         self._submit(RecordNow())
+
+    def record_in_person(self) -> bool:
+        """«Grabar reunion presencial» (tray / biblioteca). ``True`` si empezo a grabar;
+        ``False`` si ya habia una grabacion en marcha (no se hace nada)."""
+        actions = self._submit(RecordInPerson())
+        return any(isinstance(a, StartRecording) for a in actions)
 
     def user_stop(self) -> None:
         """Boton parar de la pastilla / tray."""
@@ -208,7 +221,8 @@ class Watcher:
 
     # ------------------------------------------------------------------ nucleo
 
-    def _submit(self, event: Event) -> None:
+    def _submit(self, event: Event) -> list[Action]:
+        """Paso de la maquina + despacho. Devuelve las acciones que produjo este evento."""
         with self._lock:
             actions = self._machine.step(event, self._clock())
             self._pending.extend(actions)
@@ -221,6 +235,7 @@ class Watcher:
                 self._on_state_change(state)
             except Exception:
                 log.exception("watcher state listener failed")
+        return actions
 
     def _drain(self) -> None:
         with self._dispatch_lock:

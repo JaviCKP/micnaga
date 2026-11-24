@@ -366,6 +366,63 @@ def test_run_live_stops_when_asked_and_yields_when_the_cpu_is_busy(
     assert [s.index for s in LiveProcessor(session, _config(), engines).cached_slices()] == [0, 1]
 
 
+def _owned_recording(session: Path) -> None:
+    import os
+
+    import psutil
+
+    _as_recording(session)
+    meta = CaptureMeta.from_json((session / paths.CAPTURE_JSON).read_text(encoding="utf-8"))
+    meta = replace(
+        meta,
+        extra={
+            **meta.extra,
+            "pid": os.getpid(),
+            "pid_create_time": psutil.Process().create_time(),
+        },
+    )
+    (session / paths.CAPTURE_JSON).write_text(meta.to_json(), encoding="utf-8")
+
+
+def test_run_live_still_makes_progress_when_the_cpu_never_frees_up(
+    pair: tuple[Path, Path],
+) -> None:
+    """Con la CPU siempre ocupada por otros no se espera sin fin: tras ``MAX_BUSY_WAIT_S`` se
+    hace un paso (el vivo va con prioridad baja) y la cola al colgar queda corta."""
+    session, _ = pair
+    _owned_recording(session)
+    engines = engines_from_deps(fake_live_deps(load_script(session)))
+    assert engines is not None
+    sleeps: list[float] = []
+
+    def sleep(s: float) -> None:
+        sleeps.append(s)
+        if sum(sleeps) > 3 * live.MAX_BUSY_WAIT_S:
+            live.request_stop(session)
+
+    live.run_live(session, _config(), engines, cpu_percent=lambda: 99.0, sleep=sleep)
+    assert [s.index for s in LiveProcessor(session, _config(), engines).cached_slices()] == [0, 1]
+    busy = live.MAX_BUSY_WAIT_S / live.BUSY_WAIT_S
+    assert sleeps[: int(busy)] == [live.BUSY_WAIT_S] * int(busy)
+
+
+def test_cpu_load_does_not_count_the_live_process_itself(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Justo despues de un paso de ASR el equipo va al 60 %, pero 50 de esos puntos son del
+    propio vivo (4 nucleos de 8): para decidir si ceder solo cuenta el 10 % ajeno."""
+    import psutil
+
+    class Me:
+        def cpu_percent(self, interval: float | None = None) -> float:
+            return 400.0
+
+    monkeypatch.setattr(psutil, "Process", lambda: Me())
+    monkeypatch.setattr(psutil, "cpu_count", lambda logical=True: 8)
+    monkeypatch.setattr(psutil, "cpu_percent", lambda interval=None: 60.0)
+    assert live.other_cpu_percent()() == pytest.approx(10.0)
+
+
 @pytest.mark.parametrize("why", ["stopped", "discarded", "gone"])
 def test_run_live_exits_when_recording_ends_or_is_discarded(
     pair: tuple[Path, Path], why: str

@@ -16,10 +16,12 @@ from collections.abc import Callable
 from dataclasses import replace
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 
 from micnaga import paths
+from micnaga.capture.session import mark_in_person
 from micnaga.store.db import Database
 from micnaga.types import (
     EnginesInfo,
@@ -196,6 +198,10 @@ def build_demo_library(root: Path, *, now: datetime | None = None, audio: bool =
             d = root / folder
             d.mkdir(parents=True, exist_ok=True)
             segs = _build_segments(dur, ids, nseg * (3 if with_audio else 1), seed=i + 1)
+            in_person = title == "Sync con diseño"
+            # la mas antigua, de antes de Whisper: la unica con «Mejorar transcripcion»
+            last = i == len(specs) - 1
+            asr = "parakeet-tdt-0.6b-v3-int8" if last else "faster-whisper-large-v3-turbo-int8"
             speakers = [Speaker("me", "Yo")] + [
                 Speaker(s, names.get(s, f"Hablante {s[1:]}")) for s in ids if s != "me"
             ]
@@ -212,14 +218,17 @@ def build_demo_library(root: Path, *, now: datetime | None = None, audio: bool =
                     title=title,
                     start=start.isoformat(),
                     duration_s=float(dur),
-                    meet_code=code,
+                    meet_code=None if in_person else code,
                     output_device="headphones",
+                    source="presencial" if in_person else "meet",
                 ),
                 speakers=speakers,
                 segments=segs,
                 markers=markers,
-                engines=EnginesInfo(asr="parakeet-tdt-0.6b-v3-int8", diarization="diarize-demo"),
+                engines=EnginesInfo(asr=asr, diarization="diarize-demo"),
             )
+            if in_person:
+                mark_in_person(d)
             (d / paths.TRANSCRIPT_JSON).write_text(tr.to_json(), encoding="utf-8")
             db.index_transcript(folder, tr)
             if with_audio and audio:
@@ -293,7 +302,7 @@ class FakeLibraryOps:
 def fake_download_models(progress: Callable[[ModelProgress], None], *, speed: float = 1.0) -> None:
     """Descarga simulada de 3 modelos con verificacion SHA-256 (~6 s a ``speed=1``)."""
     models = [
-        ("Parakeet TDT 0.6B v3 (int8)", 640_000_000),
+        ("Whisper large-v3-turbo", 1_620_000_000),
         ("Silero VAD", 2_300_000),
         ("Diarización (WeSpeaker)", 26_000_000),
     ]
@@ -324,7 +333,7 @@ def fake_diagnostics() -> list[Diagnostic]:
     ]
 
 
-def demo_event_logger(log: Callable[[str], None] = print) -> dict[str, Callable[..., None]]:
+def demo_event_logger(log: Callable[[str], None] = print) -> dict[str, Callable[..., Any]]:
     """Callbacks que solo imprimen (para ``demo``)."""
     return {
         name: (lambda *a, _n=name: log(f"[callback] {_n}{a if a else ''}"))

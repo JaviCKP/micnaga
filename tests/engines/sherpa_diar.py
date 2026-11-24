@@ -31,7 +31,7 @@ from micnaga.types import AudioArray, Turn
 
 if TYPE_CHECKING:
     from micnaga.config import Config
-    from micnaga.pipeline.engines.diar.onnx import OnnxDiarizer
+    from micnaga.pipeline.engines.diar.diarize import DiarizeDiarizer
 
 SEGMENTATION_GROUP = models.PYANNOTE_SEG_GROUP
 SEGMENTATION_FILE = "model.onnx"
@@ -69,7 +69,7 @@ class SherpaDiarizer:
         self._threshold = threshold
         self._wespeaker = wespeaker
         self._config = config
-        self._embedder: OnnxDiarizer | None = None
+        self._embedder: DiarizeDiarizer | None = None
         self.name = name or f"sherpa-onnx-pyannote-seg3+{embedding.stem}"
         self._sd: Any = self._build(None)
 
@@ -109,11 +109,9 @@ class SherpaDiarizer:
         if self._embedder is None:
             if self._wespeaker is None:
                 return {}
-            from micnaga.pipeline.engines.diar.onnx import OnnxDiarizer
+            from micnaga.pipeline.engines.diar.diarize import DiarizeDiarizer
 
-            self._embedder = OnnxDiarizer(
-                self._wespeaker, config=self._config, threads=self._threads
-            )
+            self._embedder = DiarizeDiarizer(self._wespeaker, threads=self._threads)
         return self._embedder.embed(audio, sr, turns)
 
     def close(self) -> None:

@@ -8,13 +8,12 @@
 ;
 ; Compilar (despues de `scripts\build.ps1`, que genera dist\micnaga):
 ;   iscc /DAppVersion=0.1.0 packaging\micnaga.iss       -> dist\installer\Micnaga-Setup-<version>.exe
-;   iscc /DVariant=torch   packaging\micnaga.iss        -> solo desarrollo (diarize + torch), no se distribuye
+; Firmado (lo hace build.ps1 si hay certificado; ver sus notas):
+;   iscc /DSign=1 "/Smicnaga=$qC:\...\signtool.exe$q sign /fd sha256 /tr <tsa> /td sha256 /sha1 <huella> $f" ...
+; Sin firma, Windows/SmartScreen/antivirus muestran «editor desconocido» y pueden bloquearlo.
 ;
 ; Instalacion silenciosa (despliegue): Micnaga-Setup-<version>.exe /VERYSILENT
 
-#ifndef Variant
-  #define Variant "standard"
-#endif
 #ifndef AppVersion
   #define AppVersion "0.1.1"
 #endif
@@ -26,14 +25,16 @@
 #define AppUserModelId "es.micnaga.Micnaga"
 #define RunKey "Software\Microsoft\Windows\CurrentVersion\Run"
 #define UninstallKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\{C0D17A64-EEEB-4A5C-90DB-DB3776EEFF2A}_is1"
+; Host de native messaging de la extension de Meet (DECISIONS §15): nombre e ID fijo de la extension
+; (clave publica en extension/manifest.json). Mismo manifiesto que scripts\register_native_host.ps1.
+#define HostName "es.micnaga.host"
+#define ExtensionId "npfamnnohhilpnfalmlamccajpdandca"
 
-#if Variant == "torch"
-  #define SourceDir "..\dist\micnaga-torch"
-  #define OutputName "Micnaga-Setup-" + AppVersion + "-torch"
-#else
-  #define SourceDir "..\dist\micnaga"
-  #define OutputName "Micnaga-Setup-" + AppVersion
-#endif
+; Un unico producto (incluye la diarizacion con torch CPU).
+#define SourceDir "..\dist\micnaga"
+#define OutputName "Micnaga-Setup-" + AppVersion
+; Runtime de WebView2 (Evergreen), segun la guia de Microsoft: valor "pv" con la version instalada.
+#define WebView2Key "Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
 
 [Setup]
 ; GUID propio de Micnaga: no cambiarlo entre versiones (permite actualizar/desinstalar).
@@ -71,9 +72,25 @@ Compression=lzma2/ultra64
 SolidCompression=yes
 WizardStyle=modern
 MinVersion=10.0.19045
+#ifdef Sign
+; Firma el instalador y el desinstalador con la orden "micnaga" que pasa build.ps1 (/Smicnaga=...).
+SignTool=micnaga
+SignedUninstaller=yes
+#endif
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
+
+[UninstallDelete]
+; El manifiesto del host lo escribe [Code] (Inno no lo registra como fichero instalado).
+Type: files; Name: "{app}\{#HostName}.json"
+
+[InstallDelete]
+; Al actualizar, Inno solo sobrescribe: lo que la version nueva ya no trae se quedaria (p. ej.
+; _internal\pyaec\aec.dll, sin firmar, o modulos retirados). Se borra el runtime anterior entero.
+; Va despues de PrepareToInstall, que ya ha cerrado la app. Los datos del usuario
+; (%APPDATA%\Micnaga, Documentos\Micnaga) no estan aqui.
+Type: filesandordirs; Name: "{app}\_internal"
 
 [Files]
 ; La carpeta congelada completa. Hay que conservar la estructura onedir (DLL, .pyd y pystray/*.py
@@ -88,10 +105,18 @@ Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "app
 ; Arranque con Windows SIEMPRE activo: mismo valor y mismo comando que micnaga/ui/startup.py.
 ; Al ACTUALIZAR solo se reescribe si ya existia (asi se respeta quien lo apago en Ajustes).
 Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; ValueData: """{app}\{#AppExe}"" app"; Check: ShouldWriteRunKey
+; Host de native messaging (por usuario, sin administrador): cada navegador lee el manifiesto que
+; escribe [Code] en {app}. El navegador solo lanza el host si la extension de Micnaga se conecta.
+Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
 
 [Run]
-; Arranca Micnaga al terminar, tambien en instalaciones silenciosas. Sin "postinstall": no hay
-; pagina final, asi que se ejecuta siempre. runasoriginaluser = con la cuenta del usuario.
+; Arranca Micnaga al terminar, TAMBIEN en instalaciones silenciosas: es lo que relanza la app tras
+; una actualizacion automatica (micnaga/updates.py ejecuta el instalador con /VERYSILENT
+; /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS). Sin "postinstall" (exige pagina final y con
+; /VERYSILENT no habria nada que marcar) ni "skipifsilent": una entrada asi se ejecuta siempre.
+; runasoriginaluser = con la cuenta del usuario.
 Filename: "{app}\{#AppExe}"; Parameters: "app"; Flags: nowait runasoriginaluser
 
 [UninstallRun]
@@ -148,6 +173,63 @@ function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   StopMicnaga();
   Result := '';
+end;
+
+// ---------------------------------------------------------------------------------------------
+// WebView2: las ventanas de Micnaga son WebView2. Viene con Windows 11 y Edge lo instala en casi
+// todos los Windows 10; si falta, la app solo tendria la bandeja. No bloquea la instalacion: se
+// avisa (nunca en una instalacion silenciosa: solo queda en el log) y se ofrece la descarga.
+// ---------------------------------------------------------------------------------------------
+
+function HasWebView2Key(RootKey: Integer; SubKey: String): Boolean;
+var
+  Version: String;
+begin
+  Result := RegQueryStringValue(RootKey, SubKey, 'pv', Version) and (Version <> '') and
+            (Version <> '0.0.0.0');
+end;
+
+function HasWebView2(): Boolean;
+begin
+  Result := HasWebView2Key(HKLM32, 'SOFTWARE\{#WebView2Key}') or
+            HasWebView2Key(HKLM64, 'SOFTWARE\{#WebView2Key}') or
+            HasWebView2Key(HKCU, 'Software\{#WebView2Key}');
+end;
+
+// Manifiesto del host de native messaging (el [Registry] apunta aqui). Se borra con {app}.
+procedure WriteHostManifest();
+var
+  HostPath, Json: String;
+begin
+  HostPath := ExpandConstant('{app}\micnaga-host.exe');
+  StringChangeEx(HostPath, '\', '\', True);
+  Json := '{' + #13#10 +
+          '  "name": "{#HostName}",' + #13#10 +
+          '  "description": "Micnaga: senal de llamada de Google Meet para el vigilante",' + #13#10 +
+          '  "path": "' + HostPath + '",' + #13#10 +
+          '  "type": "stdio",' + #13#10 +
+          '  "allowed_origins": ["chrome-extension://{#ExtensionId}/"]' + #13#10 +
+          '}' + #13#10;
+  if not SaveStringToFile(ExpandConstant('{app}\{#HostName}.json'), Json, False) then
+    Log('could not write the native messaging host manifest');
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Code: Integer;
+begin
+  if CurStep = ssPostInstall then
+    WriteHostManifest();
+  if (CurStep <> ssPostInstall) or HasWebView2() then
+    Exit;
+  Log('WebView2 Runtime not found');
+  if WizardSilent then
+    Exit;
+  if MsgBox('Micnaga necesita Microsoft Edge WebView2 Runtime para mostrar sus ventanas y no' + #13#10 +
+            'esta instalado en este equipo.' + #13#10#13#10 +
+            'Quieres abrir la pagina de descarga de Microsoft?', mbConfirmation, MB_YESNO) = IDYES then
+    ShellExec('open', 'https://go.microsoft.com/fwlink/p/?LinkId=2124703', '', '', SW_SHOWNORMAL,
+              ewNoWait, Code);
 end;
 
 // ---------------------------------------------------------------------------------------------

@@ -721,7 +721,7 @@ def test_dpapi_failure_skips_embeddings_and_never_writes_them_in_clear(
     assert not (work / s07_diarize.EMBEDDINGS).exists()
     marker = diarize_marker(session)
     assert marker["info"]["has_embeddings"] is False
-    assert marker["outputs"] == [s07_diarize.TURNS]
+    assert marker["outputs"] == [s07_diarize.TURNS, s07_diarize.MIC_TURNS]
     assert named_speakers(result.transcript)["S1"] == "Hablante 1"
     assert_no_plaintext_vectors(session)
 

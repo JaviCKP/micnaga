@@ -43,7 +43,7 @@ from micnaga.pipeline.stages.phrases import (
     drop_echo,
     merge_segments,
 )
-from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word
+from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word, is_mic_speaker
 
 log = logging.getLogger(__name__)
 
@@ -96,9 +96,13 @@ Progress = Callable[[str, float], None]
 # ----------------------------------------------------------------------------- guardas
 
 
-def drop_loops(words: Sequence[Word], *, max_n: int = 4, min_repeats: int = 3) -> list[Word]:
-    """Quita bucles de alucinacion: un n-grama (n <= ``max_n``) repetido ``min_repeats`` veces o
-    mas seguidas se deja en una sola aparicion. Compara texto en minusculas sin puntuacion."""
+def drop_loops(
+    words: Sequence[Word], *, max_n: int = 4, min_repeats: int = 3, min_single_repeats: int = 5
+) -> list[Word]:
+    """Quita bucles de alucinacion: un n-grama (2 <= n <= ``max_n``) repetido ``min_repeats``
+    veces o mas seguidas se deja en una sola aparicion; una palabra sola, a partir de
+    ``min_single_repeats`` (asi «sí, sí, sí» o «justo, justo, justo», que se dicen, se respetan).
+    Compara texto en minusculas sin puntuacion."""
 
     def key(w: Word) -> str:
         return "".join(c for c in w.w.lower() if c.isalnum())
@@ -109,13 +113,14 @@ def drop_loops(words: Sequence[Word], *, max_n: int = 4, min_repeats: int = 3) -
         changed = False
         keys = [key(w) for w in out]
         for n in range(1, max_n + 1):
+            need = min_single_repeats if n == 1 else min_repeats
             i = 0
-            while i + n * min_repeats <= len(out):
+            while i + n * need <= len(out):
                 gram = keys[i : i + n]
                 reps = 1
                 while keys[i + reps * n : i + (reps + 1) * n] == gram:
                     reps += 1
-                if reps >= min_repeats and any(gram):
+                if reps >= need and any(gram):
                     del out[i + n : i + reps * n]
                     del keys[i + n : i + reps * n]
                     changed = True
@@ -126,11 +131,13 @@ def drop_loops(words: Sequence[Word], *, max_n: int = 4, min_repeats: int = 3) -
 # ----------------------------------------------------------------------------- hablantes
 
 
-def _remote_turns(transcript: Transcript) -> list[tuple[float, float, str]]:
-    """Tramos ``(inicio, fin, hablante)`` de los hablantes remotos (por palabra si las hay)."""
+def _remote_turns(transcript: Transcript, *, mic: bool = False) -> list[tuple[float, float, str]]:
+    """Tramos ``(inicio, fin, hablante)`` de los hablantes remotos (por palabra si las hay).
+
+    Con ``mic=True``, los del micro (``me`` y personas de la sala ``P<n>``)."""
     turns: list[tuple[float, float, str]] = []
     for seg in transcript.segments:
-        if seg.speaker == SPEAKER_ME:
+        if is_mic_speaker(seg.speaker) != mic:
             continue
         if seg.words:
             turns.extend((w.s, max(w.e, w.s), seg.speaker) for w in seg.words)
@@ -161,11 +168,18 @@ def remote_speaker_for(word: Word, turns: Sequence[tuple[float, float, str]]) ->
 def assign_words(
     transcript: Transcript, mic: Sequence[Word], system: Sequence[Word]
 ) -> list[tuple[str, Word]]:
-    """Palabras nuevas con hablante: micro = «Yo»; sistema = tramo remoto actual por tiempo.
+    """Palabras nuevas con hablante: sistema = tramo remoto actual por tiempo; micro = «Yo», o la
+    persona de la sala (``P<n>``) de ese momento si la reunion era presencial.
 
     Una palabra del sistema lejos de cualquier tramo toma el hablante de la anterior (o el remoto
-    mas frecuente si es la primera)."""
-    out: list[tuple[str, Word]] = [(SPEAKER_ME, w) for w in mic]
+    mas frecuente si es la primera); una del micro, «Yo»."""
+    mic_turns = _remote_turns(transcript, mic=True)
+    if any(sp != SPEAKER_ME for _a, _b, sp in mic_turns):
+        out: list[tuple[str, Word]] = [
+            (remote_speaker_for(w, mic_turns) or SPEAKER_ME, w) for w in mic
+        ]
+    else:
+        out = [(SPEAKER_ME, w) for w in mic]
     turns = _remote_turns(transcript)
     counts: dict[str, float] = {}
     for a, b, sp in turns:
@@ -237,11 +251,20 @@ def has_previa(folder: Path) -> bool:
 
 
 def speech_seconds(folder: Path) -> float | None:
-    """Segundos de voz segun la etapa 5 (o, sin ``work/``, la duracion de las frases)."""
+    """Segundos que pagara el ASR segun la etapa 5 (bloques con los silencios acortados) o, sin
+    ``work/``, la duracion de las frases."""
+    from micnaga.pipeline.stages.s06_asr import compact_seconds, track_regions
+
     vad = paths.work_dir(folder) / "05_vad.json"
     with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
         data = json.loads(vad.read_text(encoding="utf-8"))
-        return float(sum(b - a for t in ("mic", "system") for a, b in data[t]["chunks"]))
+        return float(
+            sum(
+                compact_seconds(a, b, track_regions(data, t))
+                for t in ("mic", "system")
+                for a, b in data[t]["chunks"]
+            )
+        )
     tr = folder / paths.TRANSCRIPT_JSON
     with contextlib.suppress(OSError, ValueError, KeyError):
         t = Transcript.from_json(tr.read_text(encoding="utf-8"))
@@ -374,7 +397,7 @@ def improve(
 
     Lanza ``Cancelled`` sin tocar la transcripcion si se cancela antes de escribir."""
     from micnaga.pipeline.stages.base import read_audio_file
-    from micnaga.pipeline.stages.s06_asr import transcribe_block
+    from micnaga.pipeline.stages.s06_asr import track_regions, transcribe_block
 
     report = progress or (lambda _f, _p: None)
     is_cancelled = cancelled or (lambda: (folder / CANCEL).is_file())
@@ -399,10 +422,12 @@ def improve(
                 if not chunks:
                     continue
                 audio = read_audio_file(work / f"04_{track}.wav", sr)
+                regions = track_regions(vad, track)
                 for a, b in chunks:
                     if is_cancelled():
                         raise Cancelled()
-                    words[track].extend(drop_loops(transcribe_block(engine, audio, a, b, sr)))
+                    block = transcribe_block(engine, audio, a, b, sr, regions)
+                    words[track].extend(drop_loops(block))
                     done += b - a
                     report("transcribe", done / total)
                 del audio
@@ -457,14 +482,14 @@ def download_bytes(config: Config) -> int:
 
 def create_engine(config: Config) -> AsrLike:
     from micnaga import models
-    from micnaga.pipeline.engines.asr.whisper import WhisperEngine
+    from micnaga.pipeline.engines.asr.whisper import WhisperEngine, engine_options
 
     model_dir = models.require_models(config, model_group(config))
     return WhisperEngine(
         str(model_dir),
         model_name(config),
         config.processing.threads,
-        guards=True,
+        **engine_options(config),  # idioma forzado, glosario (hotwords) y guardas
     )
 
 

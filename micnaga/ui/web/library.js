@@ -176,6 +176,7 @@
       b.append(el("div", "row-title", m.title));
       const sub = el("div", "row-sub tnum");
       sub.append(el("span", "", mic.fmtDate(m.start)), el("span", "dot", "·"), el("span", "", mic.fmtDuration(m.duration_s)));
+      if (m.in_person) sub.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
       const n = m.speakers.length;
       if (n) {
         const dots = el("span", "who-dots");
@@ -257,6 +258,7 @@
     const meta = $("m-meta");
     meta.replaceChildren();
     meta.append(el("span", "", mic.fmtDate(tr.meeting.start)), el("span", "sep", "·"), el("span", "", mic.fmtDuration(tr.meeting.duration_s)));
+    if (tr.meeting.source === "presencial") meta.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
     if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
     renderSpeakers();
     renderMarkers();
@@ -300,13 +302,15 @@
   async function hqRender() {
     const btn = $("hq-btn");
     clearTimeout(HQ.timer);
-    if (!S.hq) { btn.hidden = true; $("hq-bar").hidden = true; return; }
-    btn.hidden = false;
+    btn.hidden = true;
+    if (!S.hq) { $("hq-bar").hidden = true; return; }
     btn.onclick = hqAsk;
     HQ.folder = S.folder;
     hqHide();
     const r = await mic.call("hq", "status", S.folder);
     if (!r || !r.ok || HQ.folder !== S.folder) return;
+    // solo si el modelo HQ mejora al que la transcribio (reuniones antiguas con Parakeet)
+    btn.hidden = !(r.offer || (r.status && r.status.state === "running"));
     if (r.status && r.status.state === "running") hqPoll();
     else if (r.previa) hqOffer();
   }
@@ -509,7 +513,9 @@
   document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("menu").hidden) { closeMenu(); } });
 
   function speakerMenu(anchor, sp) {
-    const others = S.data.transcript.speakers.filter((x) => x.id !== sp.id && x.id !== "me");
+    // A person in the room (P<n>, same mic as «Yo») can be merged into «Yo»; nobody else can.
+    const room = /^P\d+$/.test(sp.id);
+    const others = S.data.transcript.speakers.filter((x) => x.id !== sp.id && (x.id !== "me" || room));
     const items = [{ icon: "edit", label: mic.t("library.rename"), run: () => {
       const chip = anchor.closest(".spk");
       editName(chip, chip.querySelector(".name"), sp);
@@ -770,6 +776,18 @@
   });
   $("q").addEventListener("input", onQuery);
   $("settings-btn").addEventListener("click", () => showSettings());
+  // «Grabar reunión presencial»: graba el micro (y el sistema) hasta que la pares en la pastilla
+  $("in-person-btn").addEventListener("click", async () => {
+    const btn = $("in-person-btn");
+    btn.disabled = true;
+    try {
+      const r = await mic.call("record_in_person");
+      if (!r || !r.ok) snack(errText(r));
+      else snack(r.started ? mic.t("library.in_person_started") : mic.t("library.in_person_busy"));
+    } finally {
+      btn.disabled = false;
+    }
+  });
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
   // ------------------------------------------------------------------ «Descartadas»
@@ -898,6 +916,7 @@
     await mic.i18nReady;
     const boot = await mic.call("bootstrap");
     if (boot) { S.canEdit = !!boot.can_edit; S.vpEnabled = !!boot.voiceprints_enabled; S.hq = !!boot.hq; }
+    $("in-person-btn").hidden = !(boot && boot.in_person);
     if (S.vpEnabled && S.canEdit) {
       const vps = await mic.call("list_voiceprints");
       S.vpNames = new Set((vps || []).map((v) => v.name));

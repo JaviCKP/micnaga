@@ -52,21 +52,29 @@ def test_manifest_entries_are_pinned_and_complete() -> None:
             assert HEX64.match(f.sha256) and f.size > 0
 
 
-def test_manifest_total_size_is_about_a_gigabyte_for_defaults() -> None:
+def test_manifest_total_size_for_defaults() -> None:
     total = models.total_size(Config())
-    assert 0.6e9 < total < 1.1e9  # Parakeet int8 + Silero + WeSpeaker
+    assert 1.6e9 < total < 1.7e9  # Whisper large-v3-turbo + Silero + WeSpeaker (DECISIONS §32)
+    cfg = Config()
+    cfg.processing.asr_engine = "parakeet"
+    assert 0.6e9 < models.total_size(cfg) < 1.1e9  # Parakeet int8 + Silero + WeSpeaker
 
 
 def test_required_groups_follow_config() -> None:
     cfg = Config()
     assert required_groups(cfg) == [
         models.SILERO_GROUP,
-        models.PARAKEET_GROUP,
+        models.WHISPER_TURBO_GROUP,
         models.WESPEAKER_GROUP,
     ]
+    cfg.processing.asr_engine = "parakeet"
+    assert models.PARAKEET_GROUP in required_groups(cfg)
     cfg.processing.asr_engine = "whisper"
+    cfg.processing.whisper_model = "small"
     cfg.processing.diarization = "pyannote"
     assert required_groups(cfg) == [models.SILERO_GROUP, models.WHISPER_SMALL_GROUP]
+    for size in ("small", "large-v3-turbo", "large-v3"):  # cada opcion de la interfaz existe
+        assert models.whisper_group(size) in models.MANIFEST
     assert models.WHISPER_SMALL_GROUP in required_groups(Config(), include_optional=True)
     # los modelos evaluados y no adoptados nunca se piden
     every = set(required_groups(Config(), include_optional=True))
@@ -83,7 +91,8 @@ def test_missing_models_reports_everything_when_empty(tmp_models: Path) -> None:
     cfg = Config()
     names = {f.rel_path for f in missing_models(cfg)}
     assert f"{models.SILERO_GROUP}/silero_vad.onnx" in names
-    assert f"{models.PARAKEET_GROUP}/encoder-model.int8.onnx" in names
+    assert f"{models.WHISPER_TURBO_GROUP}/model.bin" in names
+    assert not any(n.startswith(models.PARAKEET_GROUP) for n in names)  # ya no es el defecto
     assert not any(n.startswith(models.WHISPER_SMALL_GROUP) for n in names)  # opcional
 
 

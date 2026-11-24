@@ -80,3 +80,33 @@ Diarización sobre un diálogo TTS de dos voces distintas (Helena es-ES / Zira e
 2 hablantes con `n_speakers=2` y exactitud de trama del 97 % (el resto son huecos al inicio/fin de
 turno); embeddings de hablante: coseno **0,92** entre mitades de la misma voz y **0,30** entre voces
 distintas.
+
+## Reunión real: Parakeet frente a Whisper (noviembre de 2026, DECISIONS §32)
+
+Reunión de Meet de 47 min (2 hablantes, auriculares, español con mucho término técnico). Mismo PC
+(i7-12700F, 6 hilos, int8), **con otros agentes usando la CPU**: los tiempos son orientativos.
+Camino real de la etapa 6 (acondicionado, Silero, bloques llenos con silencios acortados a 1 s).
+
+**Calidad** (dos tramos densos en las dos pistas, 1284 palabras de referencia corregida a mano;
+las dudosas no cuentan; WER `jiwer` en minúsculas, sin tildes ni puntuación):
+
+| Motor | WER micro | WER sistema | WER total | Términos bien (de 26) |
+| --- | ---: | ---: | ---: | ---: |
+| Parakeet TDT 0.6B v3 int8 | 15,1 % | 6,9 % | 11,9 % | 12 |
+| Whisper large-v3-turbo int8 | 7,2 % | 2,6 % | 5,5 % | 18 |
+| large-v3-turbo + glosario de 10 términos | 7,0 % | 2,4 % | 5,2 % | 22 |
+| Whisper large-v3 int8 + glosario | 6,8 % | 3,2 % | 5,5 % | 22 |
+| Parakeet con el micro pasado por AEC Speex / WebRTC (solo micro del tramo A) | 19,6 % / 24,5 % | – | – | – |
+
+**Coste**:
+
+| Motor | Reunión de 47 min (ASR) | Por hora de reunión | Cálculo / s de audio (banco) | RAM pico | Descarga |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Parakeet | 197 s | 4,2 min | 0,034 | 1,2 GB (1,8 GB con las dos pistas enteras en memoria) | 0,67 GB |
+| large-v3-turbo | 1745 s | 37 min | 0,25 (0,32 con glosario) | 2,1 GB (2,5 GB) | 1,62 GB |
+| large-v3 | – | ≈ 100 min (estimado por el banco) | 0,71 | 3,5 GB | 3,09 GB |
+
+Veredicto: turbo comete la mitad de errores que Parakeet y escribe mejor los nombres (con glosario,
+casi todos); large-v3 no mejora a turbo. A cambio, turbo gasta ~9 veces más CPU y el doble de RAM.
+Whisper cobra cada ventana de 30 s entera: llenar los bloques de voz (silencios acortados) bajó los
+bloques de la reunión de 191 a 137.

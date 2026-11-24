@@ -89,6 +89,11 @@ def isolated_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[di
     # Que ninguna ruta salga de un APPDATA/Documentos reales por descuido.
     monkeypatch.setenv("APPDATA", str(tmp_path / "appdata"))
     yield {"home": home, "storage": storage, "models": models}
+    # El registro de acciones de la app es global: una ``Application`` de prueba sin cerrar no
+    # debe dejar su descargador de modelos a los tests siguientes.
+    from micnaga.ui import contracts
+
+    contracts._APP_ACTIONS.clear()
 
 
 @pytest.fixture

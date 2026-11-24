@@ -127,6 +127,17 @@
 .about p.line { display: flex; gap: 10px; padding: 12px 16px; font-size: 13.5px; color: var(--text-2); line-height: 1.55; }
 .about p.line + p.line { box-shadow: inset 0 1px 0 var(--line); }
 .about p.line .ico { flex: none; margin-top: 2px; color: var(--text-3); }
+/* version under the word mark; updates and models: a status line, a thin bar while it runs */
+.about-ver { font: 500 11px/1.4 var(--mono); letter-spacing: 0.04em; color: var(--text-2); font-variant-ligatures: none; margin-top: -4px; }
+.models-col { display: grid; gap: 10px; min-width: 0; }
+.models-col .finfo { gap: 12px; }
+.models-col .sig { flex: none; }
+.models-bar { width: 100%; max-width: 360px; }
+.models-bar[hidden], .models-detail:empty, .upd-notes[hidden], .ctl > .btn[hidden] { display: none; }
+.models-detail { font: 500 11px/1.4 var(--mono); color: var(--text-3); font-variant-numeric: tabular-nums; font-variant-ligatures: none; }
+.upd-notes, .upd-news { display: grid; gap: 8px; padding: 14px 16px 16px; }
+.upd-notes { box-shadow: inset 0 1px 0 var(--line); }
+.upd-text { white-space: pre-line; font-size: 13.5px; line-height: 1.55; color: var(--text-2); overflow-wrap: anywhere; }
 
 /* ---- savebar: a flat bar that rises only with unsaved changes ------------------------- */
 .savebar {

@@ -250,11 +250,14 @@
   mic.wave = function (canvas, opts) {
     const o = Object.assign({ bar: 3, gap: 2, min: 2, fade: 0.28, round: true, curve: 2.2 }, opts || {});
     // data-dither="2" (cell px): the same history drawn as 1-bit Bayer cells (the Bitnaga skin):
-    // loud = a dense blob that reaches the edges, quiet = a sparse centre line, old = thinning out
+    // loud = a dense blob that reaches the edges, silence = just the centre line, old = thinning
+    // out. The level IS the cell density (no curve: callers hand a perceptual 0..1 already), so
+    // speech visibly fills the rows and a quiet room leaves nothing but a still line.
     const cell = canvas.dataset && canvas.dataset.dither ? Math.max(1, parseFloat(canvas.dataset.dither) || 2) : 0;
     if (cell) { o.bar = cell; o.gap = cell / 2; }
-    const ctx = canvas.getContext("2d");
-    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0, pushes = 0;
+    // a tiny canvas: drawn on the CPU (no GPU raster round trip per scroll step)
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    let W = 0, H = 0, dpr = 1, n = 0, hist = new Float32Array(0), head = 0, color = "#888", frame = 0, last = 0, pushes = 0, quiet = 0;
     const BAY = [0, 32, 8, 40, 2, 34, 10, 42, 48, 16, 56, 24, 50, 18, 58, 26, 12, 44, 4, 36, 14, 46, 6, 38, 60, 28, 52, 20, 62, 30, 54, 22,
       3, 35, 11, 43, 1, 33, 9, 41, 51, 19, 59, 27, 49, 17, 57, 25, 15, 47, 7, 39, 13, 45, 5, 37, 63, 31, 55, 23, 61, 29, 53, 21];
     function drawCells() {
@@ -262,15 +265,16 @@
       const cd = Math.max(1, Math.round(cell * dpr)), gd = Math.max(1, Math.round(o.gap * dpr)), step = cd + gd;
       const cw = canvas.width, chh = canvas.height;
       const rows = Math.max(1, Math.floor(chh / cd)), x0 = cw - n * step + gd, y0 = Math.floor((chh - rows * cd) / 2), mid = rows / 2;
+      const reach = Math.max(1, Math.floor(mid - 0.5));    // rows on each side of the centre line
       for (let i = 0; i < n; i++) {
-        const h = Math.pow(hist[(head + i) % n], o.curve) * mid;   // half height, in cells
+        const v = hist[(head + i) % n];
         const age = o.fade + (1 - o.fade) * (i / Math.max(1, n - 1));
         const sx = pushes - (n - 1 - i);                    // the pattern travels with the samples
         for (let r = 0; r < rows; r++) {
-          const dr = Math.abs(r + 0.5 - mid);
+          const out = Math.floor(Math.abs(r + 0.5 - mid));  // 0 = centre row(s), 1.. = outwards
           const th = (BAY[((r & 7) << 3) | (((sx % 8) + 8) % 8)] + 0.5) / 64;
-          // solid core, dithered tip (1.5 cells), older columns thinning out
-          const k = dr <= Math.max(0.5, h - 0.5) ? age : dr < h + 1.5 ? ((h + 1.5 - dr) / 2) * age : 0;
+          // centre line always; each outer row fills (dithered) as the level climbs past it
+          const k = (out === 0 ? 1 : Math.max(0, Math.min(1, v * reach - (out - 1)))) * age;
           if (th < k) ctx.fillRect(x0 + i * step, y0 + r * cd, cd, cd);
         }
       }
@@ -313,33 +317,71 @@
         const s = v > last ? v : last * 0.55 + v * 0.45;
         last = s;
         if (!n) return;
+        // silence: once the whole history is zero the canvas is blank; scrolling more zeros
+        // changes nothing, so it is not redrawn (an idle pill paints nothing)
+        quiet = s < 1e-4 ? quiet + 1 : 0;
         hist[head] = s; head = (head + 1) % n; pushes++;
+        if (quiet > n + 1) return;
         draw();
       },
-      fill(v) { hist.fill(Math.max(0, Math.min(1, v))); last = v; draw(); },
-      reset() { hist.fill(0); last = 0; draw(); },
+      fill(v) { hist.fill(Math.max(0, Math.min(1, v))); last = v; quiet = 0; draw(); },
+      reset() { hist.fill(0); last = 0; quiet = 0; draw(); },
       redraw() { readColor(); draw(); },
       get level() { return last; },
     };
   };
 
-  /** Poll `api.levels()` at 20 fps while `active()`; feed [mic, system] (linear) to cb. */
+  /** Poll `api.levels()` at 20 fps while started; feed [mic, system] (linear) to cb. After
+   *  ~1 s of exact silence it slows to 4 fps (one bridge call every 250 ms instead of 20/s) and
+   *  speeds up again with the first sound. */
   mic.pollLevels = function (cb, opts) {
-    const hz = (opts && opts.hz) || 20;
-    let timer = 0, busy = false;
+    const hz = (opts && opts.hz) || 20, idleHz = (opts && opts.idleHz) || 4;
+    let timer = 0, on = false, silent = 0, gen = 0;
     const tick = async () => {
-      if (busy) return;
-      busy = true;
+      timer = 0;
+      const g = gen;
       try {
         const v = await mic.call("levels");
-        if (Array.isArray(v) && v.length >= 2) cb(Number(v[0]) || 0, Number(v[1]) || 0);
+        if (Array.isArray(v) && v.length >= 2) {
+          const m = Number(v[0]) || 0, s = Number(v[1]) || 0;
+          silent = m <= 0 && s <= 0 ? silent + 1 : 0;
+          cb(m, s);
+        }
       } catch (e) { /* ignore a missed frame */ }
-      busy = false;
+      if (on && g === gen) timer = setTimeout(tick, 1000 / (silent > hz ? idleHz : hz));
     };
     return {
-      start() { if (!timer) timer = setInterval(tick, 1000 / hz); },
-      stop() { if (timer) clearInterval(timer); timer = 0; },
+      start() { if (!on) { on = true; silent = 0; gen++; timer = setTimeout(tick, 1000 / hz); } },
+      stop() { on = false; gen++; if (timer) clearTimeout(timer); timer = 0; },
     };
+  };
+
+  /** Levels for a window Python pushes them to (the pill/card surface: ``micnaga.levels(m, s)``,
+   *  ~10 fps, already smoothed, nothing at all in silence). Same start/stop interface as ``pollLevels``; outside
+   *  the app (screenshots, tests over HTTP) it falls back to polling. */
+  const levelSubs = new Set();
+  const ns = (window.micnaga = window.micnaga || {});
+  ns.levels = (m, s) => { levelSubs.forEach((cb) => { try { cb(Number(m) || 0, Number(s) || 0); } catch (e) { /* one bad listener */ } }); };
+  if (mic.isHost) {
+    // Python posts "lv:<mic>,<system>" (PostWebMessageAsString: no script to compile per update)
+    window.chrome.webview.addEventListener("message", (e) => {
+      const d = e.data;
+      if (typeof d !== "string" || d.slice(0, 3) !== "lv:") return;
+      const i = d.indexOf(",", 3);
+      ns.levels(parseFloat(d.slice(3, i)), parseFloat(d.slice(i + 1)));
+    });
+  }
+  mic.levelFeed = function (cb, opts) {
+    if (!mic.isHost) return mic.pollLevels(cb, opts);
+    return { start() { levelSubs.add(cb); }, stop() { levelSubs.delete(cb); } };
+  };
+
+  /** Speech-friendly 0..1 for the live meters: -50 dBFS (Python gates anything under ~-44 to 0)
+   *  .. -14 dBFS (close, loud). A conversation sits around the middle. */
+  mic.levelToMeter = function (x) {
+    if (!(x > 0)) return 0;
+    const db = 20 * Math.log10(Math.min(1, x));
+    return Math.max(0, Math.min(1, (db + 50) / 36));
   };
 
   mic.esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));

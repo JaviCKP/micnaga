@@ -1,7 +1,7 @@
 """Comparativa de diarizadores sobre los mismos casos (voz SAPI sintetica + audio opcional).
 
     $env:MICNAGA_MODELS = "<repo>\\.models"
-    python -m tests.engines.diar_compare --engine onnx --engine sherpa:<grupo> \\
+    python -m tests.engines.diar_compare --engine diarize --engine sherpa:<grupo> \\
         [--podcast <wav 16 kHz>] [--cache <carpeta>] [--threshold 0.5] [--minutes 5]
 
 Casos:
@@ -12,7 +12,7 @@ Casos:
   silencio. La referencia es solo el dialogo: un 3.er hablante es un fantasma.
 * ``podcast`` (opcional): un fichero real sin referencia (solo numero de hablantes y turnos).
 
-Motores: los del registro (``onnx``, ``diarize``, ``pyannote``) y ``sherpa:<grupo>``
+Motores: los del registro (``diarize``) y ``sherpa:<grupo>``
 (``tests/engines/sherpa_diar.py``, solo evaluacion) con un modelo de embeddings de
 ``models.CANDIDATE_MANIFEST`` o ``MANIFEST``. Para cada caso se da el resultado crudo del motor
 y el del post-filtro de la etapa 7 (``postfilter.absorb_minor_speakers``).
@@ -76,7 +76,7 @@ def make_engine(name: str, threshold: float | None) -> Any:
 
     cfg = Config()
     if name.startswith("sherpa:"):
-        from micnaga.pipeline.engines.diar.onnx import WESPEAKER_FILE
+        from micnaga.pipeline.engines.diar.diarize import WESPEAKER_FILE
         from tests.engines import sherpa_diar as sherpa
 
         group_id = name.split(":", 1)[1]

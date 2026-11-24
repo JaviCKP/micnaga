@@ -9,7 +9,9 @@ Convenciones
   del fichero, *sin* los tramos de pausa privada). Los tiempos de palabras, turnos,
   segmentos y marcadores comparten esa linea de tiempo.
 * **Hablantes**: ``"me"`` es el usuario (pista del micro); ``"S1"``, ``"S2"``... son los
-  hablantes remotos. Los nombres visibles viven en ``Speaker.name``.
+  hablantes remotos (pista del sistema) y ``"P<n>"`` las demas personas de la sala que habla por
+  el mismo micro (reunion presencial; la numeracion sigue a la de los remotos, asi que nunca
+  repite numero con un ``S``). Los nombres visibles viven en ``Speaker.name``.
 * El JSON de ``transcripcion.json`` (seccion 9 de la spec) es la fuente de verdad:
   ``Transcript.to_dict`` / ``from_dict`` lo (de)serializan con exactamente ese esquema.
 """
@@ -31,6 +33,16 @@ OutputKind: TypeAlias = Literal["headphones", "speakers", "unknown"]
 
 SPEAKER_ME = "me"
 SPEAKER_ME_NAME = "Yo"
+ROOM_PREFIX = "P"
+"""Prefijo de las personas de la sala (pista del micro, distintas de ``me``)."""
+
+
+def is_mic_speaker(speaker_id: str) -> bool:
+    """``True`` para ``me`` y las personas de la sala (``P<n>``): su voz sale del micro."""
+    return speaker_id == SPEAKER_ME or (
+        speaker_id.startswith(ROOM_PREFIX) and speaker_id[len(ROOM_PREFIX) :].isdigit()
+    )
+
 TRANSCRIPT_VERSION = 1
 CAPTURE_VERSION = 1
 
