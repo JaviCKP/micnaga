@@ -14,7 +14,7 @@ from typing import Any
 
 from micnaga import __version__
 from micnaga.ui import i18n
-from micnaga.ui.contracts import ACTION_RECORD_IN_PERSON, TrayState, UiCallbacks, app_action
+from micnaga.ui.contracts import TrayState, UiCallbacks
 from micnaga.ui.icons import make_pystray_icon, tray_icon
 
 log = logging.getLogger(__name__)
@@ -144,12 +144,11 @@ class Tray:
         icon.title = self.title()
         icon.update_menu()
 
-    @staticmethod
-    def _in_person_on() -> bool:
-        return app_action(ACTION_RECORD_IN_PERSON) is not None
+    def _in_person_on(self) -> bool:
+        return self._cb.on_record_in_person is not None
 
     def _record_in_person(self) -> None:
-        action = app_action(ACTION_RECORD_IN_PERSON)
+        action = self._cb.on_record_in_person
         if action is not None:
             action()
 

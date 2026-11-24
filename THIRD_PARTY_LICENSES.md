@@ -168,11 +168,11 @@ README.
 
 | Modelo | Autor / origen | Licencia | Notas y atribucion |
 | --- | --- | --- | --- |
-| **Parakeet TDT 0.6B v3** (int8, ONNX) | NVIDIA, `nvidia/parakeet-tdt-0.6b-v3`; conversion ONNX: `istupakov/parakeet-tdt-0.6b-v3-onnx` | **CC-BY-4.0** | Atribucion obligatoria: © NVIDIA. Modelo derivado (conversion ONNX/int8) de terceros. |
+| **Parakeet TDT 0.6B v3** (int8, ONNX; motor opcional) | NVIDIA, `nvidia/parakeet-tdt-0.6b-v3`; conversion ONNX: `istupakov/parakeet-tdt-0.6b-v3-onnx` | **CC-BY-4.0** | Atribucion obligatoria: © NVIDIA. Modelo derivado (conversion ONNX/int8) de terceros. |
 | **WeSpeaker voxceleb ResNet34-LM** (ONNX) | WeSpeaker, `Wespeaker/wespeaker-voxceleb-resnet34-LM` | **CC-BY-4.0** (segun la ficha de Hugging Face); codigo WeSpeaker: Apache-2.0 | Atribucion obligatoria: WeSpeaker. Embeddings de hablante para la diarizacion (`diarize`) y las huellas de voz. |
 | **Silero VAD** (ONNX) | Silero Team, `snakers4/silero-vad`; conversion: `istupakov/silero-vad-onnx` | MIT | |
-| **faster-whisper small** (opcional) | Systran, `Systran/faster-whisper-small` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Solo si el usuario elige Whisper. |
-| **pyannote speaker-diarization community-1** (opcional, **no instalado**) | pyannote.audio / pyannoteAI | **CC-BY-4.0** | Alternativa de diarizacion (extra `pyannote`); atribucion: pyannote.audio / pyannoteAI. |
+| **faster-whisper large-v3-turbo** (por defecto) | `mobiuslabsgmbh/faster-whisper-large-v3-turbo` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Motor de transcripcion por defecto y de «Mejorar transcripcion». |
+| **faster-whisper small / large-v3** (opcionales) | Systran, `Systran/faster-whisper-small`, `Systran/faster-whisper-large-v3` (conversion CTranslate2 de OpenAI Whisper) | MIT (pesos de Whisper: MIT, OpenAI) | Solo si el usuario los elige. |
 
 ### Bibliotecas nativas de cancelacion de eco (no son modelos)
 

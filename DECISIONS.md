@@ -1385,13 +1385,19 @@ colgar en el PC del usuario (i7-12700F); el ASR solo usaba ~3 núcleos.
    vez de `room.MIN_MIC_SPEECH_S` (20 s); el etiquetado de `room.py` no cambia. Etapa 11:
    `meeting.source = "presencial"` (`gates.SOURCE_IN_PERSON`; el resto sigue en `"meet"`). La
    biblioteca muestra la etiqueta «Presencial» junto a la fecha.
-5. **Canal UI → app sin tocar `host.py`:** la bandeja y la `LibraryApi` las construye `host.py`
-   con un juego fijo de callbacks/argumentos (y estaba en obras). La acción va por un registro
-   pequeño en `ui/contracts.py` (`set_app_action` / `app_action`,
-   `ACTION_RECORD_IN_PERSON`): lo rellena `Application` al arrancar y lo vacía al cerrar. Sin
-   app detrás (demo, pruebas) la entrada de la bandeja sale desactivada y el botón de la
-   biblioteca oculto. Si se prefiere el camino de siempre: campo `on_record_in_person` en
-   `UiCallbacks`, pasarlo en `UiHost._tray_callbacks()` y como argumento a `LibraryApi(...)`.
+5. **Canal UI → app (pasada final):** el camino de siempre. `UiCallbacks.on_record_in_person`
+   (`None` por defecto = sin app detrás: demo y pruebas, con la entrada de la bandeja desactivada
+   y el botón de la biblioteca oculto); `UiHost._tray_callbacks()` lo pasa a la bandeja y
+   `library_api()` a `LibraryApi(record_in_person=...)`. Devuelve `started` | `busy` | `failed`:
+   `Application._record_in_person` mira `controller.recording` después del evento (el vigilante
+   despacha el arranque antes de volver), así que si la captura no arranca la biblioteca no dice
+   «Grabando…» (el aviso «No se pudo grabar» ya lo da el controlador). El registro de
+   `ui/contracts.py` (`set_app_action`) queda solo para el descargador de modelos de Ajustes;
+   `tests/conftest.py` lo vacía tras cada test (una `Application` de prueba sin cerrar lo dejaba
+   puesto y otro test veía «Descargar» activo).
+6. **Etiqueta en la lista:** `LibraryApi.list_meetings` añade `in_person` mirando solo si existe
+   la marca `.micnaga-in-person.json` en la carpeta (un `stat` por fila, sin leer JSON ni el
+   índice); la fila muestra «Presencial» tras la duración. No hecho: la etiqueta en la pastilla.
 
 ## 31. Instalador sin `aec.dll`, con `diarize` + torch recortado y firma opcional
 
@@ -1627,9 +1633,12 @@ prometto», «Dia Q», «Inkruger», «show, dancensi», frases en inglés inven
    * `brain/live_title.py` agrupa con `vad.group_regions` y transcribe los bloques sin compactar:
      con el nuevo defecto un bloque puede abarcar más de 30 s de pista (dos ventanas de Whisper y
      silencios largos dentro). Debería usar `s06_asr.transcribe_block(..., regions)`.
-   * «Mejorar transcripción» sigue con `large-v3` por defecto, pero en este banco no mejora al
-     nuevo defecto (5,5 % frente a 5,2–5,5 %), tarda más del doble y pide 3,5 GB: decidir si se
-     quita el botón, se cambia a otra cosa o se deja como está. La ayuda de `hq_model` ya lo dice.
+   * ~~«Mejorar transcripción» sigue con `large-v3` por defecto~~ Resuelto en la pasada final:
+     `hq_model` = `large-v3-turbo` (la migración v2 -> v3 cambia solo el `large-v3` sin tocar) y
+     el botón solo sale si el modelo HQ es estrictamente mejor que el que transcribió la reunión
+     (`engines.asr` de `transcripcion.json`; `bridge._hq_improves`): las reuniones antiguas con
+     Parakeet (o con Whisper `small`). Con el defecto no aparece. Ojo: una `config.toml` que ya
+     estaba en v3 (solo builds de desarrollo de esta rama) conserva `large-v3`.
    * Sin medir en el i5-1245U ni con el equipo libre; la referencia es de una sola reunión y un
      solo corrector.
 

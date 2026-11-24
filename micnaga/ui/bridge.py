@@ -15,6 +15,7 @@ Reglas
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -31,13 +32,13 @@ from micnaga.store.locate import meeting_dir
 from micnaga.types import SPEAKER_ME, Transcript, is_mic_speaker
 from micnaga.ui import i18n, settings_schema, sound, startup
 from micnaga.ui.contracts import (
-    ACTION_RECORD_IN_PERSON,
     BrainPort,
     ConfigStore,
     Diagnostic,
     DiagnosticsProvider,
     DownloadModels,
     HeldOps,
+    InPersonResult,
     LevelsProvider,
     LibraryOps,
     ModelProgress,
@@ -295,7 +296,9 @@ class LibraryApi:
         brain: BrainPort | None = None,
         open_settings: Callable[[], None] | None = None,
         settings: Callable[[], SettingsApi] | None = None,
+        record_in_person: Callable[[], InPersonResult] | None = None,
     ) -> None:
+        self._record_in_person = record_in_person
         self._db_factory = db_factory
         self._open_settings = open_settings
         self._settings_factory = settings
@@ -320,7 +323,7 @@ class LibraryApi:
             has_held=self._held is not None,
             secretaria=self._brain is not None,
             hq=cfg.processing.hq_transcribe and self._ops is not None,
-            in_person=app_action(ACTION_RECORD_IN_PERSON) is not None,
+            in_person=self._record_in_person is not None,
         )
 
     def open_settings(self) -> Result:
@@ -337,15 +340,20 @@ class LibraryApi:
     def record_in_person(self) -> Result:
         """«Grabar reunión presencial» desde la biblioteca. ``started`` es ``False`` si ya habia
         una grabacion en marcha (no se hace nada)."""
-        action = app_action(ACTION_RECORD_IN_PERSON)
+        action = self._record_in_person
         if action is None:
             return fail("library.err.not_found")
         try:
-            started = action()
+            result = action()
         except Exception:
             log.exception("record_in_person failed")
             return fail("library.err.op_failed")
-        return ok(started=started is not False)
+        if result == "started":
+            return ok(started=True)
+        if result == "busy":
+            return ok(started=False)
+        # La captura no arranco (el controlador ya avisa con su toast): nada de «Grabando…».
+        return fail("toast.error.capture_failed.title")
 
     def settings_call(self, name: str, args: list[Any] | None = None) -> Any:
         """Ajustes embebido en esta ventana: delega en ``SettingsApi`` (solo metodos publicos)."""
@@ -398,6 +406,7 @@ class LibraryApi:
         offset = max(0, int(offset))
         with self._db_factory() as db:
             records = db.list_meetings(limit, offset)
+        root = self._root()
         return [
             {
                 "folder": r.folder,
@@ -405,6 +414,7 @@ class LibraryApi:
                 "start": r.start,
                 "duration_s": r.duration_s,
                 "meet_code": r.meet_code,
+                "in_person": _in_person_folder(root, r.folder),
                 "speakers": [{"id": s.id, "name": s.name} for s in r.speakers],
             }
             for r in records
@@ -608,7 +618,11 @@ class LibraryApi:
                 status=self._hq_status(meeting),
             )
         if action == "status":
-            return ok(status=self._hq_status(meeting), previa=hq.has_previa(meeting))
+            return ok(
+                status=self._hq_status(meeting),
+                previa=hq.has_previa(meeting),
+                offer=_hq_improves(path, hq.model_name(cfg)),
+            )
         if action == "start":
             if self._hq_alive(meeting):
                 return ok(status=self._hq_status(meeting))
@@ -711,6 +725,39 @@ def _startfile(path: Path) -> None:  # pragma: no cover - abre el Explorador rea
 
 
 # ============================================================================== ajustes
+
+
+_WHISPER_RANK = {"small": 0, "large-v3-turbo": 1, "large-v3": 1}
+"""Calidad relativa de los Whisper (DECISIONS §32: large-v3 no mejora a turbo y es >2x lento)."""
+
+
+def _hq_improves(transcript_json: Path, hq_model: str) -> bool:
+    """«Mejorar transcripcion» solo se ofrece si el modelo HQ es estrictamente mejor que el que
+    transcribio la reunion (``engines.asr``): Parakeet (reuniones antiguas) o un Whisper menor.
+    Con el defecto (turbo transcribe y turbo mejoraria) no aporta nada y el boton se oculta."""
+    try:
+        data = json.loads(transcript_json.read_text(encoding="utf-8"))
+        asr = str(data.get("engines", {}).get("asr", ""))
+    except (OSError, ValueError, AttributeError):
+        return True  # sin saberlo, se ofrece (como antes)
+    prefix = "faster-whisper-"
+    if not asr.startswith(prefix):
+        return True  # Parakeet u otro motor
+    size = asr[len(prefix) :].removesuffix("-int8")
+    return _WHISPER_RANK.get(hq_model, 1) > _WHISPER_RANK.get(size, 1)
+
+
+def _in_person_folder(root: Path, folder: str) -> bool:
+    """Reunion presencial, para la etiqueta de la lista: solo mira si existe la marca
+    ``.micnaga-in-person.json`` (un ``stat`` por fila; sin leer JSON ni preguntar al indice)."""
+    from micnaga.capture.session import IN_PERSON_MARKER
+
+    if not valid_folder_name(folder):
+        return False
+    try:
+        return (root / folder / IN_PERSON_MARKER).is_file()
+    except OSError:
+        return False
 
 
 class SettingsApi:

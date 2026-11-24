@@ -176,6 +176,7 @@
       b.append(el("div", "row-title", m.title));
       const sub = el("div", "row-sub tnum");
       sub.append(el("span", "", mic.fmtDate(m.start)), el("span", "dot", "·"), el("span", "", mic.fmtDuration(m.duration_s)));
+      if (m.in_person) sub.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
       const n = m.speakers.length;
       if (n) {
         const dots = el("span", "who-dots");
@@ -301,13 +302,15 @@
   async function hqRender() {
     const btn = $("hq-btn");
     clearTimeout(HQ.timer);
-    if (!S.hq) { btn.hidden = true; $("hq-bar").hidden = true; return; }
-    btn.hidden = false;
+    btn.hidden = true;
+    if (!S.hq) { $("hq-bar").hidden = true; return; }
     btn.onclick = hqAsk;
     HQ.folder = S.folder;
     hqHide();
     const r = await mic.call("hq", "status", S.folder);
     if (!r || !r.ok || HQ.folder !== S.folder) return;
+    // solo si el modelo HQ mejora al que la transcribio (reuniones antiguas con Parakeet)
+    btn.hidden = !(r.offer || (r.status && r.status.state === "running"));
     if (r.status && r.status.state === "running") hqPoll();
     else if (r.previa) hqOffer();
   }

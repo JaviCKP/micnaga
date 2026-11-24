@@ -65,7 +65,7 @@ def test_committed_licence_file_exists_and_has_required_sections() -> None:
         "WeSpeaker",
         "Silero VAD",
         "faster-whisper small",
-        "community-1",
+        "large-v3-turbo",
         "SpeexDSP",
         "WebRTC",
         "soxr",

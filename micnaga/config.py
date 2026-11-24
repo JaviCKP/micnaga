@@ -345,9 +345,9 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
     Whisper, u otro tamano, se queda como estaba; ``hq_model`` pasa de ``large-v3`` a
     ``large-v3-turbo`` (igual: solo si seguia en el defecto viejo). Un ``whisper_model`` sin
     modelo en el manifiesto (``tiny``, ``base``, ``medium``: la interfaz los ofrecia pero nunca
-    funcionaron) pasa al de por defecto. Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
-    el usuario se respeta. ``save_config`` escribe todas las claves, asi que sin esto un fichero
-    guardado una vez fijaria para siempre los defectos viejos.
+    funcionaron) pasa al de por defecto. Solo se cambian los valores que seguian en el defecto
+    antiguo: un valor elegido por el usuario se respeta. ``save_config`` escribe todas las
+    claves, asi que sin esto un fichero guardado una vez fijaria para siempre los defectos viejos.
     """
     out: dict[str, Any] = {k: (dict(v) if isinstance(v, Mapping) else v) for k, v in data.items()}
     meta = out.get("meta")

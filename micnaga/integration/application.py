@@ -44,12 +44,11 @@ from micnaga.integration.ports import RecorderFactory, UiPort
 from micnaga.store.db import Database, open_database
 from micnaga.ui.bridge import ACTION_MODEL_DOWNLOADER
 from micnaga.ui.contracts import (
-    ACTION_RECORD_IN_PERSON,
     Diagnostic,
+    InPersonResult,
     LibraryOps,
     ModelProgress,
     UiCallbacks,
-    app_action,
     set_app_action,
 )
 
@@ -285,9 +284,6 @@ class Application:
         self.ui.set_levels_provider(self._levels)
         self.watcher = watcher_factory(config, self.controller, self._on_watcher_state)
         self.controller.bind_watcher(self.watcher)
-        # «Grabar reunión presencial» (bandeja y biblioteca): ``host.py`` arma esas superficies
-        # con un juego fijo de callbacks, asi que la accion va por el registro de ``contracts``.
-        set_app_action(ACTION_RECORD_IN_PERSON, self._record_in_person)
         # Ajustes > Transcripcion baja los modelos que falten con el mismo descargador.
         set_app_action(ACTION_MODEL_DOWNLOADER, lambda: self.model_downloader)
         self.held_ops = AppHeldOps(self)
@@ -485,8 +481,6 @@ class Application:
                 return
             self._stopped.set()
         log.info("shutting down (reason: %s)", reason)
-        if app_action(ACTION_RECORD_IN_PERSON) == self._record_in_person:
-            set_app_action(ACTION_RECORD_IN_PERSON, None)
         set_app_action(ACTION_MODEL_DOWNLOADER, None)
         if self.updates is not None:
             from micnaga import updates
@@ -530,6 +524,7 @@ class Application:
             on_pause_toggle=lambda p: self.watcher.set_private_pause(p),
             on_stop=lambda: self.watcher.user_stop(),
             on_record_now=lambda: self.watcher.record_now(),
+            on_record_in_person=self._record_in_person,
             on_pause_watching=lambda minutes: self.watcher.suspend(minutes * 60.0),
             on_resume_watching=lambda: self.watcher.resume_watching(),
             on_quit=lambda: self.shutdown(reason="tray_quit"),
@@ -541,11 +536,15 @@ class Application:
     def _marker(self) -> None:
         self.controller.add_marker()
 
-    def _record_in_person(self) -> bool:
-        """«Grabar reunión presencial»: ``True`` si empezo a grabar (``False``: ya se grababa)."""
+    def _record_in_person(self) -> InPersonResult:
+        """«Grabar reunión presencial»: ``started``, ``busy`` (ya se grababa) o ``failed`` (la
+        captura no arranco; el controlador ya lo avisa). El vigilante despacha el arranque antes
+        de volver, asi que ``controller.recording`` ya dice si de verdad se esta grabando."""
         if self._stopped.is_set():
-            return False
-        return bool(self.watcher.record_in_person())
+            return "failed"
+        if not self.watcher.record_in_person():
+            return "busy"
+        return "started" if self.controller.recording else "failed"
 
     def _on_popup_decision(self, decision: str) -> None:
         # La cuenta atras es la del vigilante: el "timeout" de la UI se ignora.

@@ -125,7 +125,7 @@
   // ---- standalone mock ------------------------------------------------------------------
   if (!mic.isHost && mic.params.get("bridge") !== "http") {
     let t0 = 0;
-    const models = [["Parakeet TDT 0.6B v3 (int8)", 640 * MB], ["Silero VAD", 2 * MB], ["Diarización (WeSpeaker)", 26 * MB]];
+    const models = [["Whisper large-v3-turbo", 1620 * MB], ["Silero VAD", 2 * MB], ["Diarización (WeSpeaker)", 26 * MB]];
     mic.mock.start_download = () => { t0 = performance.now(); return { ok: true }; };
     mic.mock.download_status = () => {
       const el_ = (performance.now() - t0) / 1000;

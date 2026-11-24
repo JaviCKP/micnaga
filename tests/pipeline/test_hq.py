@@ -339,7 +339,7 @@ def test_hq_models_in_manifest() -> None:
         assert {f.name for f in g.files} >= {"model.bin", "config.json", "tokenizer.json"}
         assert all(len(f.sha256) == 64 and f.size > 0 for f in g.files)
         assert "/resolve/main/" not in g.files[0].url
-    assert hq.model_group(Config()) == "faster-whisper-large-v3"
+    assert hq.model_group(Config()) == "faster-whisper-large-v3-turbo"  # DECISIONS §32
 
 
 def test_hq_engine_gets_language_glossary_and_guards(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -358,7 +358,7 @@ def test_hq_engine_gets_language_glossary_and_guards(monkeypatch: pytest.MonkeyP
     cfg.processing.glossary = ["Shodan"]
     hq.create_engine(cfg)
     assert seen == {
-        "size": "large-v3",
+        "size": "large-v3-turbo",
         "language": "es",
         "guards": True,
         "hotwords": "Glosario: Shodan.",

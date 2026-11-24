@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -586,3 +587,24 @@ def test_settings_call_delegates_only_public_methods(env: Env) -> None:
     assert api.settings_call("_secret", [])["ok"] is False
     assert api.settings_call("nope", [])["ok"] is False
     assert lib(env).settings_call("get", [])["ok"] is False
+
+
+@pytest.mark.parametrize(
+    ("asr", "hq_model", "offered"),
+    [
+        ("parakeet-tdt-0.6b-v3-int8", "large-v3-turbo", True),  # reuniones antiguas
+        ("faster-whisper-large-v3-turbo-int8", "large-v3-turbo", False),  # el defecto: nada
+        ("faster-whisper-large-v3-turbo-int8", "large-v3", False),  # no mejor (DECISIONS §32)
+        ("faster-whisper-small-int8", "large-v3-turbo", True),
+        ("faster-whisper-large-v3-int8", "large-v3-turbo", False),
+    ],
+)
+def test_hq_is_offered_only_when_it_improves(
+    tmp_path: Path, asr: str, hq_model: str, offered: bool
+) -> None:
+    from micnaga.ui.bridge import _hq_improves
+
+    f = tmp_path / "transcripcion.json"
+    f.write_text(json.dumps({"engines": {"asr": asr}}), encoding="utf-8")
+    assert _hq_improves(f, hq_model) is offered
+    assert _hq_improves(tmp_path / "missing.json", hq_model) is True

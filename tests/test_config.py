@@ -314,3 +314,21 @@ def test_secretaria_defaults_and_mcp_server_lines(tmp_home: Path) -> None:
             config_from_dict({"secretaria": {"mcp_servers": [bad]}})
     with pytest.raises(ConfigError):
         config_from_dict({"secretaria": {"auth": "magic"}})
+
+
+@pytest.mark.parametrize(
+    ("version", "stored", "expected"),
+    [
+        (2, None, "large-v3-turbo"),  # sin la clave: el defecto nuevo
+        (2, "large-v3", "large-v3-turbo"),  # defecto viejo sin tocar
+        (3, "large-v3", "large-v3"),  # ya en v3: elegido a mano
+        (2, "large-v3-turbo", "large-v3-turbo"),
+    ],
+)
+def test_hq_model_moves_to_turbo_only_from_the_old_default(
+    tmp_path: Path, version: int, stored: str | None, expected: str
+) -> None:
+    path = tmp_path / "config.toml"
+    hq = f'hq_model = "{stored}"\n' if stored else ""
+    path.write_text(f"[meta]\nversion = {version}\n[processing]\n{hq}", encoding="utf-8")
+    assert load_config(path).processing.hq_model == expected

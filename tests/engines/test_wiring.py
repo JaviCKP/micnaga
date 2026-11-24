@@ -62,9 +62,13 @@ def test_importing_engine_modules_is_light() -> None:
     """Importar los modulos de motores no arrastra torch ni librerias de modelos."""
     import subprocess
     import sys
+    from pathlib import Path
 
+    # ``-I`` ignora PYTHONPATH y el directorio actual: sin esto se importaria la copia del repo
+    # instalada en modo editable (p. ej. la principal al probar desde un worktree).
+    root = str(Path(__file__).resolve().parents[2])
     code = (
-        "import sys\n"
+        f"import sys; sys.path.insert(0, {root!r})\n"
         "import micnaga.pipeline.engines.asr.parakeet, micnaga.pipeline.engines.asr.whisper\n"
         "import micnaga.pipeline.engines.diar.diarize, micnaga.pipeline.engines.diar.room\n"
         "import micnaga.pipeline.aec.webrtc, micnaga.pipeline.aec.speex\n"

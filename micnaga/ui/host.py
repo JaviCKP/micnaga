@@ -1500,6 +1500,7 @@ class UiHost:
         cb = self._cb
         return UiCallbacks(
             on_record_now=cb.on_record_now,
+            on_record_in_person=cb.on_record_in_person,
             on_pause_watching=cb.on_pause_watching,
             on_resume_watching=cb.on_resume_watching,
             on_open_library=self._tray_open_library,
@@ -1659,6 +1660,7 @@ class UiHost:
             brain=self._brain,
             open_settings=self.open_settings,
             settings=self.settings_api,
+            record_in_person=self._cb.on_record_in_person,
         )
 
     def open_library(
