@@ -26,6 +26,8 @@ de seguimiento. **Nada se escribe en ningún sitio hasta que pulsas «Aplicar».
 
 Requisitos: Windows 10 22H2 u 11, de 64 bits. Para la Secretaria, tener [Claude Code](https://claude.com/claude-code) con tu sesión iniciada. Todos los pasos (Odoo, Google y cómo dejarlo siempre encendido) están en **[docs/ONBOARDING.md](docs/ONBOARDING.md)**.
 
+Para consultar las actas y transcripciones desde Claude en varios equipos, sigue la guía de la [biblioteca remota](docs/CLAUDE_REMOTE.md).
+
 ## Cómo funciona
 
 ### 1 · Te pregunta, no te espía
