@@ -16,8 +16,12 @@ correlacion cruzada blanqueada, hasta 0,5 s):
 
 Hay eco si ``coherence >= ECHO_MIN_COHERENCE`` y ``echo_db >= ECHO_MIN_DB``. Sin voz en el
 sistema (``active_s`` < ``MIN_ACTIVE_S``) no hay nada que cancelar. Calibrado con la grabacion
-real de 47 min con auriculares (coherencia 0,04) y con fugas simuladas sobre ella (0,7-0,9 hasta
--21 dB): ver ``tests/pipeline/test_echo_check.py`` y DECISIONS §23.
+real de 47 min con auriculares y con fugas simuladas sobre ella (DECISIONS §35): sin eco, en las
+139 ventanas de 5 min de esa reunion (rejilla de 60 s desplazada 0/20/40 s) la coherencia llega a
+0,098 (con ``echo_db`` -28,5 dB) y una ventana que empieza en el s 70 da 0,105 / -20,9 dB: con el
+umbral antiguo (0,1) eso era un falso positivo y WebRTC sin eco sube el WER del micro de 8,7 a
+16,2 %. Un eco audible da mucho mas: fuga simulada sobre la reunion real 0,86-0,95 (de -12 a
+-35 dB respecto a la voz), sintetica 0,42 con ``echo_db`` -28 dB. Umbral: 0,3.
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from numpy.typing import NDArray
 
 from micnaga.types import AudioArray
 
-ECHO_MIN_COHERENCE = 0.1
+ECHO_MIN_COHERENCE = 0.3
 ECHO_MIN_DB = -30.0
 MAX_DELAY_S = 0.5
 CANDIDATES = 3
@@ -135,8 +139,23 @@ def _delay_candidates(mic: AudioArray, ref: AudioArray, sr: int, max_lag: int) -
     return picks
 
 
-def measure_echo(mic: AudioArray, ref: AudioArray, sr: int) -> EchoCheck:
-    """Mide si ``ref`` (sistema) se filtra en ``mic``. Barato: unos 80 s de audio como mucho."""
+WindowCache = dict[tuple[int, int], tuple[float, float, int]]
+"""Mejor ``(coherencia, potencia, retardo)`` de cada ventana por ``(muestra absoluta, largo)``."""
+
+
+def measure_echo(
+    mic: AudioArray,
+    ref: AudioArray,
+    sr: int,
+    *,
+    offset: int = 0,
+    cache: WindowCache | None = None,
+) -> EchoCheck:
+    """Mide si ``ref`` (sistema) se filtra en ``mic``. Barato: unos 80 s de audio como mucho.
+
+    ``offset`` (muestra de la pista donde empieza ``mic``) y ``cache`` permiten reutilizar las
+    ventanas ya medidas al recorrer una pista por tramos que se solapan (etapa 3): el resultado
+    es el mismo que sin cache."""
     n = min(len(mic), len(ref))
     mic = np.asarray(mic[:n], dtype=np.float32)
     ref = np.asarray(ref[:n], dtype=np.float32)
@@ -158,10 +177,19 @@ def measure_echo(mic: AudioArray, ref: AudioArray, sr: int) -> EchoCheck:
         m, r = mic[s : s + win], ref[s : s + win]
         if float(np.sum(np.square(r, dtype=np.float64))) < 1e-9:
             continue
-        for d in sorted({0, *_delay_candidates(m, r, sr, max_lag)}):
-            c, power = _coherence(m[d:], r[: len(r) - d], sr)
-            if c > best:
-                best, best_power, best_delay = c, power, d
+        key = (offset + s, len(r))
+        hit = cache.get(key) if cache is not None else None
+        if hit is None:
+            w_best, w_power, w_delay = 0.0, 0.0, 0
+            for d in sorted({0, *_delay_candidates(m, r, sr, max_lag)}):
+                c, power = _coherence(m[d:], r[: len(r) - d], sr)
+                if c > w_best:
+                    w_best, w_power, w_delay = c, power, d
+            hit = (w_best, w_power, w_delay)
+            if cache is not None:
+                cache[key] = hit
+        if hit[0] > best:
+            best, best_power, best_delay = hit
     near = _near_power(mic, sr)
     echo_db = 10 * float(np.log10(max(best_power, 1e-20) / max(near, 1e-20)))
     echo = best >= ECHO_MIN_COHERENCE and echo_db >= ECHO_MIN_DB

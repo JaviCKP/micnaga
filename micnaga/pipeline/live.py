@@ -13,9 +13,10 @@ ultimo):
 1. **Alineacion** (``capture.sync.resample_range_to_clock``): la misma correspondencia
    muestra -> reloj que la etapa 2, leyendo solo el tramo necesario del WAV que se esta grabando.
    Un trozo solo se procesa cuando las marcas de sincronia (cada 10 s) ya lo cubren.
-2. **Eco** (``aec.echo_check``): se mide en el trozo; solo si el sistema se oye en el micro se
-   cancela con un Speex nuevo y ``AEC_PREROLL_S`` de audio previo para que converja (el estado
-   de Speex no se puede guardar; asi un trozo no depende del proceso que hizo el anterior).
+2. **Eco** (``aec.policy``, la misma regla que la etapa 3): segun el modo de ``processing.aec``
+   y el eco medido en los ultimos ``ECHO_LOOKBACK_S``; si toca, se cancela con un cancelador
+   nuevo y ``AEC_PREROLL_S`` de audio previo para que converja (su estado no se puede guardar;
+   asi un trozo no depende del proceso que hizo el anterior).
 3. **Acondicionado**: el paso alto con 2 s de margen a cada lado (identico a la etapa 4, que
    filtra por bloques de 60 s); la ganancia sale de la energia activa **acumulada** hasta este
    trozo (la etapa 4 usa la de toda la pista: es la unica diferencia con el lote).
@@ -55,6 +56,7 @@ import numpy as np
 from numpy.typing import NDArray
 
 from micnaga import paths
+from micnaga.pipeline.aec import policy as _aec_policy
 from micnaga.pipeline.stages.base import (
     StageContext,
     StageResult,
@@ -76,14 +78,15 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 LIVE_DIRNAME = "live"
-FORMAT = 2
-"""2: los bloques de ASR se transcriben con los silencios largos acortados (DECISIONS §32)."""
-SLICE_S = 60.0
+FORMAT = 3
+"""2: los bloques de ASR se transcriben con los silencios largos acortados (DECISIONS §32).
+3: decision de eco por trozo compartida con la etapa 3 (``aec.policy``, DECISIONS §35)."""
+SLICE_S = _aec_policy.SLICE_S
 """Multiplo de los bloques de 60 s del paso alto de la etapa 4 (mismo filtrado)."""
 HP_MARGIN_S = 2.0
-AEC_PREROLL_S = 8.0
-ECHO_LOOKBACK_S = 300.0
-"""La decision de eco de un trozo mira los ultimos 5 min (como la etapa 3 mira toda la pista)."""
+AEC_PREROLL_S = _aec_policy.PREROLL_S
+ECHO_LOOKBACK_S = _aec_policy.LOOKBACK_S
+"""La decision de eco de un trozo mira los ultimos 5 min (igual en la etapa 3)."""
 MANIFEST = "manifest.json"
 SLICE_META = "slice.json"
 STOP_FILE = "stop"
@@ -181,7 +184,7 @@ def fingerprint(config: Config) -> dict[str, Any]:
         "slice_s": SLICE_S,
         "asr_engine": p.asr_engine,
         "whisper_model": p.whisper_model if p.asr_engine == "whisper" else "",
-        "aec": p.aec,
+        "aec": _aec_policy.aec_mode(p.aec),
         "diarization": p.diarization,
         "vad": [v.min_speech_ms, v.min_silence_ms, v.pad_ms, v.max_block_s],
     }
@@ -325,6 +328,8 @@ class SliceResult:
     echo: dict[str, Any] | None = None
     aec: str | None = None
     aec_skipped: str | None = None
+    aec_reason: str | None = None
+    """Motivo de la decision de eco (``aec.policy.REASON_*``)."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -336,6 +341,7 @@ class SliceResult:
             "echo": self.echo,
             "aec": self.aec,
             "aec_skipped": self.aec_skipped,
+            "aec_reason": self.aec_reason,
         }
 
     @classmethod
@@ -349,6 +355,7 @@ class SliceResult:
             d.get("echo"),
             d.get("aec"),
             d.get("aec_skipped"),
+            d.get("aec_reason"),
         )
 
 
@@ -359,9 +366,20 @@ class LiveStats:
     blocks_cached: int = 0
     blocks_done: int = 0
     times: dict[str, float] = field(default_factory=dict)
+    audio_s: float = 0.0
+    """Segundos de reunion procesados en vivo (trozos nuevos)."""
+    work_s: float = 0.0
+    """Segundos de reloj trabajando (pasos con trabajo)."""
+    speech_s: float = 0.0
+    """Segundos de audio (compacto) que ha pagado el ASR."""
 
     def add_time(self, key: str, dt: float) -> None:
         self.times[key] = self.times.get(key, 0.0) + dt
+
+    @property
+    def rtf(self) -> float:
+        """Factor de tiempo real: segundos de calculo por segundo de reunion (< 1 = llega)."""
+        return self.work_s / self.audio_s if self.audio_s > 0 else 0.0
 
 
 class LiveProcessor:
@@ -465,7 +483,6 @@ class LiveProcessor:
     def process_slice(self, k: int, src: _Sources, prev: SliceResult | None) -> SliceResult:
         """Alinea, (cancela eco), acondiciona y pasa el VAD por el trozo ``k``."""
         from micnaga.capture.sync import resample_range_to_clock
-        from micnaga.pipeline.stages.s03_aec import needs_aec
         from micnaga.pipeline.stages.s04_condition import (
             ACTIVE_THRESHOLD_DBFS,
             FRAME_S,
@@ -477,12 +494,8 @@ class LiveProcessor:
 
         assert self.meta is not None
         sr = self.sr
-        start = k * self.slice_len
-        end = min(start + self.slice_len, src.length)
+        start, end, lo_echo, lo_aec = _aec_policy.slice_bounds(k, src.length, sr)
         margin = round(HP_MARGIN_S * sr)
-        pre = round(AEC_PREROLL_S * sr)
-        lo_echo = max(0, end - round(ECHO_LOOKBACK_S * sr))
-        lo_aec = max(0, start - pre)
         lo, hi = min(lo_aec, lo_echo), min(src.length, end + margin)
         t0 = time.perf_counter()
         wide = {
@@ -493,28 +506,27 @@ class LiveProcessor:
         }
         self.stats.add_time("align", time.perf_counter() - t0)
         res = SliceResult(k, start, end, {}, {})
-        # 2) eco: misma medida que la etapa 3, sobre los ultimos ECHO_LOOKBACK_S (no un minuto
-        # suelto: con poco audio la decision oscila)
-        if not needs_aec(self.meta):
-            res.aec_skipped = "headphones"
-        elif self.config.processing.aec == "off":
-            res.aec_skipped = "off"
+        # 2) eco: la misma decision que la etapa 3 (``aec.policy``), sobre los ultimos
+        # ECHO_LOOKBACK_S (no un minuto suelto: con poco audio la decision oscila)
+        t0 = time.perf_counter()
+        mode = _aec_policy.aec_mode(self.config.processing.aec)
+        a, b = lo_echo - lo, end - lo
+        decision = _aec_policy.decide_slice(
+            mode, self.meta, wide["mic"][a:b], wide["system"][a:b], sr, (start, end)
+        )
+        res.echo, res.aec_reason = decision.echo, decision.reason
+        if decision.apply:
+            # exactamente lo que cancela la etapa 3: [S - preroll, E) (el margen del paso alto
+            # tras E se queda sin cancelar; solo sirve de contexto al filtro)
+            head, tail = lo_aec - lo, end - lo
+            cleaned, res.aec, res.aec_skipped = self._cancel(
+                wide["mic"][head:tail], wide["system"][head:tail]
+            )
+            wide["mic"] = np.concatenate([wide["mic"][:head], cleaned, wide["mic"][tail:]])
         else:
-            t0 = time.perf_counter()
-            from micnaga.pipeline.aec.echo_check import measure_echo
-
-            a, b = lo_echo - lo, end - lo
-            check = measure_echo(wide["mic"][a:b], wide["system"][a:b], sr)
-            res.echo = check.to_dict()
-            if not check.echo:
-                res.aec_skipped = "no echo"
-            else:
-                head = lo_aec - lo
-                cleaned, res.aec, res.aec_skipped = self._cancel(
-                    wide["mic"][head:], wide["system"][head:]
-                )
-                wide["mic"] = np.concatenate([wide["mic"][:head], cleaned])
-            self.stats.add_time("aec", time.perf_counter() - t0)
+            res.aec_skipped = decision.reason
+        self.stats.add_time("aec", time.perf_counter() - t0)
+        _log_aec_change(k, mode, prev, res)
         aligned = wide
         mic = wide["mic"]
         # 3) acondicionado (paso alto con margen, ganancia por energia activa acumulada)
@@ -674,8 +686,12 @@ class LiveProcessor:
     def _asr_engine(self) -> AsrEngine:
         with self._asr_lock:
             if self._asr is None:
+                t0 = time.perf_counter()
                 self._asr = self.engines.create_asr(self.config)
                 atomic_write_json(self.dir / "asr_engine.json", {"name": self._asr.name})
+                log.info(
+                    "live ASR engine %s loaded in %.1f s", self._asr.name, time.perf_counter() - t0
+                )
             return self._asr
 
     def transcribe_blocks(
@@ -689,7 +705,11 @@ class LiveProcessor:
         ``regions`` (tramos de voz) acortan los silencios largos del bloque como en la etapa 6
         (``s06_asr.compact``): un bloque estable ya no cambia de tramos, asi que el resultado es
         el mismo que el del lote."""
-        from micnaga.pipeline.stages.s06_asr import MIN_CHUNK_S, transcribe_piece
+        from micnaga.pipeline.stages.s06_asr import (
+            MIN_CHUNK_S,
+            compact_seconds,
+            transcribe_piece,
+        )
 
         pieces: list[tuple[float, float, Sequence[Word]]] = []
         for a, b in blocks:
@@ -710,6 +730,7 @@ class LiveProcessor:
                     t0 = time.perf_counter()
                     words = transcribe_piece(self._asr_engine(), piece, a, self.sr, regions)
                     self.stats.add_time("asr", time.perf_counter() - t0)
+                    self.stats.speech_s += compact_seconds(a, b, regions)
                 atomic_write_json(file, [w.to_dict() for w in words])
                 self.stats.blocks_done += 1
             pieces.append((a, b, words))
@@ -736,6 +757,10 @@ class LiveProcessor:
         slices = self.cached_slices()
         did = False
         k = len(slices)
+        first = k
+        done_s = k * SLICE_S
+        t0 = time.perf_counter()
+        speech0, blocks0 = self.stats.speech_s, self.stats.blocks_done
         while (k + 1) * self.slice_len + margin <= src.length:
             if self.stopped():
                 raise _Stopped
@@ -746,11 +771,56 @@ class LiveProcessor:
             length = slices[-1].end
             probs = self.slice_probs(slices)
             self.commit_asr(probs, length, final=False)
+            wall = time.perf_counter() - t0
+            new_s = (k - first) * SLICE_S
+            self.stats.audio_s += new_s
+            self.stats.work_s += wall
+            log.info(
+                "live step: minutes %d-%d (backlog was %.0f s of %.0f s recorded), "
+                "%d ASR blocks (%.0f s of speech) in %.1f s; RTF %.2f this step, %.2f overall",
+                first,
+                k,
+                src.length / self.sr - done_s,
+                src.length / self.sr,
+                self.stats.blocks_done - blocks0,
+                self.stats.speech_s - speech0,
+                wall,
+                wall / new_s if new_s else 0.0,
+                self.stats.rtf,
+            )
         return did
 
 
 class _Stopped(Exception):
     """Se pidio parar (en vivo): se sale entre bloques sin dejar nada a medias."""
+
+
+def _log_aec_change(k: int, mode: str, prev: SliceResult | None, res: SliceResult) -> None:
+    """Una linea de log cuando cambia la decision de eco (y en el primer trozo)."""
+    key = (res.aec is not None, res.aec_reason)
+    if prev is not None and (prev.aec is not None, prev.aec_reason) == key:
+        return
+    echo = res.echo or {}
+    log.info(
+        "live echo canceller (mode %s) from minute %d: %s (%s; coherence=%s, echo=%s dB)",
+        mode,
+        k,
+        f"applied ({res.aec})" if res.aec else "not applied",
+        res.aec_reason,
+        echo.get("coherence"),
+        echo.get("echo_db"),
+    )
+
+
+def aec_summary(slices: Sequence[SliceResult], mode: str) -> _aec_policy.AecSummary:
+    """Resumen de las decisiones de eco de los trozos (marca de la etapa 3)."""
+    engines = sorted({s.aec for s in slices if s.aec})
+    summary = _aec_policy.AecSummary(mode, engine=engines[0] if engines else None)
+    for s in slices:
+        reason = (s.aec_skipped if s.aec is None else None) or s.aec_reason
+        reason = reason or _aec_policy.REASON_NO_SYSTEM
+        summary.add(s.index, _aec_policy.SliceDecision(s.aec is not None, reason, s.echo))
+    return summary
 
 
 def _save_npz(path: Path, arrays: dict[str, NDArray[np.float32]]) -> None:
@@ -881,7 +951,8 @@ def _write_outputs(
         ctx.write_json(WORDS_FILES[t], [w.to_dict() for w in ws])
         counts[t] = len(ws)
     # marcas 2-6 (lo ultimo)
-    used_aec = sorted({s.aec for s in slices if s.aec})
+    aec = aec_summary(slices, _aec_policy.aec_mode(ctx.config.processing.aec))
+    log.info("%s", aec.describe())
     stats = proc.stats
     live_info = {
         "slices": len(slices),
@@ -892,7 +963,6 @@ def _write_outputs(
     }
     by_name = {s.name: s for s in stages}
     elapsed = time.perf_counter() - t_start
-    echo_slices = sum(1 for s in slices if s.echo is not None and s.echo.get("echo"))
     results = {
         "align": StageResult(
             [],
@@ -903,16 +973,7 @@ def _write_outputs(
                 "live": live_info,
             },
         ),
-        "aec": StageResult(
-            [],
-            {"aec": used_aec[0], "echo_slices": echo_slices, "live": True}
-            if used_aec
-            else {
-                "skipped": slices[0].aec_skipped if slices else "headphones",
-                "echo_slices": echo_slices,
-                "live": True,
-            },
-        ),
+        "aec": StageResult([], {**aec.info(), "live": True}),
         "condition": StageResult(
             ["04_mic.wav", "04_system.wav"],
             {"gain_db": slices[-1].gain_db if slices else {}, "live": True},
@@ -952,8 +1013,32 @@ def _engine_name(proc: LiveProcessor) -> str:
 
 
 BUSY_CPU_PERCENT = 85.0
+"""CPU usada por **otros** procesos (no cuenta el propio vivo) a partir de la cual se cede."""
 POLL_S = 3.0
 BUSY_WAIT_S = 5.0
+MAX_BUSY_WAIT_S = 60.0
+"""Tras esperar tanto seguido se hace un paso igualmente: el vivo va con prioridad baja (el
+sistema da la CPU antes a la reunion) y esperar sin fin solo deja todo para despues de colgar."""
+
+
+def other_cpu_percent() -> Callable[[], float]:
+    """Medidor de la CPU usada por los demas procesos (% del equipo, 0-100).
+
+    ``psutil.cpu_percent`` cuenta todo el equipo, incluido este proceso: justo despues de un
+    paso de ASR el vivo se veria a si mismo como «equipo ocupado». Se resta su parte."""
+    import psutil
+
+    me = psutil.Process()
+    cores = psutil.cpu_count() or 1
+    psutil.cpu_percent(None)
+    me.cpu_percent(None)
+
+    def measure() -> float:
+        total = float(psutil.cpu_percent(None))
+        own = float(me.cpu_percent(None)) / cores
+        return max(0.0, total - own)
+
+    return measure
 
 
 def _session_hash(session: Path) -> str:
@@ -1029,12 +1114,7 @@ def run_live(
     tras ``MAX_STEP_ERRORS`` seguidos se deja (el worker lo hara todo al colgar).
     """
     if cpu_percent is None:
-        import psutil
-
-        psutil.cpu_percent(None)
-
-        def cpu_percent() -> float:
-            return float(psutil.cpu_percent(None))
+        cpu_percent = other_cpu_percent()
 
     reason: str | None = None
 
@@ -1053,14 +1133,34 @@ def run_live(
         return "unsupported sample rate"
     proc = LiveProcessor(session, config, engines, stop=quick_stop)
     errors = 0
+    busy_since: float | None = None
+    busy_waited = 0.0
     try:
         if full_stop():
             return reason or "stopped"
-        proc.ensure_manifest()
+        if not proc.ensure_manifest():
+            log.info("live processing: new cache (format %d)", FORMAT)
         while not full_stop():
-            if cpu_percent() >= busy_percent:
+            load = cpu_percent()
+            if load >= busy_percent and (busy_since is None or busy_since < MAX_BUSY_WAIT_S):
+                if busy_since is None:
+                    busy_since = 0.0
+                    log.info("live processing paused: other processes use %.0f%% of the CPU", load)
                 sleep(BUSY_WAIT_S)  # el equipo esta ocupado: se cede (la cola espera al colgar)
+                busy_since += BUSY_WAIT_S
+                busy_waited += BUSY_WAIT_S
                 continue
+            if busy_since is not None:
+                if busy_since >= MAX_BUSY_WAIT_S:
+                    log.info(
+                        "live processing: CPU still busy (%.0f%%) after %.0f s; one step anyway "
+                        "at low priority",
+                        load,
+                        busy_since,
+                    )
+                else:
+                    log.info("live processing resumed after %.0f s (CPU %.0f%%)", busy_since, load)
+                busy_since = None
             try:
                 did = proc.step()
                 errors = 0
@@ -1076,6 +1176,19 @@ def run_live(
                 sleep(poll_s)
         return reason or "stopped"
     finally:
+        st = proc.stats
+        log.info(
+            "live processing summary: %d slices (%.0f s of meeting), %d ASR blocks "
+            "(%.0f s of speech), %.0f s working, RTF %.2f (completed steps), %.0f s paused for "
+            "a busy CPU",
+            st.slices_done,
+            st.slices_done * SLICE_S,
+            st.blocks_done,
+            st.speech_s,
+            st.work_s,
+            st.rtf,
+            busy_waited,
+        )
         proc.close()
 
 
@@ -1090,6 +1203,7 @@ __all__ = [
     "finish",
     "has_cache",
     "live_supported",
+    "other_cpu_percent",
     "request_stop",
     "run_live",
     "stitch_words",

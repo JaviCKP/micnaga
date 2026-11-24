@@ -11,7 +11,7 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from micnaga.config import ASR_ENGINES, WHISPER_MODELS, Config
+from micnaga.config import AEC_MODES, ASR_ENGINES, WHISPER_MODELS, Config
 
 Kind = Literal["bool", "int", "float", "text", "choice", "list", "hotkey", "path"]
 
@@ -125,10 +125,10 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
             _f(
                 "processing.hq_model",
                 "choice",
-                choices=("large-v3", "large-v3-turbo"),
+                choices=("large-v3-turbo", "large-v3"),
                 advanced=True,
             ),
-            _f("processing.aec", "choice", choices=("auto", "webrtc", "off")),
+            _f("processing.aec", "choice", choices=AEC_MODES),
             _f("processing.threads", "int", minimum=1, maximum=32, step=1),
             _f("processing.low_priority", "bool"),
             _f("processing.live", "bool"),

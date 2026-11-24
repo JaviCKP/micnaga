@@ -6,9 +6,9 @@ equipo esta ocupado (``pipeline.live.run_live``). Reglas:
 
 * «No» / «Descartar» (``begin_discard``): se le pide parar al instante (no se espera). Si se
   deshace, se relanza y sigue donde lo dejo (lo calculado esta en ``work/live/``).
-* Al parar la grabacion (``stop``): se le pide parar y se espera (``STOP_WAIT_S``) a que salga
-  antes de convertir a FLAC; si no sale a tiempo se termina (sus escrituras son atomicas: nunca
-  deja un resultado a medias). Lo que falte lo hace el worker al procesar el trabajo.
+* Al parar la grabacion (``stop``): se le pide parar y se espera poco (``STOP_WAIT_S``) a que
+  salga antes de convertir a FLAC; si no sale a tiempo se termina (sus escrituras son atomicas:
+  nunca deja un resultado a medias). Lo que falte lo hace el worker al procesar el trabajo.
 * Al apartar en «Descartadas» se borra ``work/live/`` (``holding.move_to_held``).
 
 Todo es seguro desde cualquier hilo y ``start`` nunca bloquea mas que el ``Popen``.
@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -27,7 +28,10 @@ from micnaga.config import Config
 
 log = logging.getLogger(__name__)
 
-STOP_WAIT_S = 20.0
+STOP_WAIT_S = 5.0
+"""El vivo solo mira la orden de parar entre bloques y un bloque de Whisper con 2 hilos tarda
+20-30 s: esperarlo retrasaba cada «colgar» hasta 20 s (medido). Matarlo pierde a lo sumo ese
+bloque (escrituras atomicas), que el worker rehace en pocos segundos con todos sus hilos."""
 
 
 class LiveProc(Protocol):
@@ -61,14 +65,29 @@ class LiveRunner:
         self._procs: dict[Path, LiveProc] = {}
 
     def enabled(self) -> bool:
+        return self.disabled_reason() is None
+
+    def disabled_reason(self) -> str | None:
+        """Por que no se transcribe en vivo (``None``: si se hace)."""
         try:
-            return bool(self._config().processing.live) and self._models_ready()
+            config = self._config()
+            if not config.processing.live:
+                return "disabled in settings (processing.live = false)"
+            from micnaga.pipeline.live import LIVE_SR, live_supported
+
+            if not live_supported(config):
+                return f"sample rate is not {LIVE_SR} Hz"
+            if not self._models_ready():
+                return "models are not downloaded yet"
         except Exception:
             log.exception("could not decide whether to transcribe live")
-            return False
+            return "error deciding"
+        return None
 
     def start(self, session: Path) -> None:
-        if not self.enabled():
+        why = self.disabled_reason()
+        if why is not None:
+            log.info("live processing not started: %s", why)
             return
         from micnaga.pipeline import live
 
@@ -82,9 +101,11 @@ class LiveRunner:
             except Exception:
                 log.exception("could not start live processing (the worker will do it all)")
                 return
-            if proc is not None:
-                self._procs[session] = proc
-        log.info("live processing started")
+            if proc is None:
+                log.info("live processing not started: no process")
+                return
+            self._procs[session] = proc
+        log.info("live processing started (pid %s)", getattr(proc, "pid", "?"))
 
     def signal_stop(self, session: Path) -> None:
         """Pide parar sin esperar (p. ej. al pulsar «No»)."""
@@ -101,12 +122,20 @@ class LiveRunner:
             proc = self._procs.pop(session, None)
         if proc is None:
             return
+        early = proc.poll()
+        if early is not None:
+            # salio antes de colgar: su motivo esta en live.log (codigo != 0 = fallo)
+            log.info("live processing had already exited (code %s); see live.log", early)
+            return
         live.request_stop(session)
         timeout = self._stop_wait_s if wait_s is None else wait_s
+        t0 = time.monotonic()
         try:
-            proc.wait(timeout=timeout)
+            code = proc.wait(timeout=timeout)
+            log.info("live processing stopped in %.1f s (code %s)", time.monotonic() - t0, code)
         except Exception:
-            log.warning("live processing did not stop in %.0f s; terminating it", timeout)
+            # sus escrituras son atomicas: a lo sumo se pierde el bloque que estaba transcribiendo
+            log.info("live processing did not stop in %.0f s; terminating it", timeout)
             with contextlib.suppress(Exception):
                 proc.kill()
             with contextlib.suppress(Exception):

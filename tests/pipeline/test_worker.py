@@ -337,3 +337,16 @@ def test_spawn_worker_launches_a_detached_process(db: Database) -> None:
     assert child is not None
     assert child.wait(timeout=90) == 0
     assert db.get_job(job_id).state is JobState.DONE
+
+
+def test_live_threads_scale_with_physical_cores() -> None:
+    from micnaga.config import Config
+    from micnaga.pipeline.worker import live_threads
+
+    cfg = Config()  # threads = 6
+    assert live_threads(cfg, physical_cores=12) == 4  # i7-12700F
+    assert live_threads(cfg, physical_cores=10) == 3  # i5-1245U
+    assert live_threads(cfg, physical_cores=4) == 2
+    assert live_threads(cfg, physical_cores=64) == 4
+    cfg.processing.threads = 1
+    assert live_threads(cfg, physical_cores=12) == 1  # nunca mas que lo configurado

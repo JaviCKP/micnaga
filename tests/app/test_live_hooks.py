@@ -139,3 +139,29 @@ def test_runner_does_nothing_when_disabled_or_without_models(tmp_path: Path) -> 
         tmp_path
     )
     assert spawned == []
+
+
+def test_runner_logs_why_live_processing_does_not_start(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    cfg = Config()
+    runner = LiveRunner(lambda: cfg, spawn=lambda s: None, models_ready=lambda: False)
+    assert runner.disabled_reason() == "models are not downloaded yet"
+    cfg.processing.live = False
+    assert runner.disabled_reason() == "disabled in settings (processing.live = false)"
+    cfg.processing.live = True
+    cfg.capture.sample_rate = 48000
+    assert runner.disabled_reason() == "sample rate is not 16000 Hz"
+    with caplog.at_level("INFO", logger="micnaga.integration.live"):
+        runner.start(tmp_path)
+    assert "live processing not started: sample rate is not 16000 Hz" in caplog.text
+
+
+def test_runner_does_not_wait_for_a_process_that_already_exited(tmp_path: Path) -> None:
+    proc = FakeProc(exits=False)  # si se esperase, lanzaria TimeoutExpired y se mataria
+    cfg = Config()
+    runner = LiveRunner(lambda: cfg, spawn=lambda s: proc, stop_wait_s=0.01)
+    runner.start(tmp_path)
+    proc.code = 1  # p. ej. «too many errors»: su motivo esta en live.log
+    runner.stop(tmp_path)
+    assert not proc.killed

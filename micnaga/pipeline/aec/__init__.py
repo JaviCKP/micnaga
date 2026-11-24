@@ -1,7 +1,9 @@
 """Cancelacion de eco. Implementaciones: ``webrtc.py`` (AEC3) y ``speex.py``.
 
-Cada modulo expone ``create(config: Config) -> EchoCanceller``. ``config.processing.aec``
-admite ademas ``"auto"`` (el primero de ``AUTO_ORDER`` que cargue) y ``"off"`` (``None``).
+Cada modulo expone ``create(config: Config) -> EchoCanceller``. ``config.processing.aec`` es un
+modo (``policy.py``): ``"auto"`` y ``"always"`` usan el primero de ``AUTO_ORDER`` que cargue (lo
+que cambia es *donde* se aplica, no el motor) y ``"off"`` da ``None``. ``name`` permite pedir un
+motor concreto (banco de pruebas).
 
 La comparativa de F1 (docs/aec_comparison.md, solo escenarios sinteticos) dio ventaja a speex
 (``pyaec``), pero su ``aec.dll`` no esta firmada y sin editor conocido: Windows/antivirus bloquearon
@@ -40,7 +42,7 @@ def create_echo_canceller(config: Config, name: str | None = None) -> EchoCancel
     choice = name or config.processing.aec
     if choice == "off":
         return None
-    if choice == "auto":
+    if choice in ("auto", "always"):
         return _first_available(config, AUTO_ORDER)
     if choice in FALLBACK_TO_AUTO:
         try:

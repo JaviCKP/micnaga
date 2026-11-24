@@ -9,6 +9,7 @@ Codigos de salida de ``process``: 0 terminada, 3 descartada por las compuertas, 
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import threading
 from pathlib import Path
@@ -171,13 +172,24 @@ def _live_parser() -> argparse.ArgumentParser:
 
 def run_live(argv: list[str]) -> int:
     """Proceso en vivo (lo lanza la app al empezar a grabar; sale al parar la grabacion)."""
+    import time
+
+    t_boot = time.perf_counter()
     args = _live_parser().parse_args(argv)
     session: Path = args.session_dir.resolve()
+    # El log lo primero (es ligero): cualquier salida temprana queda escrita en ``live.log``.
+    import logging
+
+    from micnaga.logging_setup import setup_logging
+
+    setup_logging("live")
+    log = logging.getLogger("micnaga.live")
     from micnaga.config import ConfigError, load_config
 
     try:
         config = load_config()
     except ConfigError as exc:
+        log.error("live processing not started: invalid config.toml: %s", exc)
         print(f"micnaga live: config invalida: {exc}", file=sys.stderr)
         return EXIT_USAGE
     # Pocos hilos y prioridad baja ANTES de importar numpy/onnxruntime: nunca molestar a la
@@ -192,24 +204,34 @@ def run_live(argv: list[str]) -> int:
 
     sync.WARP_THREADS = threads
 
-    from micnaga.logging_setup import setup_logging
-
-    setup_logging("live")
-    import logging
-
-    log = logging.getLogger("micnaga.live")
     from micnaga.pipeline import live as live_mod
     from micnaga.pipeline.worker import NamedMutex
 
     with NamedMutex(live_mod.mutex_name(session)) as lock:
         if not lock.acquire():
+            log.info("live processing already running for this session; exiting")
             return EXIT_OK  # ya hay un proceso en vivo para esta sesion
         from micnaga.pipeline.stages.base import default_deps
 
         engines = live_mod.engines_from_deps(default_deps())
         if engines is None:
+            log.warning("live processing not started: no stateful VAD available")
             return EXIT_OK
-        log.info("live processing started (%d threads)", threads)
+        log.info(
+            "live processing started: %s, %d threads, ASR %s, echo canceller %s, "
+            "pid %d, ready in %.1f s",
+            session.name,
+            threads,
+            config.processing.asr_engine
+            + (
+                f" {config.processing.whisper_model}"
+                if config.processing.asr_engine == "whisper"
+                else ""
+            ),
+            config.processing.aec,
+            os.getpid(),
+            time.perf_counter() - t_boot,
+        )
         try:
             reason = live_mod.run_live(session, config, engines)
         except Exception:

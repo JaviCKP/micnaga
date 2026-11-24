@@ -1756,3 +1756,120 @@ prometto», «Dia Q», «Inkruger», «show, dancensi», frases en inglés inven
    composición de la ventana transparente en cada paso); si molesta, bajar `LEVELS_HZ` a 8. La fila
    del micro no se pudo ver moverse con audio real en este PC (el micro no captaba el tono de los
    altavoces); el camino es el mismo que el del sistema y lo cubre el test DOM.
+
+## 35. El vivo de verdad durante la reunión y el AEC solo donde se mide eco (rama `claude/in-person-meetings-fixes`)
+
+Origen: reuniones grabadas en otro PC (instalador v0.1.1) «no parecían acabar rápido al colgar, como
+si no se hubiera transcrito nada durante la reunión»; y una reunión real con **auriculares** a la que
+se aplicó Speex porque la salida era `unknown` (§32.1).
+
+### Procesado en vivo
+
+1. **Camino completo (sin cambios de diseño):** el controlador llama a `LiveRunner.start` al empezar
+   a grabar (provisional o confirmada); `spawn_live` lanza `[sys.executable, "live", carpeta]`
+   (congelado: `micnaga.exe live …`, `CREATE_NO_WINDOW | CREATE_NEW_PROCESS_GROUP |
+   BELOW_NORMAL`); `cli.run_live` → `pipeline.live.run_live` trocea cada 60 s, mide eco, acondiciona,
+   VAD y transcribe los bloques estables; al colgar `LiveRunner.stop` y el worker
+   (`runner._finish_live` → `live.finish`) solo hace la cola. **El ejecutable congelado funciona:**
+   `dist\micnaga\micnaga.exe live` lanzado con la misma `Popen` que la app sobre una grabación que
+   crece (copia de la reunión real) arrancó, escribió trozos y bloques con turbo y respetó la orden
+   de parar. Su primer arranque en este PC tardó > 60 s antes de escribir nada (después, 3 s). Es la
+   prioridad baja con la CPU saturada: `run_live` baja la prioridad **antes** de importar numpy/scipy
+   y abrir el log; medido aquí con otros procesos al 85–95 %, importar numpy+scipy tarda 0,6–1,6 s con
+   prioridad normal y 66 s (o > 160 s) con `BELOW_NORMAL`. Ahora `live.log` se abre lo primero y apunta
+   el tiempo hasta estar listo.
+2. **Causas de que «no se transcribiera nada durante la reunión»** (medidas en este PC):
+   * **Esperaba sin fin si la CPU iba por encima del 85 %** (`run_live`): espera sin límite, sin log, y
+     midiendo la CPU de todo el equipo, **incluido el propio vivo** (justo después de un paso de ASR
+     se veía a sí mismo como «equipo ocupado»). En la simulación con el ejecutable congelado el
+     vivo no gastó ni 1 s de CPU en los primeros 100 s de reunión. Ahora: solo cuenta la CPU de los
+     demás (`other_cpu_percent`) y tras `MAX_BUSY_WAIT_S` (60 s) seguidos hace un paso igualmente
+     (va con prioridad baja: el sistema da la CPU antes a la reunión). Pausa, reanudación y motivo
+     quedan en `live.log`.
+   * **2 hilos no bastan para Whisper turbo** (`worker.live_threads`, pensado para Parakeet). Tramo
+     denso de la reunión real (70–310 s, 224 s de voz en 240 s de reunión, dos pistas), camino real
+     del vivo: turbo cuesta **~2 s de CPU por segundo de reunión** (1,6–2,1). RTF (s de cálculo por s
+     de reunión): 2 hilos **1,11** con prioridad normal y **2,35** con prioridad baja y el equipo
+     ocupado; 4 hilos **0,79** (prioridad normal, equipo al 89 %). Ahora `live_threads` = un tercio de
+     los núcleos físicos, entre 2 y 4 y nunca más que `processing.threads`: 4 en el i7-12700F, 3 en el
+     i5-1245U, 2 en un portátil de 4 núcleos. En el i5 probablemente siga sin llegar en una
+     conversación densa: el vivo avanza en orden y al colgar solo queda la parte que no alcanzó.
+   * **Cada «colgar» esperaba hasta 20 s** (`STOP_WAIT_S`) a que el vivo acabase su bloque (solo mira
+     la orden de parar entre bloques; un bloque de turbo con 2 hilos tarda 20–30 s): medido, se agotó
+     y se mató. Ahora 5 s; matarlo pierde como mucho ese bloque (escrituras atómicas) y el worker lo
+     rehace en segundos.
+   * **Fallos silenciosos:** `LiveRunner.start` no decía nada si el vivo estaba apagado, sin modelos
+     (p. ej. turbo aún sin bajar tras actualizar, §32.6) o a otra frecuencia; `cli.run_live` salía sin
+     log si otro proceso tenía el mutex o no había VAD. Ahora todo deja una línea en `app.log` /
+     `live.log`, y al parar se apunta si el vivo ya había salido (con su código) o cuánto tardó.
+3. **Logs nuevos (`live.log`):** arranque (hilos, motor, modo de AEC, segundos hasta estar listo),
+   carga del motor ASR, cada paso («minutes a-b, backlog N s de M grabados, K bloques (S s de voz) en
+   W s; RTF paso / total»), pausas por CPU, decisión de eco cuando cambia y un resumen al salir
+   (trozos, voz, tiempo trabajando, RTF, tiempo en pausa). En `worker.log`, `live processing
+   finished …` y el resumen del AEC.
+4. **Cola al colgar, reunión de 10 min** (primeros 600 s de la reunión real, simulación a tiempo real
+   con el vivo de este código y el pipeline entero en otro proceso como el worker; **este PC estaba
+   saturado por otros procesos (85–95 % de CPU ajena)**, así que son cifras pesimistas):
+   * **Con vivo:** el vivo (4 hilos, prioridad baja) cubrió 6 de 10 min y 11 bloques; pausado 200 s
+     por CPU ajena y aun así avanzó (antes: espera sin fin). Al colgar: parar 15 s (la simulación
+     espera 20; la app ahora mata a los 5 s), FLAC 1 s y worker 613 s = **631 s** (cola de 4 min de
+     reunión: 543 s, con 46 s solo para cargar turbo; diarización 69 s).
+   * **Sin vivo:** la medida se cortó (reinicio de la sesión). Estimación con el coste medido (~2 s
+     de CPU por s de reunión, 0,62 s de ASR por s de reunión con 6 hilos en §32.5): ~370 s de ASR +
+     ~70 s de diarización ≈ **7–8 min con el equipo libre**, bastante más con esta carga.
+   * Con el equipo libre y 4 hilos (RTF 0,79 medido) el vivo llega y la cola sería el último minuto
+     (~40–60 s de ASR) + diarización (~70 s por 10 min) + carga del modelo: **~2–3 min**. Sin medir
+     con el equipo libre: este PC nunca lo estuvo durante la prueba.
+5. **Lo que pedir al otro PC:** `%APPDATA%\Micnaga\logs\live.log` (si no existe, el vivo nunca
+   arrancó: buscar en `app.log` «live processing not started: …») y las líneas `live processing
+   finished` / `live processing completed` de `worker.log`. Con v0.1.1 el `live.log` no dice por qué
+   esperaba; con esta versión sí.
+
+### Cancelación de eco por medida (`pipeline/aec/policy.py`)
+
+6. **Una sola regla, en el lote y en el vivo.** Antes el lote decidía todo o nada con la pista entera
+   y el vivo trozo a trozo con 5 min de contexto: podían discrepar y lo del vivo es lo que se usa al
+   colgar. Ahora los dos recorren la pista alineada en trozos de 60 s; para cada trozo se mide el eco
+   en los 5 min anteriores (`measure_echo`) y, si toca, se cancela `[S − 8 s, E)` con un cancelador
+   nuevo y se queda `[S, E)`; el vivo usa la misma función (`decide_slice`) con los mismos límites
+   (`slice_bounds`). Test: con fuga desde el minuto 2 solo se cancelan los trozos 2 y 3, y vivo y lote
+   dan las mismas decisiones (con eco, sin eco y con auriculares). `live.FORMAT` 3 invalida cachés.
+7. **Modos (Ajustes › Transcripción › «Cancelación de eco», no avanzado):** «Automática» (`auto`, por
+   defecto): solo donde se mide eco; con auriculares en todo el tramo no se mira el audio
+   (`output_kinds_during`, sigue los cambios de dispositivo); `unknown` decide la medida, no se trata
+   como altavoces. «Siempre» (`always`): todo tramo en el que suene el sistema, también con
+   auriculares (es lo que pide el nombre; sin audio del sistema no hay nada que cancelar).
+   «Desactivada» (`off`). Valores antiguos: `webrtc`/`speex` → `always` (al cargar, sin subir
+   `CONFIG_VERSION`); `create_echo_canceller(config, "webrtc")` sigue existiendo para el banco.
+   **Efecto secundario:** quien eligió «WebRTC AEC3» en la interfaz antigua pasa a «Siempre» (antes
+   también se medía el eco).
+8. **Umbral de coherencia 0,1 → 0,3** (`echo_check.ECHO_MIN_COHERENCE`). En la reunión real con
+   auriculares, las 139 ventanas de 5 min (rejilla de 60 s desplazada 0/20/40 s) llegan a 0,098 con
+   `echo_db` −28,5 dB y la ventana 70–190 s da **0,105 / −20,9 dB: con 0,1 el vivo activaba WebRTC
+   ahí sin eco**. Un eco audible da mucho más: fuga simulada sobre la reunión real 0,86–0,95 (de −12 a
+   −35 dB respecto a la voz) y sintética 0,42 con −28 dB.
+9. **WebRTC (AEC3) revisado:** solo AEC (`enable_ns/agc/vad=False`, `mobile_mode=false`), formato
+   16 kHz, la referencia se alinea antes con GCC-PHAT (sin `set_stream_delay`: AEC3 estima el resto) y
+   se compensan sus 8 ms de latencia. **WER del micro, tramo A (70–280 s, 530 palabras seguras, turbo,
+   referencia de §32)**, AEC sobre 0–300 s con la rejilla de 60 s; eco simulado = pista del sistema
+   retrasada 60 ms, sala de 300 ms y paso banda de altavoz de portátil, a −12 / −6 dB de la voz:
+
+   | Micro | Desactivada | Automática | Siempre |
+   | --- | ---: | ---: | ---: |
+   | sin eco (auriculares, real) | 8,7 % | **8,7 %** (no aplica) | 16,2 % (D 15 → 51) |
+   | eco −12 dB | 17,7 % (43 inserciones) | **11,7 %** | 11,7 % |
+   | eco −6 dB | 18,3 % (49 inserciones) | **13,4 %** | 13,4 % |
+
+   Con eco, WebRTC quita casi todas las palabras del remoto que se colaban (43–49 → 4) a cambio de
+   unas pocas propias; sin eco solo borra palabras propias. «Automática» se queda con lo mejor de cada
+   fila. (Las inserciones sin AEC las limpiaría en parte la etapa 9; aquí se mide solo el micro.)
+10. **Coste:** la medida por trozo cuesta ~0,4–0,9 s por minuto de reunión en el lote (ventanas de
+   20 s en caché, `measure_echo(offset, cache)`: mismo resultado que sin caché, comprobado), ~1–2 s
+   por minuto en el vivo. Log por reunión: «echo canceller (mode auto): applied with webrtc-aec3 in
+   4/47 min: …; reasons {...}, max coherence …» o «not applied (no echo)»; la marca de la etapa 3
+   lleva `mode`, `applied_slices`, `reasons` y `max_coherence`.
+11. **Pendiente / sin verificar:** el otro PC (no hay sus logs); el i5-1245U real; el ejecutable
+    congelado con este código (`dist` es anterior: hay que reconstruir); una reunión con altavoces de
+    verdad (solo eco simulado); la cola sin vivo de 10 min (cortada) y todo con el equipo libre;
+    `pipeline/cli.py` (fuera de la lista de ficheros de esta tarea) cambió solo para abrir el log
+    antes y registrar las salidas tempranas.

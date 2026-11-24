@@ -74,10 +74,12 @@ class VadConfig:
 class ProcessingConfig:
     asr_engine: str = "whisper"  # whisper | parakeet (DECISIONS §32)
     whisper_model: str = "large-v3-turbo"  # large-v3-turbo | large-v3 | small
-    hq_model: str = "large-v3"  # «Mejorar transcripcion»: large-v3 | large-v3-turbo
+    hq_model: str = "large-v3-turbo"  # «Mejorar transcripcion»: large-v3-turbo | large-v3
     hq_transcribe: bool = True  # boton «Mejorar transcripcion» en la biblioteca
     diarization: str = "diarize"  # unico motor: diarize (WeSpeaker ResNet34 + torch)
-    aec: str = "auto"  # auto | webrtc | speex | off
+    # Cancelacion de eco (DECISIONS §35): auto = solo donde se mide eco (nunca con auriculares),
+    # always = siempre que suene el sistema, off = nunca. webrtc/speex (antiguos) -> always.
+    aec: str = "auto"
     threads: int = 6
     low_priority: bool = True  # BELOW_NORMAL_PRIORITY_CLASS en el worker
     live: bool = True  # transcribir mientras se graba (proceso aparte, prioridad baja)
@@ -186,7 +188,7 @@ class Config:
         _check_choice("processing.asr_engine", self.processing.asr_engine, ASR_ENGINES)
         _check_choice("processing.whisper_model", self.processing.whisper_model, WHISPER_MODELS)
         _check_choice("processing.diarization", self.processing.diarization, DIARIZERS)
-        _check_choice("processing.aec", self.processing.aec, ("auto", "webrtc", "speex", "off"))
+        _check_choice("processing.aec", self.processing.aec, AEC_MODES + AEC_LEGACY)
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
         d = self.detection
         for key in (
@@ -321,10 +323,17 @@ DIARIZERS: tuple[str, ...] = ("diarize",)
 _V1_GATES: dict[str, float] = {"min_duration_s": 180.0, "min_remote_speech_s": 30.0, "min_turns": 6}
 
 ASR_ENGINES: tuple[str, ...] = ("whisper", "parakeet")
+AEC_MODES: tuple[str, ...] = ("auto", "always", "off")
+"""Modos de processing.aec (Ajustes: Automatica / Siempre / Desactivada)."""
+AEC_LEGACY: tuple[str, ...] = ("webrtc", "speex")
+"""Valores antiguos (motor elegido a mano): al cargar pasan a always."""
 WHISPER_MODELS: tuple[str, ...] = ("large-v3-turbo", "large-v3", "small")
 """Tamanos de Whisper con entrada en el manifiesto de modelos (``micnaga.models``)."""
 _V2_ASR: dict[str, str] = {"asr_engine": "parakeet", "whisper_model": "small"}
 """Defectos de ASR hasta la v2 (Parakeet). La v3 pasa a Whisper large-v3-turbo (DECISIONS §32)."""
+_V2_HQ_MODEL = "large-v3"
+"""Defecto de «Mejorar transcripcion» hasta la v2. La v3 usa large-v3-turbo: large-v3 no fue mejor
+y es mas del doble de lento (DECISIONS §32)."""
 
 
 def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
@@ -333,9 +342,10 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
     v1 -> v2: las compuertas por defecto pasan a ``30 s / 0 / 0`` (decide el usuario con el
     popup). v2 -> v3: el motor ASR pasa de Parakeet a Whisper ``large-v3-turbo``; solo si los
     dos valores de ASR seguian en el defecto antiguo (``parakeet`` + ``small``): quien eligio
-    Whisper, u otro tamano, se queda como estaba. Un ``whisper_model`` sin modelo en el manifiesto
-    (``tiny``, ``base``, ``medium``: la interfaz los ofrecia pero nunca funcionaron) pasa al de por
-    defecto. Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
+    Whisper, u otro tamano, se queda como estaba; ``hq_model`` pasa de ``large-v3`` a
+    ``large-v3-turbo`` (igual: solo si seguia en el defecto viejo). Un ``whisper_model`` sin
+    modelo en el manifiesto (``tiny``, ``base``, ``medium``: la interfaz los ofrecia pero nunca
+    funcionaron) pasa al de por defecto. Solo se cambian los valores que seguian en el defecto antiguo: un valor elegido por
     el usuario se respeta. ``save_config`` escribe todas las claves, asi que sin esto un fichero
     guardado una vez fijaria para siempre los defectos viejos.
     """
@@ -356,9 +366,14 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
         if asr == _V2_ASR:
             processing["asr_engine"] = ProcessingConfig().asr_engine
             processing["whisper_model"] = ProcessingConfig().whisper_model
+        if processing.get("hq_model", _V2_HQ_MODEL) == _V2_HQ_MODEL:  # defecto viejo sin tocar
+            processing["hq_model"] = ProcessingConfig().hq_model
     size = processing.get("whisper_model") if isinstance(processing, dict) else None
     if isinstance(processing, dict) and isinstance(size, str) and size not in WHISPER_MODELS:
         processing["whisper_model"] = WHISPER_MODELS[0]  # tamano sin modelo descargable
+    aec = processing.get("aec") if isinstance(processing, dict) else None
+    if isinstance(processing, dict) and aec in AEC_LEGACY:
+        processing["aec"] = "always"  # motor elegido a mano = modo «Siempre» con el que haya
     diar = processing.get("diarization") if isinstance(processing, dict) else None
     if isinstance(processing, dict) and diar is not None and diar not in DIARIZERS:
         processing["diarization"] = DIARIZERS[0]  # motores retirados -> el unico que queda

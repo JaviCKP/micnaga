@@ -78,12 +78,27 @@ def set_low_priority() -> bool:
         return False
 
 
-LIVE_MAX_THREADS = 2
+LIVE_MIN_THREADS = 2
+LIVE_MAX_THREADS = 4
 
 
-def live_threads(config: Config) -> int:
-    """Hilos del proceso en vivo: pocos (corre durante la reunion, al lado de la captura)."""
-    return max(1, min(LIVE_MAX_THREADS, config.processing.threads // 2))
+def live_threads(config: Config, physical_cores: int | None = None) -> int:
+    """Hilos del proceso en vivo (DECISIONS §35).
+
+    Whisper turbo cuesta ~2 s de CPU por segundo de voz: con 2 hilos el vivo no llega ni con el
+    equipo libre en una conversacion densa (con 2 hilos y el equipo ocupado, RTF 2,35 medido) y
+    todo se queda para despues de colgar. Un tercio de los nucleos fisicos, entre 2 y 4 y nunca
+    mas que ``processing.threads``: 4 en un i7-12700F (12 nucleos), 3 en el i5-1245U de
+    referencia (10), 2 en un portatil de 4. Va con prioridad baja: la reunion manda."""
+    if physical_cores is None:
+        try:
+            import psutil
+
+            physical_cores = psutil.cpu_count(logical=False) or 2
+        except Exception:
+            physical_cores = 2
+    want = min(LIVE_MAX_THREADS, max(LIVE_MIN_THREADS, physical_cores // 3))
+    return max(1, min(want, config.processing.threads))
 
 
 def configure_process(config: Config) -> None:
