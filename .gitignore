@@ -25,9 +25,6 @@ test_outputs/
 micnaga.db
 micnaga.db-*
 config.toml
-.env
-remote-sync.sqlite3*
-meetings.sqlite3*
 
 # Capturas de ventanas reales: contienen parte del escritorio del usuario
 docs/screenshots/real_*.png

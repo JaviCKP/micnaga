@@ -26,7 +26,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from micnaga.text import format_mmss
+from micnaga.pipeline.output import format_mmss
 
 ACTA_JSON = "acta.json"
 ACTA_MD = "acta.md"

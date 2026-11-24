@@ -109,7 +109,6 @@ class OpenMeeting(Event):
     meeting_id: int
     seconds: float
     library_id: str
-    device_id: str | None = None
 
 
 _REGISTRY: dict[str, type[Event]] = {

@@ -13,8 +13,7 @@ from pathlib import Path
 from micnaga.events import OpenMeeting, encode_line, pipe_name
 
 _LINK = re.compile(
-    r"micnaga://reunion/([1-9][0-9]{0,18})\?t=([0-9]{1,9}(?:\.[0-9]{1,3})?)"
-    r"&b=([a-f0-9]{16})(?:&d=([a-f0-9]{32}))?"
+    r"micnaga://reunion/([1-9][0-9]{0,18})\?t=([0-9]{1,9}(?:\.[0-9]{1,3})?)&b=([a-f0-9]{16})"
 )
 
 
@@ -23,24 +22,17 @@ def library_id(root: Path) -> str:
 
 
 def meeting_link(root: Path, meeting_id: int, seconds: float = 0.0) -> str:
-    return indexed_meeting_link(library_id(root), meeting_id, seconds)
-
-
-def indexed_meeting_link(
-    library: str, meeting_id: int, seconds: float, device_id: str | None = None,
-) -> str:
-    link = f"micnaga://reunion/{meeting_id}?t={seconds:.3f}&b={library}"
-    return f"{link}&d={device_id}" if device_id is not None else link
+    return f"micnaga://reunion/{meeting_id}?t={seconds:.3f}&b={library_id(root)}"
 
 
 def parse_meeting_link(value: str) -> OpenMeeting | None:
     match = _LINK.fullmatch(value)
     if match is None:
         return None
-    meeting_id, seconds, library, device = match.groups()
+    meeting_id, seconds, library = match.groups()
     if int(meeting_id) >= 2**63:
         return None
-    return OpenMeeting(int(meeting_id), float(seconds), library, device)
+    return OpenMeeting(int(meeting_id), float(seconds), library)
 
 
 def link_pipe_name() -> str:

@@ -34,7 +34,6 @@ from typing import TYPE_CHECKING, Any
 
 from micnaga import paths
 from micnaga.pipeline.stages.phrases import default_speaker_name, merge_segments
-from micnaga.text import format_mmss as format_mmss
 from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, speaker_track
 
 if TYPE_CHECKING:
@@ -112,6 +111,12 @@ def format_hms(seconds: float) -> str:
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
     return f"{h:02d}:{m:02d}:{s:02d}"
+
+
+def format_mmss(seconds: float) -> str:
+    total = int(max(0.0, seconds))
+    m, s = divmod(total, 60)
+    return f"{m:02d}:{s:02d}"
 
 
 def format_srt_time(seconds: float) -> str:
