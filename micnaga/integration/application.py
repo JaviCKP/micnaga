@@ -45,7 +45,6 @@ from micnaga.integration.jobs import (
 from micnaga.integration.levels import LevelMonitor
 from micnaga.integration.library_ops import AppLibraryOps
 from micnaga.integration.ports import RecorderFactory, UiPort
-from micnaga.integration.remote_sync import RemoteSync
 from micnaga.meeting_links import library_id, link_pipe_name
 from micnaga.store.db import Database, JobState, open_database
 from micnaga.store.locate import meeting_dir
@@ -251,9 +250,6 @@ class Application:
         self.tray_ready_s: float | None = None
         self.last_job_error: str | None = None
         self.boot_queued: list[Path] = []
-        self.remote_sync = RemoteSync(
-            lambda: paths.meetings_root(self.config), lambda: bool(self.controller.recording),
-        ) if spawn is None else None
 
         self.callbacks = self._build_callbacks()
         self._models_downloading = 0
@@ -538,8 +534,7 @@ class Application:
             from micnaga import updates
 
             updates.set_service(self.updates)
-        extras = (self.brain, self.live_title, self.google_context, self.updates, self.remote_sync)
-        for extra in extras:
+        for extra in (self.brain, self.live_title, self.google_context, self.updates):
             if extra is not None:
                 try:
                     extra.start()
@@ -566,8 +561,6 @@ class Application:
         set_app_action(ACTION_MODEL_DOWNLOADER, None)
         set_app_action(ACTION_FAILED_JOBS, None)
         set_app_action(ACTION_HQ_STARTER, None)
-        if self.remote_sync is not None:
-            self.remote_sync.stop()
         if self.updates is not None:
             from micnaga import updates
 
@@ -618,7 +611,6 @@ class Application:
             on_settings_saved=self._on_settings_saved,
             on_first_run_done=self._on_first_run_done,
             on_levels_monitor=self._on_levels_monitor,
-            remote_sync=lambda: self.remote_sync,
         )
 
     def _marker(self) -> None:
@@ -650,8 +642,6 @@ class Application:
             self.controller.set_config(cfg)
             if previous_db != paths.db_path(cfg) and previous_db.is_file():
                 self.supervisor.watch(previous_db)
-        if self.remote_sync is not None:
-            self.remote_sync.kick()
         # Los atajos se vuelven a registrar; el resto (deteccion...) rige al reiniciar la app.
         try:
             self.hotkeys.stop()
@@ -715,11 +705,6 @@ class Application:
         config = self.config
         root = paths.meetings_root(config)
         if library_id(root) != event.library_id or not paths.db_path(config).is_file():
-            return
-        if event.device_id is not None and (
-            self.remote_sync is None
-            or not self.remote_sync.owns_citation(root, event.library_id, event.device_id)
-        ):
             return
         with open_database(config) as db:
             meeting = db.get_meeting_by_id(event.meeting_id)
@@ -791,8 +776,6 @@ class Application:
             self._active_jobs.discard(event.job_id)
             self._refresh_processing()
             self._library_jobs_changed("done")
-            if self.remote_sync is not None:
-                self.remote_sync.kick()
             folder = Path(event.session_dir).name
             if self.brain is not None:
                 self.brain.on_job_done(
@@ -818,8 +801,6 @@ class Application:
     def _notify_ready(
         self, folder: str, title: str, duration_s: float, speakers: int, proposals: int
     ) -> None:
-        if self.remote_sync is not None:
-            self.remote_sync.kick()
         if proposals:
             self.ui.notify_ready(folder, title, duration_s, speakers, proposals)
         else:

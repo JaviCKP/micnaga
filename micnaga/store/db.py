@@ -25,6 +25,7 @@ Maquina de estados::
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from collections.abc import Callable, Iterator, Sequence
@@ -36,7 +37,6 @@ from pathlib import Path
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from micnaga.text import fts_query as fts_query
 from micnaga.types import Segment, Speaker, Transcript
 
 if TYPE_CHECKING:
@@ -166,6 +166,15 @@ CREATE TABLE IF NOT EXISTS discard_log (
     reason TEXT NOT NULL
 );
 """
+
+
+def fts_query(text: str) -> str:
+    """Convierte texto libre en una consulta FTS5 segura (AND de prefijos entre comillas).
+
+    ``"revision sema"`` -> ``'"revision"* "sema"*'``. Devuelve ``""`` si no hay palabras.
+    """
+    tokens = re.findall(r"\w+", text, flags=re.UNICODE)
+    return " ".join(f'"{t}"*' for t in tokens)
 
 
 class Database:

@@ -2,11 +2,11 @@
 
 El conector permite buscar reuniones, consultar sus actas y leer sus transcripciones desde Claude Desktop o Claude Code en Windows. Al instalarlo, Claude puede consultar todas las reuniones terminadas e indexadas de la biblioteca configurada en Micnaga.
 
-El conector lee texto de la biblioteca local y funciona con la Secretaria apagada. Cuando consultas una reunión en Claude, el texto devuelto puede formar parte de esa conversación y procesarse en Anthropic. Desactiva o desinstala el conector para impedir consultas posteriores. Las conversaciones anteriores conservan el texto que ya recibieron.
+El conector se ejecuta en tu PC, lee la biblioteca local y funciona con la Secretaria apagada. El instalador de Micnaga incluye la extensión. Cuando consultas una reunión en Claude, el texto devuelto puede formar parte de esa conversación y procesarse en Anthropic. Desactiva o desinstala el conector para impedir consultas posteriores. Las conversaciones anteriores conservan el texto que ya recibieron.
 
 ## Claude Desktop
 
-1. Localiza `Micnaga-Meetings.mcpb` junto a `micnaga-cli.exe`, normalmente en `%LOCALAPPDATA%\Programs\Micnaga`. Para probar desde este checkout, usa `dist\claude\Micnaga-Meetings-local.mcpb` con la ruta del ejecutable ya preseleccionada.
+1. En el menú Inicio de Windows, busca **Micnaga - Extensión local de Claude**. El acceso directo selecciona `Micnaga-Meetings.mcpb` en la carpeta donde instalaste Micnaga. Para probar desde este checkout, usa `dist\claude\Micnaga-Meetings-local.mcpb` con la ruta del ejecutable ya preseleccionada.
 2. En Claude Desktop, abre **Ajustes → Aplicación de escritorio → Extensiones → Administrar → Ajustes avanzados**. En algunas versiones, **Extensiones** aparece directamente en Ajustes. Pulsa **Instalar extensión…**, elige el fichero `.mcpb` y confirma la instalación.
 3. Deja vacío **Ejecutable de Micnaga** si usaste la ubicación predeterminada. Si instalaste en otra carpeta, selecciona la extensión e introduce la ruta absoluta de su `micnaga-cli.exe`.
 4. En un chat, abre **+ → Conectores** y selecciona **Micnaga · Reuniones**. Prueba con «Busca en Micnaga una reunión y dime su título». Si Claude solicita permiso de herramienta, revisa la solicitud y apruébala.

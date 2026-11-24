@@ -6,7 +6,7 @@ import json
 import math
 import sqlite3
 import unicodedata
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import closing, contextmanager
 from datetime import date
 from pathlib import Path
@@ -16,7 +16,7 @@ from micnaga import paths
 from micnaga.brain.acta import ACTA_JSON, render_markdown
 from micnaga.holding import DISCARD_MARKER, HELD_DIRNAME
 from micnaga.meeting_links import meeting_link
-from micnaga.text import fts_query
+from micnaga.store.db import fts_query
 
 MAX_TRANSCRIPT_BYTES = 64 * 1024 * 1024
 MAX_ACTA_BYTES = 2 * 1024 * 1024
@@ -326,10 +326,17 @@ class LibraryTools:
         data = _read_json(folder, ACTA_JSON, MAX_ACTA_BYTES)
         if data is None:
             raise LibraryError("La reunión aún no tiene acta.")
-        return LibraryTools.minutes_page(export_minutes(data), metadata, offset)
-
-    @staticmethod
-    def minutes_page(text: str, metadata: dict[str, Any], offset: int) -> dict[str, Any]:
+        # Las fuentes y propuestas contienen referencias a otras reuniones y sistemas.
+        keys = (
+            "titulo",
+            "contexto",
+            "resumen",
+            "decisiones",
+            "tareas",
+            "preguntas_abiertas",
+            "proximos_pasos",
+        )
+        text = _safe_text(render_markdown({k: data[k] for k in keys if k in data}))
         end = offset + 4_000
         return {
             **metadata,
@@ -341,18 +348,6 @@ class LibraryTools:
     def _transcript(
         root: Path, folder: Path, metadata: dict[str, Any], args: dict[str, Any], offset: int
     ) -> dict[str, Any]:
-        data = _read_json(folder, paths.TRANSCRIPT_JSON, MAX_TRANSCRIPT_BYTES)
-        if data is None:
-            raise LibraryError("Reunión terminada no disponible.")
-        return LibraryTools.transcript_page(
-            data, metadata, args, offset, lambda at: meeting_link(root, metadata["reunion_id"], at)
-        )
-
-    @staticmethod
-    def transcript_page(
-        data: dict[str, Any], metadata: dict[str, Any], args: dict[str, Any], offset: int,
-        cite: Callable[[float], str],
-    ) -> dict[str, Any]:
         start = _seconds(args, "desde_s", 0)
         end = _seconds(args, "hasta_s", start + 180)
         if not start < end <= start + MAX_WINDOW_S:
@@ -360,6 +355,9 @@ class LibraryTools:
         version = args.get("version", "limpia")
         if version not in ("limpia", "original"):
             raise LibraryError("version debe ser limpia u original.")
+        data = _read_json(folder, paths.TRANSCRIPT_JSON, MAX_TRANSCRIPT_BYTES)
+        if data is None:
+            raise LibraryError("Reunión terminada no disponible.")
         speakers = {s["id"]: _safe_text(s["name"][:100]) for s in data.get("speakers", [])}
         result: list[dict[str, Any]] = []
         consumed = chars = 0
@@ -380,7 +378,7 @@ class LibraryTools:
                     "fin_s": b,
                     "hablante": speakers.get(speaker, _safe_text(speaker[:100])),
                     "texto": text[pos : pos + 800],
-                    "enlace": cite(a),
+                    "enlace": meeting_link(root, metadata["reunion_id"], a),
                 }
                 chars += len(json.dumps(piece, ensure_ascii=False))
                 if chars > 8_000 or len(result) >= 35:
@@ -397,12 +395,3 @@ class LibraryTools:
             "segmentos": result,
             "siguiente_desplazamiento": next_offset,
         }
-
-
-def export_minutes(data: dict[str, Any]) -> str:
-    # Las fuentes y propuestas pueden contener referencias a otros sistemas y reuniones.
-    keys = (
-        "titulo", "contexto", "resumen", "decisiones", "tareas", "preguntas_abiertas",
-        "proximos_pasos",
-    )
-    return _safe_text(render_markdown({k: data[k] for k in keys if k in data}))

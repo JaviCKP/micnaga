@@ -96,6 +96,7 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdi
 [Icons]
 ; El acceso directo del menu Inicio lleva el AppUserModelID (toasts). El argumento "app" abre la bandeja.
 Name: "{userprograms}\{#AppName}"; Filename: "{app}\{#AppExe}"; Parameters: "app"; AppUserModelID: "{#AppUserModelId}"; IconFilename: "{app}\{#AppExe}"
+Name: "{userprograms}\Micnaga - Extensión local de Claude"; Filename: "{win}\explorer.exe"; Parameters: "/select,""{app}\Micnaga-Meetings.mcpb"""; IconFilename: "{app}\{#AppExe}"
 
 [Registry]
 ; Arranque con Windows SIEMPRE activo: mismo valor y mismo comando que micnaga/ui/startup.py.
