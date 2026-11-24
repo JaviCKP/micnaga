@@ -47,7 +47,7 @@ def test_echo_same_voice_and_tiny_speakers_stay_me() -> None:
     turns = [Turn("A", 0, 30), Turn("E", 30, 45), Turn("V", 45, 60), Turn("T", 60, 63)]
     out, reason = room.label_room_speakers(
         turns,
-        energy={"A": 10.0, "E": 1.0, "V": 1.0, "T": 1.0},
+        energy={"A": 10.0, "E": 12.0, "V": 1.0, "T": 1.0},
         speech_s={"A": 30.0, "E": 15.0, "V": 15.0, "T": 3.0},
         mic_embeddings={"A": vec(0), "E": vec(5), "V": vec(0) * 0.9 + vec(1) * 0.1, "T": vec(3)},
         remote_embeddings={"S1": vec(5)},
@@ -78,6 +78,7 @@ def test_fragments_go_to_the_neighbouring_turn_not_to_a_new_person() -> None:
 
 def test_next_speaker_number_and_mic_speaker_ids() -> None:
     assert room.next_speaker_number([]) == 1
+    assert room.next_speaker_number([], has_remote_words=True) == 2
     assert room.next_speaker_number([Turn("S1", 0, 1), Turn("S4", 1, 2)]) == 5
     assert is_mic_speaker("me") and is_mic_speaker("P3")
     assert not is_mic_speaker("S1") and not is_mic_speaker("Pepe")

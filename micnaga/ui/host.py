@@ -389,6 +389,9 @@ class UiHost:
             if win is not None:
                 if not win.wait_loaded(15.0):
                     log.warning("surface page not loaded after 15 s; preparing it anyway")
+                on_handle_created = getattr(win, "on_handle_created", None)
+                if callable(on_handle_created):
+                    on_handle_created(lambda: _spawn_thread(self._clear_surface_backdrop))
                 self._prepare_surface(win)
                 # pywebview (edgechromium) hace ``form.Show()`` en cada navegacion de una ventana
                 # transparente aunque se creara oculta: sin esto, al arrancar quedaban una tarjeta
@@ -770,20 +773,22 @@ class UiHost:
 
     # -- ventana de la superficie: estilos, fondo de DWM y diagnostico
 
-    def _prepare_surface(self, win: UiWindow) -> None:
+    def _prepare_surface(self, win: UiWindow, *, hwnd: int | None = None) -> None:
         """Antes de mostrar la superficie: estilos sin foco y transparencia en el hwnd ACTUAL
         (si WinForms lo recreo, se reaplica todo) y, SIEMPRE, sin fondo de sistema de DWM."""
-        hwnd = win.hwnd
+        hwnd = win.hwnd if hwnd is None else hwnd
         if not hwnd:
             log.warning("surface has no window handle yet")
             return
-        with self._lock:
+        with self._region_lock, self._lock:
             fresh = hwnd != self._surface_hwnd
             recreated = fresh and self._surface_hwnd != 0
             self._surface_hwnd = hwnd
+            pill = self._pill
+            frame, box, mon, kind = pill.frame, pill.region_box, pill.monitor, pill.region_kind
+            generation = self._region_gen
             if recreated:
-                self._pill.frame = None  # ventana nueva: sin posicion ni region
-                self._pill.region_box = None
+                pill.ignore_moves_until = time.monotonic() + 0.4
         if not fresh:
             winapi.clear_backdrop(hwnd, self._w32)
             return
@@ -806,12 +811,18 @@ class UiHost:
             hwnd,
             self._surface_mode,
         )
+        if recreated and frame is not None:
+            win.place(frame)
+            if box is not None and mon is not None:
+                self._apply_region(generation, box, mon.scale, kind)
+            if pill.shown and self._surface_phase != "hidden":
+                win.show(activate=False)
 
     def _clear_surface_backdrop(self) -> None:
-        """Red de seguridad periodica (y en cada aparicion): sin Mica en la superficie."""
-        hwnd = self._surface_hwnd
-        if hwnd and self._pillwin is not None:
-            winapi.clear_backdrop(hwnd, self._w32)
+        """Quita Mica y repara el HWND si WinForms lo ha recreado."""
+        win = self._pillwin
+        if not self._stopping.is_set() and win is not None and (hwnd := win.hwnd):
+            self._prepare_surface(win, hwnd=hwnd)
 
     @property
     def surface_mode(self) -> str:
@@ -1408,7 +1419,15 @@ class UiHost:
             win.run_js("micnaga.pill.stop()")
             if not busy and not undo:
                 self._vanish()
+        if self._tray is not None:
+            self._tray.set_capture_issue(None)
         self._update_tray()
+
+    def set_capture_issue(self, issue: str | None) -> None:
+        if self._pillwin is not None:
+            self._pillwin.run_js(f"micnaga.pill.setCaptureIssue({json.dumps(issue)})")
+        if self._tray is not None:
+            self._tray.set_capture_issue(issue)
 
     def set_pill_paused(self, paused: bool) -> None:
         with self._lock:
@@ -1549,6 +1568,12 @@ class UiHost:
         """Azul en la bandeja mientras el worker procesa."""
         self._processing = processing
         self._update_tray()
+
+    def library_jobs_changed(self, state: str) -> None:
+        with self._lock:
+            window = self._windows.get("library")
+        if window is not None and window.is_visible():
+            window.post_message(json.dumps({"type": "library-jobs", "state": state}))
 
     def tray_state(self) -> TrayState:
         if self._pill.visible:

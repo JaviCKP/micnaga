@@ -50,11 +50,11 @@ def test_records_two_tracks_with_metadata(tmp_path: Path) -> None:
         tmp_path / "s1", confirmed=True, meet_title="Weekly", meet_code="abc-defg-hij"
     )
     assert rec.state is RecorderState.RECORDING
-    time.sleep(1.2)
+    time.sleep(max(0, 1.2 - rec.elapsed_s()))
     mic_level, sys_level = rec.levels()
     assert mic_level == pytest.approx(0.3 / np.sqrt(2), abs=0.05)
     assert sys_level == pytest.approx(0.3 / np.sqrt(2), abs=0.05)
-    time.sleep(1.8)
+    time.sleep(max(0, 3.0 - rec.elapsed_s()))
     assert rec.elapsed_s() == pytest.approx(3.0, abs=0.3)
     status = rec.status
     assert status.mic_samples > SR and status.system_samples > SR and status.confirmed
@@ -100,7 +100,7 @@ def test_private_pause_leaves_nothing_on_disk_and_keeps_alignment(tmp_path: Path
     )
     rec = Recorder(cfg(), backend=backend)
     session = rec.start(tmp_path / "s")
-    time.sleep(1.2)
+    time.sleep(max(0, 1.2 - rec.elapsed_s()))
     assert rec.pause() and not rec.pause()
     assert rec.state is RecorderState.PAUSED
     t_pause = rec.elapsed_s()
@@ -135,7 +135,7 @@ def test_markers_use_recording_time_without_pauses(tmp_path: Path) -> None:
     backend, _ = _tones_backend()
     rec = Recorder(cfg(), backend=backend)
     session = rec.start(tmp_path / "s")
-    time.sleep(0.5)
+    time.sleep(max(0, 0.5 - rec.elapsed_s()))
     m1 = rec.add_marker("uno")
     rec.pause()
     time.sleep(0.8)
@@ -295,6 +295,24 @@ def test_both_sources_failing_raises(tmp_path: Path) -> None:
         rec.start(tmp_path / "s")
     assert rec.state is RecorderState.IDLE
     assert not (tmp_path / "s").exists()  # no deja carpetas ni WAV vacios
+
+
+def test_in_person_start_rejects_a_microphone_that_delivers_no_packets(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("micnaga.capture.recorder.STARTUP_AUDIO_TIMEOUT_S", 0.3)
+    backend = make_backend(
+        FakeDevices(),
+        lambda info: _src(info, tone(300, 48000), gaps=[(0, 10)]),
+        lambda info: _src(info, tone(500, 48000)),
+    )
+    events: list[RecorderEvent] = []
+    rec = Recorder(cfg(), backend=backend, on_event=events.append)
+    folder = tmp_path / "no-mic-packets"
+    with pytest.raises(CaptureError, match="no audio packet received from microphone"):
+        rec.start(folder, confirmed=True, require_microphone=True)
+    assert not any(event.kind == "state" and event.message == "recording" for event in events)
+    assert not meta_of(folder).confirmed
 
 
 def test_a_failed_source_is_retried_and_recovers(tmp_path: Path) -> None:

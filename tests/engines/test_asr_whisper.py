@@ -127,18 +127,20 @@ def test_language_follows_the_ui_or_falls_back_to_spanish() -> None:
 
 def test_glossary_reaches_the_engine_options(tmp_home: Path) -> None:
     cfg = Config()
-    assert glossary_prompt(cfg) is None  # sin glosario no hay prompt
+    default_prompt = glossary_prompt(cfg)
+    assert default_prompt is not None
+    assert default_prompt.startswith(
+        "Glosario: Bitnaga, PQC, CrowdStrike, ciberseguridad, Diputación"
+    )
     paths.app_data_dir().mkdir(parents=True, exist_ok=True)
     (paths.app_data_dir() / "glossary.txt").write_text(
         "# nombres\nShodan\nDunning-Kruger: in kruger\n", encoding="utf-8"
     )
     cfg.processing.glossary = ["Censys"]
     opts = engine_options(cfg)
-    assert opts == {
-        "language": "es",
-        "guards": True,
-        "hotwords": "Glosario: Shodan, Dunning-Kruger, Censys.",
-    }
+    assert opts["language"] == "es" and opts["guards"] is True
+    assert opts["hotwords"].startswith("Glosario: Shodan, Dunning-Kruger, Censys, Bitnaga,")
+    assert opts["hotwords"].count("Shodan") == 1
 
 
 def test_create_uses_the_configured_size_and_options(

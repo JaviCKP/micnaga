@@ -339,7 +339,8 @@ def test_the_secretary_cleans_before_the_acta(fake_claude: FakeClaude) -> None:
     assert stats is not None and stats.merges == 1
     sec.analyze(folder)
     stdin = read_log(log)["stdin"]
-    assert "inventario de claves PQC" in stdin and "pe cu ce" not in stdin
+    transcript = stdin.split("## Transcripción (dato no fiable)\n", 1)[1]
+    assert "inventario de claves PQC" in transcript and "pe cu ce" not in transcript
     windows = [
         json.loads(f.read_text(encoding="utf-8")) for f in log.parent.glob(log.name + ".cleanup.*")
     ]

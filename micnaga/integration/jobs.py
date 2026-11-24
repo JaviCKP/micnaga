@@ -29,6 +29,7 @@ import logging
 import queue
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from collections.abc import Callable
@@ -211,6 +212,7 @@ def finalize_and_enqueue(
     *,
     on_enqueued: Callable[[], None],
     end_s: float | None = None,
+    before_enqueue: Callable[[bool], None] | None = None,
 ) -> Task:
     """Tarea: (recorte en ``end_s``) WAV -> FLAC y trabajo ``pending``. Si la conversion falla
     se encola igualmente (el pipeline sabe convertir los WAV): una grabacion nunca se pierde."""
@@ -218,15 +220,24 @@ def finalize_and_enqueue(
     def task(db: Database) -> None:
         from micnaga.capture import finalize_session
 
+        trim_saved = True
         if end_s is not None:
             from micnaga.capture.recovery import set_trim
 
-            set_trim(session_dir, end_s)
+            trim_saved = set_trim(session_dir, end_s)
+        audio_finalized = False
         try:
             finalize_session(session_dir, flac_level=config.capture.flac_level)
-            drop_trim_marker(session_dir)
+            if trim_saved:
+                drop_trim_marker(session_dir)
+                audio_finalized = True
         except Exception:
             log.exception("finalize failed for a session; queueing it anyway")
+        if before_enqueue is not None:
+            try:
+                before_enqueue(audio_finalized)
+            except Exception:
+                log.exception("live handoff failed; queueing the recording")
         job = db.enqueue_job(session_dir)
         log.info("job %d queued", job.id)
         on_enqueued()
@@ -292,6 +303,7 @@ class WorkerSupervisor:
         on_busy: Callable[[bool], None] | None = None,
         interval_s: float = 15.0,
         min_respawn_s: float = 5.0,
+        stall_timeout_s: float = 900.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._config = config
@@ -309,11 +321,18 @@ class WorkerSupervisor:
         self._on_busy = on_busy
         self._interval_s = interval_s
         self._min_respawn_s = min_respawn_s
+        self._stall_timeout_s = stall_timeout_s
         self._clock = clock
         self._wake = threading.Event()
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._proc: subprocess.Popen[bytes] | None = None
+        self._proc_db: Path | None = None
+        self._progress_seen: tuple[int, int, int, float] | None = None
+        self._progress_at = 0.0
+        self._progress_budget = stall_timeout_s
+        self._spawn_lock = threading.Lock()
+        self._spawn_paused = False
         self._spawned_at = 0.0
         self._next_spawn = 0.0
         self._fail_streak = 0
@@ -327,6 +346,33 @@ class WorkerSupervisor:
 
     def kick(self) -> None:
         self._wake.set()
+
+    def set_spawn_paused(self, paused: bool) -> None:
+        with self._spawn_lock:
+            self._spawn_paused = paused
+        self.kick()
+
+    @property
+    def worker_active(self) -> bool:
+        with self._spawn_lock:
+            proc = self._proc
+            return (proc is not None and proc.poll() is None) or self._is_running()
+
+    def has_pending_work(self, db: Database) -> bool:
+        counts = db.count_jobs()
+        if counts[JobState.PENDING] or counts[JobState.PROCESSING]:
+            return True
+        for path in self.job_indexes(Path(db.path))[1:]:
+            if path.is_file():
+                with self._path_factory(path) as other:
+                    counts = other.count_jobs()
+                    if counts[JobState.PENDING] or counts[JobState.PROCESSING]:
+                        return True
+        return False
+
+    def job_indexes(self, current: Path) -> list[Path]:
+        with self._watch_lock:
+            return [current, *(Path(key) for key in self._watched if Path(key) != current)]
 
     def watch(self, db_path: Path) -> None:
         """Vigila tambien el indice de otra carpeta (una sesion grabada antes de cambiarla)."""
@@ -361,13 +407,13 @@ class WorkerSupervisor:
 
         with self._watch_lock:
             data = {"db_paths": sorted(self._watched)}
-        try:
-            self._watch_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._watch_file.with_name(self._watch_file.name + ".tmp")
-            tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
-            os.replace(tmp, self._watch_file)
-        except OSError:
-            log.warning("could not persist the previous meetings folders", exc_info=True)
+            try:
+                self._watch_file.parent.mkdir(parents=True, exist_ok=True)
+                tmp = self._watch_file.with_name(self._watch_file.name + ".tmp")
+                tmp.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+                os.replace(tmp, self._watch_file)
+            except OSError:
+                log.warning("could not persist the previous meetings folders", exc_info=True)
 
     def _watched_busy_root(self) -> Path | None:
         """Raiz de la primera carpeta vigilada con trabajos pendientes (las vacias se olvidan)."""
@@ -376,6 +422,7 @@ class WorkerSupervisor:
             items = list(self._watched.items())
         for key, root in items:
             busy = False
+            failed = False
             if key != current:
                 try:
                     other = self._path_factory(Path(key))
@@ -384,11 +431,14 @@ class WorkerSupervisor:
                     finally:
                         other.close()
                     busy = counts[JobState.PENDING] + counts[JobState.PROCESSING] > 0
+                    failed = counts[JobState.FAILED] > 0
                 except Exception:
                     log.warning("could not read the jobs of a previous meetings folder")
                     continue
             if busy:
                 return root
+            if failed:
+                continue  # la biblioteca permite reintentar desde este indice
             with self._watch_lock:
                 self._watched.pop(key, None)
             self._save_watched()
@@ -430,28 +480,76 @@ class WorkerSupervisor:
         """Un paso (publico para los tests): ¿hay trabajo y no hay worker? Lanzarlo."""
         self._reap()
         counts = db.count_jobs()
+        self._check_progress(db)
         busy = counts[JobState.PENDING] + counts[JobState.PROCESSING] > 0
         other = None if busy else self._watched_busy_root()
         if self._on_busy is not None:
             self._on_busy(busy or other is not None)
         if not (busy or other is not None) or not self._models_ready():
             return
-        if self._is_running():
+        if self.worker_active:
             return
         now = self._clock()
         if now < self._next_spawn:
             return
-        try:
-            proc = self._spawn() if other is None else self._spawn_for(other)
-        except Exception:
-            log.exception("could not start the worker")
-            self._next_spawn = now + 60.0
+        with self._spawn_lock:
+            if self._spawn_paused or self._stop.is_set():
+                return
+            try:
+                proc = self._spawn() if other is None else self._spawn_for(other)
+            except Exception:
+                log.exception("could not start the worker")
+                self._next_spawn = now + 60.0
+                return
+            self._next_spawn = now + self._min_respawn_s
+            if proc is not None:
+                self._proc, self._spawned_at = proc, now
+                current = Path(db.path)
+                self._proc_db = current if other is None else other / current.name
+                self._progress_seen = None
+                self._progress_at = now
+                self._progress_budget = self._stall_timeout_s
+                self.spawn_count += 1
+                log.info("worker started (pid %s)", proc.pid)
+
+    def _check_progress(self, db: Database) -> None:
+        proc, target = self._proc, self._proc_db
+        if proc is None or target is None or proc.poll() is not None:
             return
-        self._next_spawn = now + self._min_respawn_s
-        if proc is not None:
-            self._proc, self._spawned_at = proc, now
-            self.spawn_count += 1
-            log.info("worker started (pid %s)", proc.pid)
+        if Path(db.path) == target:
+            jobs = db.list_jobs(JobState.PROCESSING)
+        else:
+            with self._path_factory(target) as own:
+                jobs = own.list_jobs(JobState.PROCESSING)
+        job = jobs[0] if jobs else None
+        seen = (job.id, job.attempts, job.stage, job.updated_at) if job else None
+        now = self._clock()
+        if seen != self._progress_seen:
+            previous = self._progress_seen
+            self._progress_seen, self._progress_at = seen, now
+            if job is None:
+                self._progress_budget = self._stall_timeout_s
+            elif previous is None or previous[:2] != (job.id, job.attempts):
+                from micnaga.capture.session import read_capture_json
+
+                self._progress_budget = self._stall_timeout_s
+                with contextlib.suppress(OSError, ValueError, KeyError, TypeError):
+                    duration = float(read_capture_json(Path(job.session_dir)).extra.get(
+                        "duration_s", 0
+                    ))
+                    self._progress_budget = max(self._stall_timeout_s, duration / 2)
+        elif now - self._progress_at >= self._progress_budget:
+            log.warning("worker %s stopped advancing; restarting from its checkpoint", proc.pid)
+            if not getattr(sys, "frozen", False):
+                # En Windows el python.exe del venv puede ser solo un lanzador.
+                import psutil
+
+                with contextlib.suppress(psutil.Error):
+                    for child in reversed(psutil.Process(proc.pid).children(recursive=True)):
+                        with contextlib.suppress(psutil.Error):
+                            child.kill()
+            proc.kill()  # solo el proceso que lanzo este supervisor
+            self._progress_at = now
 
     def _reap(self) -> None:
         proc = self._proc
@@ -461,6 +559,7 @@ class WorkerSupervisor:
         if code is None:
             return
         self._proc = None
+        self._proc_db = None
         quick = self._clock() - self._spawned_at < 20.0
         if code != 0 and quick:
             self._fail_streak += 1

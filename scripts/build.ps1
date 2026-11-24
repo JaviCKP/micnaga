@@ -32,7 +32,8 @@
   .\scripts\build.ps1 -SkipInstaller
   $env:MICNAGA_SIGN_THUMBPRINT = "0123...ABCD"; .\scripts\build.ps1
 
-  Salida: dist\micnaga e instalador en dist\installer. `build\` y `dist\` estan en .gitignore.
+  Salida: dist\micnaga con su conector de Claude Desktop e instalador en dist\installer.
+  `build\` y `dist\` estan en .gitignore.
 #>
 [CmdletBinding()]
 param(
@@ -144,7 +145,10 @@ if (-not $SkipSelfTest) {
     }
 }
 
-# 6. Tamano (la estimacion LZMA aproxima el instalador; el real lo da iscc).
+# 6. Conector de reuniones y estimacion del tamano (el tamano real lo da iscc).
+Invoke-Step "Conector de Claude Desktop" {
+    & $py scripts\build_mcpb.py --output "$outDir\Micnaga-Meetings.mcpb"
+}
 Invoke-Step "Tamano" { & $py scripts\measure_dist.py $outDir }
 
 # 7. Instalador (opcional: necesita Inno Setup 6)

@@ -366,6 +366,8 @@ def _migrate(data: Mapping[str, Any]) -> dict[str, Any]:
         if asr == _V2_ASR:
             processing["asr_engine"] = ProcessingConfig().asr_engine
             processing["whisper_model"] = ProcessingConfig().whisper_model
+        else:
+            processing.update(asr)  # conserva tambien los valores implicitos de v2
         if processing.get("hq_model", _V2_HQ_MODEL) == _V2_HQ_MODEL:  # defecto viejo sin tocar
             processing["hq_model"] = ProcessingConfig().hq_model
     size = processing.get("whisper_model") if isinstance(processing, dict) else None

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -23,6 +24,43 @@ STATE_FINALIZED = "finalized"
 _REPLACE_RETRIES = 10
 
 
+def pending_sessions_dir() -> Path:
+    return paths.app_data_dir() / "recording-sessions"
+
+
+def _pending_file(session: Path) -> Path:
+    key = hashlib.sha256(os.fsencode(os.path.normcase(str(session.resolve())))).hexdigest()
+    return pending_sessions_dir() / f"{key}.json"
+
+
+def remember_recording(session: Path) -> None:
+    """Saves the recording location independently from capture.json and the current library."""
+    import psutil
+
+    target = _pending_file(session)
+    entry = {
+        "session": str(session.resolve()),
+        "pid": os.getpid(),
+        "pid_create_time": psutil.Process().create_time(),
+    }
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_suffix(".tmp")
+    try:
+        with tmp.open("w", encoding="utf-8") as fh:
+            json.dump(entry, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        tmp.replace(target)
+    finally:
+        with contextlib.suppress(OSError):
+            tmp.unlink(missing_ok=True)
+
+
+def forget_recording(session: Path) -> None:
+    with contextlib.suppress(OSError):
+        _pending_file(session).unlink(missing_ok=True)
+
+
 def capture_json_path(session_dir: Path) -> Path:
     return session_dir / paths.CAPTURE_JSON
 
@@ -41,8 +79,7 @@ def write_capture_json(session_dir: Path, meta: CaptureMeta) -> bool:
         with open(tmp, "w", encoding="utf-8") as f:
             f.write(text)
             f.flush()
-            with contextlib.suppress(OSError):
-                os.fsync(f.fileno())
+            os.fsync(f.fileno())
         for attempt in range(_REPLACE_RETRIES):
             try:
                 os.replace(tmp, target)
@@ -73,7 +110,10 @@ def mark_in_person(session_dir: Path) -> bool:
     """Escribe la marca de reunion presencial (``False`` si no se pudo; nunca lanza)."""
     try:
         session_dir.mkdir(parents=True, exist_ok=True)
-        (session_dir / IN_PERSON_MARKER).write_text('{"in_person": true}', encoding="utf-8")
+        with (session_dir / IN_PERSON_MARKER).open("w", encoding="utf-8") as fh:
+            fh.write('{"in_person": true}')
+            fh.flush()
+            os.fsync(fh.fileno())
         return True
     except OSError:
         log.exception("could not persist the in-person marker")

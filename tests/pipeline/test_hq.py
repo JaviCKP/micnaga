@@ -123,6 +123,28 @@ def test_assign_words_by_overlap_and_nearest() -> None:
     assert [sp for sp, _w in out] == ["me", "S1", "S2", "S2", "S2"]
 
 
+def test_improve_keeps_cross_track_merge_after_serialization(tmp_path: Path) -> None:
+    from micnaga.pipeline import output
+
+    original = replace(
+        _transcript(),
+        speakers=[Speaker("P2", "Persona en sala"), Speaker("S1", "Ana")],
+        segments=[_seg("P2", [("micro", 4.2, 4.8)]), _seg("S1", [("remota", 5.0, 5.4)])],
+    )
+    output.write_transcript(tmp_path, original)
+    output.merge_speakers(tmp_path, "S1", "P2", reindex=False)
+    merged = output.read_transcript(tmp_path)
+    improved = hq.rebuild(
+        merged, [Word("Vitnaga", 4.2, 4.8)], [Word("Remota", 5.0, 5.4)], Config(), "fake-large"
+    )
+    assert [(s.speaker, s.audio_track) for s in improved.segments] == [
+        ("S1", "mic"),
+        ("S1", "system"),
+    ]
+    assert improved.segments[0].text == "Bitnaga"
+    assert improved.segments[0].words == [Word("Bitnaga", 4.2, 4.8)]
+
+
 def test_improve_keeps_speakers_markers_and_saves_previa(tmp_path: Path, no_vad: None) -> None:
     folder = _meeting(tmp_path)
     before = (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8")
@@ -171,6 +193,9 @@ def test_cancel_leaves_transcript_untouched(tmp_path: Path, no_vad: None) -> Non
     assert (folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8") == before
     assert not hq.has_previa(folder)
     assert not (folder / hq.CANCEL).exists()
+    resumed = _engine()
+    hq.improve(folder, Config(), lambda: resumed)
+    assert resumed.calls == 2  # el primer bloque ya estaba guardado
 
 
 # ----------------------------------------------------------------------------- revision externa
@@ -357,12 +382,9 @@ def test_hq_engine_gets_language_glossary_and_guards(monkeypatch: pytest.MonkeyP
     cfg = Config()
     cfg.processing.glossary = ["Shodan"]
     hq.create_engine(cfg)
-    assert seen == {
-        "size": "large-v3-turbo",
-        "language": "es",
-        "guards": True,
-        "hotwords": "Glosario: Shodan.",
-    }
+    assert seen["size"] == "large-v3-turbo"
+    assert seen["language"] == "es" and seen["guards"] is True
+    assert seen["hotwords"].startswith("Glosario: Shodan, Bitnaga,")
 
 
 @pytest.mark.slow

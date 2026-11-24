@@ -120,6 +120,7 @@ class PipelineRunner:
         self.rename = rename
         self._on_stage_start = on_stage_start
         self._last_fraction = -1.0
+        self._last_progress_write = 0.0
 
     # ------------------------------------------------------------------ utilidades
 
@@ -165,6 +166,7 @@ class PipelineRunner:
         session = located
         job_id = job.id if job is not None else None
         self._last_fraction = -1.0
+        self._last_progress_write = 0.0
         if job is not None:
             self._emit(JobStarted(job.id, str(session)))
         times: dict[str, float] = {}
@@ -191,13 +193,13 @@ class PipelineRunner:
             for stage in stages:
                 before = sum(STAGE_WEIGHTS[: stage.index - 1]) / total
                 span = STAGE_WEIGHTS[stage.index - 1] / total
-                self._set_stage(job, stage, before)
                 if stage.index == 2 and not is_stage_done(session, stages[5]):
-                    self._finish_live(session, deps, meta, stages, job_id)
+                    self._finish_live(session, deps, meta, stages, job)
                 if is_stage_done(session, stage):
                     times[stage.name] = 0.0
                     skipped.append(stage.name)
                     continue
+                self._set_stage(job, stage, before)
                 for later in stages[stage.index :]:
                     clear_marker(session, later)
                 if self._on_stage_start is not None:
@@ -228,15 +230,19 @@ class PipelineRunner:
         deps: Deps,
         meta: CaptureMeta,
         stages: tuple[Stage, ...],
-        job_id: int | None,
+        job: Job | None,
     ) -> None:
         """Si hubo procesado en vivo, completa la cola y deja hechas las etapas 2-6.
 
         Cualquier fallo borra ``work/live/`` y el pipeline sigue por lotes (nunca se pierde una
         reunion por el procesado en vivo)."""
         from micnaga.pipeline import live
+        from micnaga.pipeline.worker import mutex_exists
 
         if not live.has_cache(session):
+            return
+        if mutex_exists(live.mutex_name(session)):
+            log.warning("live process still owns its checkpoints; processing in batch")
             return
         engines = live.engines_from_deps(deps)
         if engines is None or not self.config.processing.live:
@@ -245,9 +251,11 @@ class PipelineRunner:
         total = float(sum(STAGE_WEIGHTS))
         before = sum(STAGE_WEIGHTS[:1]) / total
         span = sum(STAGE_WEIGHTS[1:6]) / total
+        self._set_stage(job, stages[5], before)
+        job_id = job.id if job is not None else None
 
         def progress(frac: float) -> None:
-            self._progress(job_id, stages[1], before + span * frac)
+            self._progress(job_id, stages[5], before + span * frac)
 
         ctx = StageContext(session, self.config, deps, meta, progress)
         t0 = time.perf_counter()
@@ -275,6 +283,7 @@ class PipelineRunner:
     def _set_stage(self, job: Job | None, stage: Stage, fraction: float) -> None:
         if job is not None and self.db is not None:
             self.db.set_stage(job.id, stage.index)
+            self._last_progress_write = time.monotonic()
         self._progress(job.id if job is not None else None, stage, fraction, force=True)
 
     def _progress(
@@ -282,6 +291,10 @@ class PipelineRunner:
     ) -> None:
         if job_id is None:
             return
+        now = time.monotonic()
+        if not force and self.db is not None and now - self._last_progress_write >= 5.0:
+            self.db.touch_job_progress(job_id)
+            self._last_progress_write = now
         if not force and abs(fraction - self._last_fraction) < 0.01:
             return
         self._last_fraction = fraction
@@ -331,8 +344,17 @@ class PipelineRunner:
         if final != session:
             if job is not None and self.db is not None:
                 self._set_job_dir(job.id, final)
-            self._rename(session, final)
-            session = final
+            try:
+                self._rename(session, final)
+            except OSError:
+                if not session.is_dir():
+                    raise
+                # El usuario puede estar escuchando el audio desde la fila provisional.
+                if job is not None and self.db is not None:
+                    self._set_job_dir(job.id, session)
+                log.warning("could not rename the meeting folder; keeping the recording path")
+            else:
+                session = final
         ensure_flac(session)
         if job is not None:
             self._mark_analysis_pending(session)

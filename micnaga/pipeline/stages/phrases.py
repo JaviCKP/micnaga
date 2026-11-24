@@ -25,10 +25,23 @@ from __future__ import annotations
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
+from dataclasses import replace
+from typing import TYPE_CHECKING
 
 from rapidfuzz import fuzz
 
-from micnaga.types import SPEAKER_ME, SPEAKER_ME_NAME, Segment, Speaker, Word, is_mic_speaker
+from micnaga.types import (
+    SPEAKER_ME,
+    SPEAKER_ME_NAME,
+    AudioTrack,
+    Segment,
+    Speaker,
+    Word,
+    speaker_track,
+)
+
+if TYPE_CHECKING:
+    from micnaga.glossary import Glossary
 
 PHRASE_GAP_S = 0.8
 MAX_PARAGRAPH_S = 45.0
@@ -49,18 +62,34 @@ def words_text(words: Iterable[Word]) -> str:
     return " ".join(w.w for w in words)
 
 
-def make_segment(speaker: str, words: Sequence[Word]) -> Segment:
+def apply_glossary(phrase: Segment, glossary: Glossary) -> Segment:
+    if phrase.words:
+        words = glossary.apply_words(phrase.words)
+        if words != phrase.words:
+            return replace(phrase, words=words, text=words_text(words))
+        return phrase
+    text = glossary.apply_text(phrase.text)
+    return replace(phrase, text=text) if text != phrase.text else phrase
+
+
+def make_segment(
+    speaker: str, words: Sequence[Word], *, track: AudioTrack | None = None
+) -> Segment:
     return Segment(
         start=words[0].s,
         end=max(w.e for w in words),
         speaker=speaker,
         text=words_text(words),
         words=list(words),
+        track=track if track != speaker_track(speaker) else None,
     )
 
 
 def build_phrases(
-    words_by_speaker: Iterable[tuple[str, Word]], *, gap_s: float = PHRASE_GAP_S
+    words_by_speaker: Iterable[tuple[str, Word]],
+    *,
+    gap_s: float = PHRASE_GAP_S,
+    track: AudioTrack | None = None,
 ) -> list[Segment]:
     """Agrupa palabras (``(hablante, palabra)``) en frases; el resultado va ordenado por inicio.
 
@@ -68,12 +97,11 @@ def build_phrases(
     y pueden solaparse): el micro (``me`` y ``P<n>``) por un lado y todos los hablantes remotos
     juntos por otro, de modo que un cambio de hablante siempre corta la frase.
     """
-    per_track: dict[str, list[tuple[str, Word]]] = {}
+    per_track: dict[AudioTrack, list[tuple[str, Word]]] = {}
     for speaker, word in words_by_speaker:
-        track = "mic" if is_mic_speaker(speaker) else "remote"
-        per_track.setdefault(track, []).append((speaker, word))
+        per_track.setdefault(track or speaker_track(speaker), []).append((speaker, word))
     phrases: list[Segment] = []
-    for items in per_track.values():
+    for source, items in per_track.items():
         items.sort(key=lambda sw: (sw[1].s, sw[1].e))
         speaker = items[0][0]
         current: list[Word] = []
@@ -81,12 +109,12 @@ def build_phrases(
             if current and (
                 sp != speaker or w.s - current[-1].e >= gap_s or ends_sentence(current[-1].w)
             ):
-                phrases.append(make_segment(speaker, current))
+                phrases.append(make_segment(speaker, current, track=source))
                 current = []
             speaker = sp
             current.append(w)
         if current:
-            phrases.append(make_segment(speaker, current))
+            phrases.append(make_segment(speaker, current, track=source))
     phrases.sort(key=lambda s: (s.start, s.end))
     return phrases
 
@@ -115,12 +143,15 @@ def merge_segments(
             )
             if (
                 prev.speaker == seg.speaker
+                and prev.audio_track == seg.audio_track
                 and gap < merge_gap_s
                 and not (long_enough and sentence_done)
             ):
                 words = [*prev.words, *seg.words]
                 text = words_text(words) if words else f"{prev.text} {seg.text}".strip()
-                out[-1] = Segment(prev.start, max(prev.end, seg.end), prev.speaker, text, words)
+                out[-1] = Segment(
+                    prev.start, max(prev.end, seg.end), prev.speaker, text, words, track=prev.track
+                )
                 continue
         out.append(seg)
     return out
@@ -204,11 +235,11 @@ def drop_echo(
     ``[inicio - tolerancia, fin + tolerancia]`` y (b) el texto de las palabras remotas dentro de
     esa ventana (el eco puede trocearse distinto que el original).
     """
-    remote = [p for p in phrases if not is_mic_speaker(p.speaker)]
+    remote = [p for p in phrases if p.audio_track == "system"]
     kept: list[Segment] = []
     dropped: list[Segment] = []
     for p in phrases:
-        if not is_mic_speaker(p.speaker):
+        if p.audio_track == "system":
             kept.append(p)
             continue
         lo, hi = p.start - tolerance_s, p.end + tolerance_s

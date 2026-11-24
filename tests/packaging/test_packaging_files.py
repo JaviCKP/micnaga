@@ -197,22 +197,21 @@ def test_iss_is_one_click_and_upgrades_in_place() -> None:
         assert directive in iss, directive
     assert "LicenseFile" not in iss and "[Tasks]" not in iss
     # arranca la app al terminar (tambien en silencio): sin `postinstall`, que exige pagina final
-    run = iss[iss.index("[Run]") : iss.index("[UninstallRun]")]
+    run = iss.split("\n[Run]\n", 1)[1].split("\n[UninstallRun]\n", 1)[0]
     assert (
         'Parameters: "app"' in run
         and "postinstall" not in run.replace("sin ", "").split("Flags:")[-1]
     )
-    # actualizacion: cierra la app y compara con el mutex de micnaga/app.py
-    assert "PrepareToInstall" in iss and "taskkill.exe" in iss and "CheckForMutexes" in iss
-    prefix = "Local" + chr(92) + "micnaga-app-"
-    assert prefix in iss
-    from micnaga.app import SingleInstance
-
-    assert SingleInstance().name.startswith(prefix)
+    assert "PrepareToInstall" in iss and "MicnagaInUse()" in iss and "taskkill.exe" not in iss
+    uninstall = iss.split("\n[UninstallRun]\n", 1)[1].split("\n[Code]\n", 1)[0]
+    for action in ("StopMicnaga", "StopMicnagaHost"):
+        command = f'Parameters: "/D /C exit /B 0"; Flags: runhidden; RunOnceId: "{action}"'
+        assert command in uninstall
     assert "UsePreviousAppDir=yes" in iss
     # lo que la version nueva ya no trae (p. ej. aec.dll) no sobrevive a la actualizacion
     install_delete = iss[iss.index("[InstallDelete]") : iss.index("[Files]")]
-    assert r'Name: "{app}\_internal"' in install_delete and "filesandordirs" in install_delete
+    assert r'Type: files; Name: "{app}\_internal\pyaec\aec.dll"' in install_delete
+    assert "filesandordirs" not in install_delete
 
 
 def test_iss_single_product_webview2_check_and_optional_signing() -> None:
@@ -243,8 +242,9 @@ def test_iss_registers_native_host_per_user_and_relaunches_after_silent_update()
         line = next(x for x in registry.splitlines() if browser + r"\NativeMessagingHosts" in x)
         assert line.startswith("Root: HKCU;") and "uninsdeletekey" in line
     assert "WriteHostManifest" in iss and r'Name: "{app}\{#HostName}.json"' in iss
+    assert '"path": "micnaga-host.exe"' in iss
     # la actualizacion automatica (updates.py: /VERYSILENT ...) necesita que [Run] relance la app
-    run = iss[iss.index("[Run]") : iss.index("[UninstallRun]")]
+    run = iss.split("\n[Run]\n", 1)[1].split("\n[UninstallRun]\n", 1)[0]
     entry = next(x for x in run.splitlines() if x.startswith("Filename:"))
     assert "{#AppExe}" in entry and "skipifsilent" not in entry and "postinstall" not in entry
 

@@ -46,6 +46,17 @@ NPERSEG = 4096
 ACTIVE_DBFS = -45.0
 
 
+def reference_active_s(ref: AudioArray, sr: int) -> float:
+    """Tiempo de referencia audible en ventanas de 50 ms, incluida la cola parcial."""
+    frame = max(1, int(0.05 * sr))
+    nframes, tail = divmod(len(ref), frame)
+    threshold = 10 ** (ACTIVE_DBFS / 10)
+    full = ref[: nframes * frame].reshape(nframes, frame)
+    active = int(np.count_nonzero(np.mean(np.square(full, dtype=np.float64), axis=1) > threshold))
+    last = tail if tail and np.mean(np.square(ref[-tail:], dtype=np.float64)) > threshold else 0
+    return (active * frame + last) / sr
+
+
 @dataclass(frozen=True)
 class EchoCheck:
     echo: bool
@@ -163,8 +174,7 @@ def measure_echo(
     k = n // frame
     if k == 0:
         return EchoCheck(False, 0.0, -99.0, 0.0, 0.0, "no audio")
-    rms = np.sqrt(np.mean(np.square(ref[: k * frame].reshape(k, frame), dtype=np.float64), axis=1))
-    active_s = float(np.count_nonzero(rms > 10 ** (ACTIVE_DBFS / 20)) * frame / sr)
+    active_s = reference_active_s(ref, sr)
     if active_s < MIN_ACTIVE_S:
         return EchoCheck(False, 0.0, -99.0, 0.0, active_s, "no system audio")
     win = int(WINDOW_S * sr)

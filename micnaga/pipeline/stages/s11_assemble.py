@@ -11,8 +11,10 @@ cierre (son lo ultimo que se toca del sistema de ficheros).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any
 
+from micnaga.brain.acta import recorded_title
 from micnaga.capture.session import is_in_person
 from micnaga.gates import SOURCE_IN_PERSON
 from micnaga.pipeline import output
@@ -26,14 +28,13 @@ from micnaga.types import (
     Word,
 )
 
-DEFAULT_TITLE = "Reunión"
 TRANSCRIPT_OUTPUT = "../transcripcion.json"
 """Relativo a ``work/``: la marca solo cuenta si la transcripcion existe."""
 
 
 def _round_segment(s: Segment) -> Segment:
     words = [Word(w.w, round(w.s, 3), round(w.e, 3), round(w.p, 3)) for w in s.words]
-    return Segment(round(s.start, 3), round(s.end, 3), s.speaker, s.text, words)
+    return replace(s, start=round(s.start, 3), end=round(s.end, 3), words=words)
 
 
 def build_transcript(ctx: StageContext) -> Transcript:
@@ -53,7 +54,7 @@ def build_transcript(ctx: StageContext) -> Transcript:
     aec_name = ctx.stage_info("aec").get("aec")
     return Transcript(
         meeting=MeetingInfo(
-            title=(meta.meet_title or "").strip() or DEFAULT_TITLE,
+            title=recorded_title(ctx.session, meta.meet_title),
             start=meta.started_at,
             duration_s=round(float(align.get("duration_s", 0.0)), 3),
             source=SOURCE_IN_PERSON if is_in_person(ctx.session, meta.extra) else "meet",

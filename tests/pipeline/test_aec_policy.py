@@ -200,10 +200,10 @@ def test_auto_never_touches_the_mic_without_echo_or_with_headphones() -> None:
 
 def test_always_cancels_whenever_the_system_sounds_but_not_in_silence() -> None:
     mic, system = _tracks(120.0, leak_from=None)
-    system[60 * SR :] = 0.0  # el segundo minuto sin nadie remoto... y sin nada en los 5 min?
+    system[60 * SR :] = 0.0  # solo el primer minuto tiene referencia
     out, summary = policy.cancel_track("always", _meta("headphones"), mic, system, SR, _Recorder())
-    # la ventana del trozo 1 (ultimos 5 min) aun tiene el sistema del minuto 0: se cancela
-    assert summary.applied == [0, 1]
+    assert summary.applied == [0]
+    assert out is not None and np.array_equal(out[60 * SR :], mic[60 * SR :])
     silent = np.zeros_like(system)
     out, summary = policy.cancel_track("always", _meta("speakers"), mic, silent, SR, _Recorder())
     assert out is None and summary.info()["skipped"] == "no system audio"

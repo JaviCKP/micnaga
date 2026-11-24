@@ -806,10 +806,12 @@ def test_a_recreated_window_handle_gets_styles_and_transparency_again() -> None:
     r.host.show_pill()
     r.pill._hwnd = 4242  # WinForms recreo el formulario
     r.pill.log.clear()
-    r.host.show_popup("x")
+    r.pill.region = None
+    r.host._clear_surface_backdrop()
     assert r.w32.styles[4242] & winapi.WS_EX_NOACTIVATE
     assert ("prepare_overlay", True) in r.pill.log
     assert ("place", STAGE) in r.pill.log
+    assert r.pill.region == PILL_REGION and r.pill.visible
     r.host._stopping.set()
 
 

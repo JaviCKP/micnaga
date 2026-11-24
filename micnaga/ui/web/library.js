@@ -13,6 +13,7 @@
   const S = {
     meetings: [], folder: null, data: null, query: "", canEdit: false, vpEnabled: false, vpNames: new Set(),
     segs: [], playingIdx: -1, userScrollAt: 0, highlightQuery: "",
+    pending: new Map(), pendingDetail: null,
   };
 
   // ------------------------------------------------------------------ audio
@@ -65,8 +66,11 @@
       get playing() { return playing; },
       async play() {
         if (!master) return;
+        const source = master;
         resync();
         await Promise.all(Object.values(els).filter(Boolean).map((a) => { a.playbackRate = rate; return a.play().catch(() => {}); }));
+        if (master !== source) return;
+        if (source.paused) { this.pause(); return; }
         playing = true;
         onState(true);
         clearInterval(drift);
@@ -153,31 +157,42 @@
     return n <= 0 ? "today" : n === 1 ? "yesterday" : n < 7 ? "week" : "earlier";
   };
 
-  function renderList() {
+  function renderList(replacement) {
     const side = $("side");
+    const focused = side.contains(document.activeElement) ? document.activeElement.dataset.folder : null;
+    const scroll = side.scrollTop;
+    const completed = new Set(S.meetings.map((m) => m.folder));
+    const pending = [...S.pending.values()].filter((m) => !completed.has(m.folder));
+    const meetings = pending.length
+      ? [...pending, ...S.meetings].sort((a, b) => Date.parse(b.start) - Date.parse(a.start))
+      : S.meetings;
     side.replaceChildren();
-    $("count").textContent = S.meetings.length ? mic.t("library.count", { n: S.meetings.length }) : "";
-    $("count").setAttribute("aria-label", S.meetings.length ? mic.t("library.count_label", { n: S.meetings.length }) : "");
-    if (!S.meetings.length) {
+    $("count").textContent = meetings.length ? mic.t("library.count", { n: meetings.length }) : "";
+    $("count").setAttribute("aria-label", meetings.length ? mic.t("library.count_label", { n: meetings.length }) : "");
+    if (!meetings.length) {
       const d = el("div", "nores");
       d.innerHTML = mic.icon("library");
       d.append(el("div", "t", mic.t("library.none_title")));
       side.append(d);
+      if (focused) side.focus({ preventScroll: true });
       return;
     }
-    let last = "";
-    for (const m of S.meetings) {
+    let last = "", focusTarget = null;
+    for (const m of meetings) {
       const g = groupKey(m.start);
       if (g !== last) { side.append(el("div", "group-h caps", mic.t("library.group." + g))); last = g; }
       const b = el("button", "row");
       b.type = "button";
       b.dataset.folder = m.folder;
+      if (m.phase) b.dataset.jobId = m.job_id;
       if (m.folder === S.folder) b.setAttribute("aria-current", "true");
+      if (m.folder === (replacement?.from === focused ? replacement.to : focused)) focusTarget = b;
       b.append(el("div", "row-title", m.title));
       const sub = el("div", "row-sub tnum");
       sub.append(el("span", "", mic.fmtDate(m.start)), el("span", "dot", "·"), el("span", "", mic.fmtDuration(m.duration_s)));
+      if (m.phase) sub.append(el("span", "tag-mono pending-tag", pendingPhase(m.phase)));
       if (m.in_person) sub.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
-      const n = m.speakers.length;
+      const n = m.speakers?.length;
       if (n) {
         const dots = el("span", "who-dots");
         dots.setAttribute("role", "img");
@@ -187,9 +202,11 @@
         sub.append(dots);
       }
       b.append(sub);
-      b.addEventListener("click", () => openMeeting(m.folder));
+      b.addEventListener("click", () => m.phase ? openPendingMeeting(m) : openMeeting(m.folder));
       side.append(b);
     }
+    if (focused) (focusTarget || side).focus({ preventScroll: true });
+    side.scrollTop = scroll;
   }
 
   function renderHits(res) {
@@ -225,41 +242,71 @@
     $("q-clear").hidden = !q;
     document.querySelector(".search").classList.toggle("has-value", !!q);
     clearTimeout(searchTimer);
+    const seq = ++searchSeq;
     if (!q) { renderList(); return; }
     searchTimer = setTimeout(async () => {
-      const seq = ++searchSeq;
       const res = await mic.call("search", q, 60);
       if (seq === searchSeq && res) renderHits(res);
     }, 110);
   }
 
   // ------------------------------------------------------------------ viewer
+  let openSeq = 0;
   async function openMeeting(folder, seekT, query) {
+    const pending = [...S.pending.values()].find((m) => m.folder === folder);
+    if (pending && !S.meetings.some((m) => m.folder === folder)) return openPendingMeeting(pending, seekT);
+    return loadMeeting(folder, ++openSeq, seekT, query);
+  }
+
+  async function loadMeeting(folder, seq, seekT, query) {
     const r = await mic.call("get_meeting", folder);
+    if (seq !== openSeq) return;
     if (!r || !r.ok) { snack(errText(r)); return; }
-    const sameMeeting = S.folder === folder;
+    presentMeeting(r, folder, seekT, query);
+  }
+
+  function selectFolder(folder) {
     S.folder = folder;
+    document.querySelectorAll(".row[data-folder]").forEach((b) => { if (b.dataset.folder === folder) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current"); });
+  }
+
+  function presentMeeting(r, folder, seekT, query, fromPending = false) {
+    const oldAudio = S.pendingDetail?.audio;
+    const sameAudio = oldAudio && oldAudio.yo === r.audio.yo && oldAudio.remoto === r.audio.remoto;
+    const keepPlayback = S.folder === folder && (!S.pendingDetail || sameAudio);
+    const resume = fromPending && !keepPlayback && player.playing;
+    if (fromPending && !keepPlayback) seekT = player.time;
+    selectFolder(folder);
+    S.pendingDetail = null;
     S.data = r;
     S.highlightQuery = query || "";
-    renderViewer(sameMeeting);
-    document.querySelectorAll(".row[data-folder]").forEach((b) => { if (b.dataset.folder === folder) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current"); });
+    renderViewer(keepPlayback, fromPending);
     if (typeof seekT === "number" && !isNaN(seekT)) {
       if (player.available) player.seek(seekT);
       focusPhraseAt(seekT, true);
     }
+    if (resume) player.play();
   }
 
-  function renderViewer(keepPlayback) {
-    const tr = S.data.transcript;
-    S.segs = tr.segments;
+  function renderMeetingHeader(meeting) {
     $("empty").hidden = true;
     $("viewer").hidden = false;
-    $("m-title").textContent = tr.meeting.title;
+    $("m-title").textContent = meeting.title;
     const meta = $("m-meta");
     meta.replaceChildren();
-    meta.append(el("span", "", mic.fmtDate(tr.meeting.start)), el("span", "sep", "·"), el("span", "", mic.fmtDuration(tr.meeting.duration_s)));
-    if (tr.meeting.source === "presencial") meta.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
-    if (tr.meeting.meet_code) meta.append(el("span", "tag-mono", tr.meeting.meet_code));
+    meta.append(el("span", "", mic.fmtDate(meeting.start)), el("span", "sep", "·"), el("span", "", mic.fmtDuration(meeting.duration_s)));
+    if (meeting.in_person || meeting.source === "presencial") meta.append(el("span", "tag-mono", mic.t("library.in_person_tag")));
+    if (meeting.meet_code) meta.append(el("span", "tag-mono", meeting.meet_code));
+  }
+
+  function renderViewer(keepPlayback, fromPending) {
+    const tr = S.data.transcript;
+    S.segs = tr.segments;
+    renderMeetingHeader(tr.meeting);
+    $("pending-view").hidden = true;
+    $("tr").hidden = false;
+    $("speakers").hidden = false;
+    $("open-folder").hidden = false;
     renderSpeakers();
     renderMarkers();
     renderOriginalToggle();
@@ -268,20 +315,143 @@
       const x = await mic.call("open_folder", S.folder);
       if (x && !x.ok) snack(errText(x));
     };
-    // audio
+    renderAudio(S.data.audio, tr.meeting.duration_s, keepPlayback);
+    renderTicks(tr);
+    hqRender();
+    const hours = $("horas");
+    if (fromPending && !hours.hidden) {
+      $("viewer").hidden = true;
+      const folder = S.folder;
+      const watch = new MutationObserver(() => {
+        if (!hours.hidden) return;
+        watch.disconnect();
+        if (S.folder === folder) announceMeeting(folder);
+      });
+      watch.observe(hours, { attributes: true, attributeFilter: ["hidden"] });
+    } else {
+      announceMeeting(S.folder);
+    }
+  }
+
+  function announceMeeting(folder) {
+    document.dispatchEvent(new CustomEvent("mic:meeting", { detail: { folder } }));
+  }
+
+  function renderAudio(audio, duration, keepPlayback) {
     const wasPlaying = keepPlayback && player.playing;
     const t = keepPlayback ? player.time : 0;
     if (!keepPlayback) {
-      player.load(S.data.audio, tr.meeting.duration_s);
+      player.load(audio, duration);
       $("play").disabled = !player.available;
     }
     renderTracks();
     if (keepPlayback && wasPlaying) player.seek(t);
-    $("total").textContent = mic.fmtClock(player.duration || tr.meeting.duration_s);
+    $("total").textContent = mic.fmtClock(player.duration || duration);
     updateTime(keepPlayback ? t : 0);
-    renderTicks(tr);
-    hqRender();
-    document.dispatchEvent(new CustomEvent("mic:meeting", { detail: { folder: S.folder } }));
+  }
+
+  // ------------------------------------------------------------------ saved audio awaiting transcription
+  const pendingPhase = (phase) => mic.t("library.pending." + phase);
+  let pendingTimer = 0, pendingRequest = null, pendingDirty = false, pendingReloadList = false;
+
+  function showPendingStatus(meeting) {
+    const title = $("m-title");
+    if (title.textContent !== meeting.title) title.textContent = meeting.title;
+    const phase = pendingPhase(meeting.phase);
+    const status = $("pending-phase");
+    if (status.textContent !== phase) status.textContent = phase;
+  }
+
+  async function openPendingMeeting(meeting, seekT) {
+    const seq = ++openSeq;
+    const r = await mic.call("get_pending_meeting", meeting.job_id);
+    if (seq !== openSeq) return;
+    if (r?.final_folder) {
+      await loadMeeting(r.final_folder, seq, seekT);
+      refreshPending(true);
+      return;
+    }
+    if (!r?.ok) { snack(errText(r)); refreshPending(); return; }
+    const keepPlayback = S.pendingDetail?.job_id === meeting.job_id;
+    S.pendingDetail = { ...r.meeting, audio: r.audio };
+    selectFolder(r.meeting.folder);
+    S.data = null;
+    S.segs = [];
+    S.playingIdx = -1;
+    renderMeetingHeader(r.meeting);
+    showPendingStatus(r.meeting);
+    $("pending-view").hidden = false;
+    for (const id of ["tr", "speakers", "markers", "orig-toggle", "hq-btn", "open-folder"]) $(id).hidden = true;
+    HQ.folder = "";
+    hqHide();
+    $("ticks").replaceChildren();
+    renderAudio(r.audio, r.meeting.duration_s, keepPlayback);
+    $("pending-audio-unavailable").hidden = player.available;
+    if (typeof seekT === "number" && player.available) player.seek(seekT);
+    announceMeeting(null);
+  }
+
+  function refreshPending(reloadList = false) {
+    if (!mic.isHost) return Promise.resolve();
+    pendingReloadList ||= reloadList;
+    if (document.hidden) return Promise.resolve();
+    clearTimeout(pendingTimer);
+    if (pendingRequest) {
+      pendingDirty = true;
+      return pendingRequest;
+    }
+    const reload = pendingReloadList;
+    pendingReloadList = false;
+    pendingRequest = syncPending(reload).catch((error) => console.warn("library pending", error)).finally(() => {
+      pendingRequest = null;
+      if (document.hidden) return;
+      if (pendingDirty) { pendingDirty = false; return refreshPending(); }
+      if (S.pending.size) pendingTimer = setTimeout(refreshPending, 2000);
+    });
+    return pendingRequest;
+  }
+
+  async function syncPending(reloadList) {
+    const rows = await mic.call("list_pending_meetings");
+    if (!Array.isArray(rows)) return;
+    const next = new Map(rows.map((m) => [m.job_id, m]));
+    const added = rows.some((m) => !S.pending.has(m.job_id));
+    const removed = [...S.pending.keys()].some((id) => !next.has(id));
+    const changed = JSON.stringify([...S.pending.values()]) !== JSON.stringify(rows);
+    const active = S.pendingDetail;
+    const seq = openSeq;
+    const current = active && next.get(active.job_id);
+    let resolved, finished, replacement;
+    if (active && !current && (active.phase !== "failed" || reloadList || pendingReloadList)) {
+      resolved = await mic.call("get_pending_meeting", active.job_id);
+      if (resolved?.final_folder) finished = await mic.call("get_meeting", resolved.final_folder);
+    }
+    if (reloadList || removed || pendingReloadList) {
+      reloadList = true;
+      pendingReloadList = false;
+      S.meetings = (await mic.call("list_meetings", 500, 0)) || S.meetings;
+    }
+    S.pending = next;
+    if (active && active === S.pendingDetail && seq === openSeq) {
+      if (finished?.ok) {
+        replacement = { from: active.folder, to: resolved.final_folder };
+        presentMeeting(finished, resolved.final_folder, undefined, undefined, true);
+      } else if (current || resolved?.ok === false) {
+        Object.assign(active, current || { phase: "failed" });
+        showPendingStatus(active);
+      }
+    }
+    if (!S.query) {
+      if (added || removed || reloadList) renderList(replacement);
+      else if (changed) {
+        for (const row of $("side").querySelectorAll("[data-job-id]")) {
+          const meeting = next.get(Number(row.dataset.jobId));
+          row.querySelector(".row-title").textContent = meeting.title;
+          row.querySelector(".pending-tag").textContent = pendingPhase(meeting.phase);
+        }
+      }
+    }
+    if (removed) refreshFailedJobs();
   }
 
   // «Mejorar transcripcion»: icono en la cabecera, confirmacion en linea y linea de progreso
@@ -706,7 +876,7 @@
 
   // ------------------------------------------------------------------ transport UI
   function updateTime(t) {
-    const dur = player.duration || (S.data ? S.data.transcript.meeting.duration_s : 0) || 1;
+    const dur = player.duration || S.data?.transcript.meeting.duration_s || S.pendingDetail?.duration_s || 1;
     const p = Math.max(0, Math.min(1, t / dur));
     $("scrub").style.setProperty("--p", p.toFixed(4));
     $("scrub").setAttribute("aria-valuenow", String(Math.round(p * 100)));
@@ -790,6 +960,35 @@
   });
   $("q-clear").addEventListener("click", () => { $("q").value = ""; onQuery(); $("q").focus(); });
 
+  async function refreshFailedJobs(retry) {
+    const r = retry ? await mic.call("failed_transcriptions", retry) : await mic.call("failed_transcriptions");
+    if (!r || !r.ok) {
+      if (retry) snack(errText(r));
+      return;
+    }
+    const jobs = r.jobs || [];
+    $("failed-jobs").hidden = !jobs.length;
+    $("failed-jobs-n").textContent = String(jobs.length);
+    const list = $("failed-jobs-list");
+    list.replaceChildren();
+    for (const job of jobs) {
+      const row = el("div", "held-row");
+      const btn = el("button", "held-rec", mic.t("library.failed.retry"));
+      btn.type = "button";
+      btn.addEventListener("click", async () => {
+        btn.disabled = true;
+        try { await refreshFailedJobs(job.key); }
+        finally { btn.disabled = false; }
+      });
+      row.append(el("div", "held-t", job.name), btn);
+      list.append(row);
+    }
+    if (retry) {
+      snack(mic.t("library.failed.queued"));
+      refreshPending();
+    }
+  }
+
   // ------------------------------------------------------------------ «Descartadas»
   const heldBox = $("held"), heldList = $("held-list"), heldHead = $("held-h");
   heldHead.addEventListener("click", () => {
@@ -811,7 +1010,9 @@
       const txt = el("div", "");
       txt.append(el("div", "held-t", h.title || mic.t("library.held.untitled")));
       const when = h.started_at ? mic.fmtDate(h.started_at) : "";
-      const left = mic.t("library.held.days_left", { n: daysLeft(h.expires_at) });
+      const left = h.expires_at
+        ? mic.t("library.held.days_left", { n: daysLeft(h.expires_at) })
+        : mic.t("library.held.retained");
       txt.append(el("div", "held-s tnum", [when, mic.fmtDuration(h.duration_s), left].filter(Boolean).join(" · ")));
       const rec = el("button", "held-rec", mic.t("library.held.recover"));
       rec.type = "button";
@@ -908,6 +1109,7 @@
       if (r && r.ok) { applyUpdate(r); renderMarkers(); refreshListEntry(); }
     },
     refreshList: refreshListEntry,
+    refreshFailedJobs,
     showSettings,
     hideSettings,
   };
@@ -924,6 +1126,23 @@
     S.meetings = (await mic.call("list_meetings", 500, 0)) || [];
     renderList();
     if (boot && boot.has_held) renderHeld(await mic.call("list_held"));
+    if (mic.isHost) {
+      window.addEventListener("focus", () => { refreshFailedJobs(); refreshPending(); });
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) clearTimeout(pendingTimer);
+        else refreshPending(true);
+      });
+      window.chrome.webview.addEventListener("message", (e) => {
+        let msg = e.data;
+        if (typeof msg === "string") {
+          try { msg = JSON.parse(msg); } catch { return; }
+        }
+        if (msg?.type !== "library-jobs") return;
+        refreshPending(msg.state === "done");
+        if (msg.state === "failed") refreshFailedJobs();
+      });
+      await Promise.all([refreshFailedJobs(), refreshPending()]);
+    }
     const q = mic.params;
     if (q.get("folder")) await openMeeting(q.get("folder"), q.get("t") ? parseFloat(q.get("t")) : undefined);
     else if (q.get("select") === "first" && S.meetings.length) await openMeeting(S.meetings[0].folder);

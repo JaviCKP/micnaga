@@ -1,9 +1,7 @@
 """La Secretaria dentro del proceso de la app: cola serie, reintentos y API para la UI.
 
-* **Disparo:** ``on_job_done`` (evento ``job_done`` del worker). Con la Secretaria apagada el
-  aviso «Lista» sale al momento, como siempre. Encendida, el aviso espera a la pasada hasta
-  ``TOAST_WAIT_S`` y sale con «· N propuestas»; si tarda mas, sale sin el numero y las propuestas
-  aparecen despues en la biblioteca.
+* **Disparo:** ``on_job_done`` (evento ``job_done`` del worker). El aviso «Lista» sale al
+  guardar la transcripcion. La Secretaria encola el acta y las propuestas por separado.
 * **Cola:** tabla ``secretary_runs`` (``micnaga.brain.store``); un hilo serie (E/S pura: un
   subproceso y HTTP). Al arrancar: lo que quedo ``running`` vuelve a ``pending`` y se recogen las
   reuniones de las ultimas 24 h sin acta. Los fallos se reintentan con espera creciente (sin red,
@@ -62,7 +60,6 @@ _ECHO_FOLDER = frozenset(
     }
 )
 
-TOAST_WAIT_S = 120.0
 TICK_S = 60.0
 BOOT_WINDOW_H = 24
 ODOO_RETRY_S = 3600.0
@@ -82,7 +79,6 @@ class BrainService(GoogleApiMixin):
         secretary_factory: Callable[[Config], Any] | None = None,
         runner_factory: Callable[[Config], Any] | None = None,
         odoo_factory: Callable[..., Any] | None = None,
-        toast_wait_s: float = TOAST_WAIT_S,
         tick_s: float = TICK_S,
     ) -> None:
         self._config = config
@@ -90,14 +86,12 @@ class BrainService(GoogleApiMixin):
         self._secretary_factory = secretary_factory
         self._runner_factory = runner_factory
         self._odoo_factory = odoo_factory
-        self.toast_wait_s = toast_wait_s
         self.tick_s = tick_s
         self._queue: queue.Queue[str | None] = queue.Queue()
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._status: dict[str, dict[str, Any]] = {}
-        self._waiters: dict[str, list[Callable[[str, int], None]]] = {}
         self._renames: dict[str, str] = {}
         self._queued: set[str] = set()
         self._started_at = time.time()
@@ -202,51 +196,17 @@ class BrainService(GoogleApiMixin):
     def on_job_done(
         self, folder: str, title: str, duration_s: float, speakers: int, notify: Notify
     ) -> None:
-        """Encola la pasada; el aviso «Lista» sale al terminar (o a los ``toast_wait_s``)."""
-        if not self.enabled:
-            notify(folder, title, duration_s, speakers, 0)
-            return
-        done = threading.Event()
-        state = {"sent": False}
-        lock = threading.Lock()
-
-        def finish(final_folder: str, proposals: int) -> None:
-            with lock:
-                if state["sent"]:
-                    return
-                state["sent"] = True
-            final_title = title
-            tr = paths.meetings_root(self.config) / final_folder / paths.TRANSCRIPT_JSON
-            try:
-                from micnaga.types import Transcript
-
-                final_title = Transcript.from_json(tr.read_text(encoding="utf-8")).meeting.title
-            except (OSError, ValueError, KeyError):
-                pass
-            notify(final_folder, final_title, duration_s, speakers, proposals)
-            done.set()
-
-        with self._lock:
-            self._waiters.setdefault(folder, []).append(finish)
-
-        def fallback() -> None:
-            if not done.wait(self.toast_wait_s):
-                with self._lock:
-                    current = self._renames.get(folder, folder)
-                finish(current, 0)
-
-        threading.Thread(target=fallback, name="micnaga-toast-wait", daemon=True).start()
+        """Avisa de que el texto se puede abrir y encola el acta en segundo plano."""
         try:
-            db = self._db()
-            try:
-                bstore.enqueue(db, folder)
-            finally:
-                db.close()
+            notify(folder, title, duration_s, speakers, 0)
+        except Exception:
+            log.exception("toast notify failed")
+        if not self.enabled:
+            return
+        try:
+            self.analyze(folder, force=False)
         except Exception:
             log.exception("could not enqueue the secretaria run")
-            finish(folder, 0)
-            return
-        self._submit(folder)
 
     def analyze(self, folder: str, *, force: bool = True) -> None:
         """«Analizar» / «Rehacer» desde la biblioteca."""
@@ -438,11 +398,8 @@ class BrainService(GoogleApiMixin):
         try:
             if not (path / paths.TRANSCRIPT_JSON).is_file():
                 bstore.finish(db, folder, proposals=0, state="skipped")
-                self._release(folder, folder, 0)
                 return
             if not self.enabled or not bstore.claim(db, folder):
-                run = bstore.get_run(db, folder)
-                self._release(folder, folder, run.proposals if run else 0)
                 return
         finally:
             db.close()
@@ -452,17 +409,15 @@ class BrainService(GoogleApiMixin):
                 self._status[folder] = s
 
         final = folder
-        proposals = 0
         try:
             secretary = self._secretary()
             if hasattr(secretary, "clean"):  # transcripcion limpia antes del acta (§23)
                 secretary.clean(path, on_status=on_status)
             result = secretary.analyze(path, on_status=on_status)
             final = result.folder.name
-            proposals = result.proposals
             db = self._db()
             try:
-                bstore.finish(db, final, proposals=proposals)
+                bstore.finish(db, final, proposals=result.proposals)
             finally:
                 db.close()
             with self._lock:
@@ -481,18 +436,9 @@ class BrainService(GoogleApiMixin):
             with self._lock:
                 self._status[folder] = {"fase": "error", "error": kind}
             final = self._apply_live_title(path) or folder
-        self._release(folder, final, proposals)
-
-    def _release(self, folder: str, final: str, proposals: int) -> None:
-        with self._lock:
-            waiters = self._waiters.pop(folder, [])
-            if final != folder:
+        if final != folder:
+            with self._lock:
                 self._renames[folder] = final
-        for w in waiters:
-            try:
-                w(final, proposals)
-            except Exception:
-                log.exception("toast notify failed")
 
     def _apply_live_title(self, path: Path) -> str | None:
         title = acta_io.read_live_title(path)

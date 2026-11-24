@@ -35,6 +35,7 @@ WORK_DIRNAME = "work"
 TRANSCRIPT_MD = "transcripcion.md"
 TRANSCRIPT_SRT = "transcripcion.srt"
 TRANSCRIPT_JSON = "transcripcion.json"
+DB_FILENAME = "micnaga.db"
 ANALYSIS_PENDING = ".micnaga-analysis-pending"
 """Marca duradera «acta pendiente»: la escribe el worker al terminar la transcripcion (con la
 Secretaria activa) en la carpeta de la reunion, asi viaja con los renombrados. El arranque de la
@@ -107,7 +108,7 @@ def meetings_root(config: Config | None = None) -> Path:
 
 def db_path(config: Config | None = None) -> Path:
     """Indice SQLite: ``<meetings root>/micnaga.db``."""
-    return meetings_root(config) / "micnaga.db"
+    return meetings_root(config) / DB_FILENAME
 
 
 def session_dir(folder_name: str, config: Config | None = None) -> Path:

@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import pytest
 import soundfile as sf
 
 from micnaga import holding, paths
@@ -99,6 +100,18 @@ def test_trim_beyond_the_end_keeps_everything(tmp_path: Path) -> None:
     set_trim(d, 60.0)
     meta = finalize_session(d)
     assert meta.mic.samples == 5 * SR
+
+
+def test_keeps_both_wavs_when_finalized_metadata_cannot_be_saved(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    folder = make_session(tmp_path, state="stopped")
+    monkeypatch.setattr("micnaga.capture.recovery.write_capture_json", lambda *_: False)
+    with pytest.raises(OSError, match="could not save finalized capture metadata"):
+        finalize_session(folder)
+    assert (folder / paths.AUDIO_ME_WAV).is_file()
+    assert (folder / paths.AUDIO_REMOTE_WAV).is_file()
+    assert read_capture_json(folder).extra["state"] == "stopped"
 
 
 def test_trim_never_cuts_a_track_below_the_cut_because_the_other_is_shorter(

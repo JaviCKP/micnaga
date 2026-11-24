@@ -99,6 +99,7 @@ class RecorderLike(Protocol):
         confirmed: bool = False,
         meet_title: str | None = None,
         meet_code: str | None = None,
+        require_microphone: bool = False,
     ) -> Path: ...
 
     def pause(self) -> bool: ...

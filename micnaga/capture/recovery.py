@@ -16,6 +16,7 @@ vuelve a devolver (``find_sessions`` permite listar por estado si hace falta ree
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 from dataclasses import replace
@@ -109,7 +110,8 @@ def recover_session(session_dir: Path) -> CaptureMeta | None:
     new = replace(
         meta, mic=trimmed(meta.mic, target), system=trimmed(meta.system, target), extra=extra
     )
-    write_capture_json(session_dir, new)
+    if not write_capture_json(session_dir, new):
+        raise OSError(f"could not save recovered capture metadata in {session_dir}")
     log.info("recovered %s (%.1f s)", session_dir, target / rate)
     return new
 
@@ -185,7 +187,8 @@ def _apply_trim(session_dir: Path, meta: CaptureMeta) -> CaptureMeta:
         device_changes=[c for c in meta.device_changes if c.t <= t_end],
         extra=extra,
     )
-    write_capture_json(session_dir, new)
+    if not write_capture_json(session_dir, new):
+        raise OSError(f"could not save trimmed capture metadata in {session_dir}")
     log.info("session trimmed to %.1f s", t_end)
     return new
 
@@ -193,8 +196,8 @@ def _apply_trim(session_dir: Path, meta: CaptureMeta) -> CaptureMeta:
 def finalize_session(session_dir: Path, *, flac_level: int = 5) -> CaptureMeta:
     """WAV -> FLAC (nivel ``flac_level``, 5 por defecto) y borra los WAV **tras verificarlos**.
 
-    Idempotente: si ya esta en FLAC no hace nada; si el proceso se interrumpio entre la
-    conversion y el borrado, se reverifica y se borra. Una sesion ``recording`` huerfana se
+    Idempotente: conserva el WAV hasta guardar los metadatos con el nombre del FLAC. Una
+    sesion ``recording`` huerfana se
     recupera antes; si todavia la esta grabando otro proceso lanza ``RuntimeError``.
     Actualiza ``capture.json`` (``file`` apunta a los FLAC, ``state = "finalized"``).
     """
@@ -207,6 +210,7 @@ def finalize_session(session_dir: Path, *, flac_level: int = 5) -> CaptureMeta:
     meta = _apply_trim(session_dir, meta)
     rate = meta.mic.sample_rate or 16000
     tracks: dict[str, TrackInfo] = {}
+    converted: list[Path] = []
     for key, info, flac_name in (
         ("mic", meta.mic, paths.AUDIO_ME_FLAC),
         ("system", meta.system, paths.AUDIO_REMOTE_FLAC),
@@ -215,20 +219,31 @@ def finalize_session(session_dir: Path, *, flac_level: int = 5) -> CaptureMeta:
         flac = session_dir / flac_name
         if wav.suffix.lower() == ".wav" and wav.exists():
             wavio.repair_wav(wav, rate)
-            n = wavio.wav_to_flac(wav, flac, level=flac_level, delete_wav=True)
+            n = wavio.wav_to_flac(wav, flac, level=flac_level, delete_wav=False)
             if n == 0:  # pista vacia: no hay FLAC; se conserva el WAV
-                tracks[key] = replace(info, samples=0)
+                tracks[key] = replace(info, samples=0, sync=[])
                 continue
+            converted.append(wav)
         elif flac.exists():
             n = wavio.wav_samples(flac)
             if n < 0:
                 raise ValueError(f"{flac} is not a valid FLAC")
         else:
             raise FileNotFoundError(f"no audio for track {key!r} in {session_dir}")
-        tracks[key] = replace(info, file=flac_name, samples=n)
+        tracks[key] = replace(
+            info, file=flac_name, samples=n, sync=[mark for mark in info.sync if mark.samples <= n]
+        )
     extra = dict(meta.extra)
     extra["state"] = STATE_FINALIZED
     extra["flac_level"] = flac_level
+    if extra.get("incomplete_audio"):
+        extra["duration_s"] = round(
+            max(track.samples / track.sample_rate for track in tracks.values()), 3
+        )
     new = replace(meta, mic=tracks["mic"], system=tracks["system"], extra=extra)
-    write_capture_json(session_dir, new)
+    if not write_capture_json(session_dir, new):
+        raise OSError(f"could not save finalized capture metadata in {session_dir}")
+    for wav in converted:
+        with contextlib.suppress(OSError):
+            wav.unlink()
     return new

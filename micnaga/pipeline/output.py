@@ -34,7 +34,7 @@ from typing import TYPE_CHECKING, Any
 
 from micnaga import paths
 from micnaga.pipeline.stages.phrases import default_speaker_name, merge_segments
-from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript
+from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, speaker_track
 
 if TYPE_CHECKING:
     from micnaga.store.db import Database
@@ -357,7 +357,7 @@ def merge_speakers(
 ) -> Transcript:
     """Fusiona ``merge_id`` en ``keep_id`` (diarizacion que partio a una persona en dos).
 
-    Los segmentos consecutivos que quedan del mismo hablante se vuelven a unir (hueco
+    Los segmentos consecutivos de la misma pista y hablante se vuelven a unir (hueco
     < ``merge_gap_s``). No se puede fusionar ``me`` en otro hablante.
     """
     if keep_id == merge_id:
@@ -370,8 +370,13 @@ def merge_speakers(
         for sid in (keep_id, merge_id):
             if sid not in known:
                 raise KeyError(f"unknown speaker {sid!r}")
+        track = speaker_track(keep_id)
         relabelled = [
-            dataclasses.replace(s, speaker=keep_id) if s.speaker == merge_id else s
+            dataclasses.replace(
+                s, speaker=keep_id, track=s.audio_track if s.audio_track != track else None
+            )
+            if s.speaker == merge_id
+            else s
             for s in transcript.segments
         ]
         segments = merge_segments(relabelled, merge_gap_s=merge_gap_s)

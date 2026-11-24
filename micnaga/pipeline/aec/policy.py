@@ -147,7 +147,7 @@ def decide_slice(
     sr: int,
     bounds: tuple[int, int],
     *,
-    offset: int = 0,
+    offset: int | None = None,
     cache: WindowCache | None = None,
 ) -> SliceDecision:
     """Decision del trozo ``[bounds)`` (muestras) con su ventana de medida ``mic``/``ref``: la
@@ -155,6 +155,16 @@ def decide_slice(
     skip = precheck(mode, meta, (bounds[0] / sr, bounds[1] / sr))
     if skip is not None:
         return SliceDecision(False, skip)
+    from micnaga.pipeline.aec.echo_check import reference_active_s
+
+    if offset is None:
+        offset = max(0, bounds[1] - len(ref))
+    start, end = bounds[0] - offset, bounds[1] - offset
+    active_s = reference_active_s(ref[max(0, start) : max(0, end)], sr)
+    if not active_s:
+        return SliceDecision(False, REASON_NO_SYSTEM)
+    if mode == "always":
+        return SliceDecision(True, REASON_FORCED, {"active_s": active_s})
     return decide(mode, mic, ref, sr, offset=offset, cache=cache)
 
 

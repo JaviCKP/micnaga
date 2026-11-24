@@ -27,7 +27,7 @@ from typing import Any, Protocol
 
 from micnaga import paths
 from micnaga.config import Config, ConfigError, config_from_dict
-from micnaga.store.db import Database
+from micnaga.store.db import Database, Job, JobNotFoundError, JobState
 from micnaga.store.locate import meeting_dir
 from micnaga.types import SPEAKER_ME, Transcript, is_mic_speaker
 from micnaga.ui import i18n, settings_schema, sound, startup
@@ -47,7 +47,7 @@ from micnaga.ui.contracts import (
     app_action,
     normalize_levels,
 )
-from micnaga.ui.media import valid_folder_name
+from micnaga.ui.media import AUDIO_TRACKS, valid_folder_name
 
 log = logging.getLogger(__name__)
 
@@ -312,6 +312,9 @@ class LibraryApi:
         self._brain = brain
         self._hq_procs: dict[str, Any] = {}
         self._hq_lock = threading.Lock()
+        provider = app_action(ACTION_HQ_STARTER)
+        starter = provider() if provider is not None else None
+        self._hq_starter = starter if callable(starter) else None
 
     # ---------------------------------------------------------------- lectura
 
@@ -368,6 +371,17 @@ class LibraryApi:
 
     # ------------------------------------------------------------- «Descartadas»
 
+    def failed_transcriptions(self, retry: str | None = None) -> Result:
+        provider = app_action(ACTION_FAILED_JOBS)
+        action = provider() if provider is not None else None
+        if not callable(action):
+            return ok(jobs=[])
+        try:
+            return ok(jobs=action(retry))
+        except Exception:
+            log.exception("could not load or retry failed transcriptions")
+            return fail("library.err.op_failed")
+
     def list_held(self) -> list[dict[str, Any]]:
         """Grabaciones apartadas sin transcribir (recuperables ``discarded_keep_days`` dias)."""
         if self._held is None:
@@ -419,6 +433,92 @@ class LibraryApi:
             }
             for r in records
         ]
+
+    def list_pending_meetings(self) -> list[dict[str, Any]]:
+        """Grabaciones confirmadas con audio disponible, antes de aparecer en el índice."""
+        with self._db_factory() as db:
+            jobs = db.list_open_jobs()
+        waiting_models = any(j.state == JobState.PENDING for j in jobs) and self._missing_models()
+        root = self._root().resolve()
+        rows: list[dict[str, Any]] = []
+        for job in jobs:
+            row = self._pending_meeting(job, root, waiting_models)
+            if row is not None:
+                rows.append(row)
+        return rows
+
+    def get_pending_meeting(self, job_id: int) -> Result:
+        """Previsualiza el audio y sigue el trabajo aunque cambie el nombre de la carpeta."""
+        if type(job_id) is not int or not 0 < job_id < 2**63:
+            return fail("library.err.not_found")
+        with self._db_factory() as db:
+            try:
+                job = db.get_job(job_id)
+            except JobNotFoundError:
+                return fail("library.err.not_found")
+            if job.state == JobState.DONE:
+                folder = Path(job.session_dir).name
+                if valid_folder_name(folder) and db.get_meeting(folder) is not None:
+                    return ok(final_folder=folder)
+            if job.state not in (JobState.PENDING, JobState.PROCESSING):
+                return fail("library.err.not_found")
+        root = self._root().resolve()
+        waiting_models = job.state == JobState.PENDING and self._missing_models()
+        row = self._pending_meeting(job, root, waiting_models)
+        if row is None:
+            return fail("library.err.not_found")
+        return ok(meeting=row, audio=self._audio_tracks(root / row["folder"], row["folder"]))
+
+    def _missing_models(self) -> bool:
+        from micnaga.models import missing_models
+
+        return bool(missing_models(self._config()))
+
+    def _pending_meeting(
+        self, job: Job, root: Path, waiting_models: bool
+    ) -> dict[str, Any] | None:
+        from micnaga.brain.acta import recorded_title
+        from micnaga.capture.session import STATE_RECORDING, is_in_person, read_capture_json
+
+        directory = Path(job.session_dir)
+        folder = directory.name
+        if not valid_folder_name(folder):
+            return None
+        try:
+            if directory.resolve().parent != root:
+                return None
+            meta = read_capture_json(directory)
+        except (OSError, ValueError, KeyError, TypeError):
+            return None
+        if not meta.confirmed or meta.extra.get("state") == STATE_RECORDING:
+            return None
+        samples = [
+            track.samples / track.sample_rate
+            for track in (meta.mic, meta.system)
+            if track.sample_rate > 0
+        ]
+        duration = max(samples, default=0)
+        if duration <= 0:
+            return None
+        if job.state == JobState.PENDING:
+            phase = "waiting_models" if waiting_models else "queued"
+        elif job.stage < 6:
+            phase = "preparing"
+        elif job.stage == 6:
+            phase = "transcribing"
+        elif job.stage == 7:
+            phase = "diarizing"
+        else:
+            phase = "assembling"
+        return {
+            "job_id": job.id,
+            "folder": folder,
+            "title": recorded_title(directory, meta.meet_title),
+            "start": meta.started_at,
+            "duration_s": duration,
+            "in_person": is_in_person(directory, meta.extra),
+            "phase": phase,
+        }
 
     def search(self, query: str, limit: int = 50) -> dict[str, Any]:
         """Busqueda de texto completo (FTS5). Devuelve fragmentos ya troceados y seguros."""
@@ -507,12 +607,13 @@ class LibraryApi:
             seg.pop("merged_from", None)
             if s.text_original is not None:  # limpieza con IA: palabras cambiadas y original
                 seg["fix"] = marks(s)
-        audio: dict[str, str | None] = {}
-        for track, filename in (("yo", paths.AUDIO_ME_FLAC), ("remoto", paths.AUDIO_REMOTE_FLAC)):
-            audio[track] = (
-                self._audio_url(folder, track) if (path.parent / filename).is_file() else None
-            )
-        return ok(folder=folder, transcript=d, audio=audio)
+        return ok(folder=folder, transcript=d, audio=self._audio_tracks(path.parent, folder))
+
+    def _audio_tracks(self, directory: Path, folder: str) -> dict[str, str | None]:
+        return {
+            track: self._audio_url(folder, track) if (directory / filename).is_file() else None
+            for track, filename in AUDIO_TRACKS.items()
+        }
 
     def list_voiceprints(self) -> list[dict[str, Any]]:
         if self._ops is None:
@@ -627,10 +728,13 @@ class LibraryApi:
             if self._hq_alive(meeting):
                 return ok(status=self._hq_status(meeting))
             try:
-                proc = hq.spawn(meeting)
+                start = self._hq_starter or hq.spawn
+                proc = start(meeting)
             except Exception:
                 log.exception("could not start the hq transcription")
                 return fail("library.err.op_failed")
+            if proc is None:  # ya la reservo otra ventana
+                return ok(status=hq.read_status(meeting))
             with self._hq_lock:
                 self._hq_procs[meeting.name] = proc
             threading.Thread(
@@ -958,6 +1062,8 @@ def _only_known(values: dict[str, Any]) -> dict[str, Any]:
 
 # ============================================================================== asistente
 
+ACTION_HQ_STARTER = "hq_starter"
+ACTION_FAILED_JOBS = "failed_jobs"
 ACTION_MODEL_DOWNLOADER = "model_downloader"
 """``app_action`` que devuelve el ``DownloadModels`` de la app (lo registra la integracion):
 Ajustes lo usa para bajar los modelos que falten tras cambiar de motor."""

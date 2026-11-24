@@ -18,6 +18,7 @@ from micnaga.events import JobDiscarded, JobDone, JobFailed, JobProgress, JobSta
 from micnaga.integration.events_server import EventsServer
 from micnaga.integration.jobs import Finisher, WorkerSupervisor
 from micnaga.integration.library_ops import AppLibraryOps, VoiceprintsDisabledError
+from micnaga.meeting_links import meeting_link, parse_meeting_link, send_meeting_link
 from micnaga.pipeline.worker import PipeEventSink
 from micnaga.store.db import Database, JobState, open_database
 from micnaga.ui import fake
@@ -114,6 +115,22 @@ def test_supervisor_backs_off_when_the_worker_crashes_at_start(tmp_path: Path) -
     r.tick(advance=6.0)  # salio rapido con error: espera exponencial, no bucle
     assert len(r.spawned) == 1
     r.tick(advance=100.0)
+    assert len(r.spawned) == 2
+
+
+def test_supervisor_restarts_only_an_owned_stalled_worker(tmp_path: Path) -> None:
+    r = SupRig(tmp_path)
+    r.db.enqueue_job(tmp_path / "a")
+    r.tick()
+    child = r.spawned[0]
+    child.kill = lambda: setattr(child, "code", 1)  # type: ignore[attr-defined]
+    r.db.claim_next_job()
+    r.running = True
+    r.tick()
+    r.tick(advance=901.0)
+    assert child.code == 1
+    r.running = False
+    r.tick()
     assert len(r.spawned) == 2
 
 
@@ -229,6 +246,37 @@ def test_events_server_stops_promptly_while_idle_and_while_connected() -> None:
     srv.stop()  # con un cliente conectado y sin escribir
     assert time.monotonic() - t0 < 2.0
     win32file.CloseHandle(h)
+
+
+def test_citation_opens_existing_instance_after_rename(tmp_storage: Path) -> None:
+    rig = Rig()
+    folder = fake.build_demo_library(tmp_storage, audio=False)[0]
+    with open_database() as db:
+        meeting = db.get_meeting(folder)
+        assert meeting is not None and meeting.id is not None
+        citation = meeting_link(tmp_storage, meeting.id, 123.25)
+        renamed = "renamed-meeting"
+        (tmp_storage / folder).rename(tmp_storage / renamed)
+        with db.transaction() as conn:
+            conn.execute("UPDATE meetings SET folder = ? WHERE id = ?", (renamed, meeting.id))
+
+    wrong_library = parse_meeting_link(meeting_link(tmp_storage / "other", meeting.id, 123.25))
+    assert wrong_library is not None
+    rig.app.open_meeting_link(wrong_library)
+    assert "library" not in rig.factory.windows
+    assert parse_meeting_link(citation + "&extra=1") is None
+
+    event = parse_meeting_link(citation)
+    assert event is not None
+    rig.app.links_server.start()
+    try:
+        assert send_meeting_link(event)
+        _wait(lambda: "library" in rig.factory.windows)
+        window = rig.factory.windows["library"]
+        assert window.spec.params["folder"] == renamed
+        assert window.spec.params["t"] == "123.25"
+    finally:
+        rig.app.links_server.stop()
 
 
 def test_job_done_event_shows_the_ready_toast_and_job_failed_is_logged() -> None:
@@ -527,3 +575,33 @@ def test_wizard_level_monitor_is_not_started_while_recording() -> None:
     rig.ctl.start_recording(provisional=False, meeting=MeetingInfo(manual=True))
     rig.app.callbacks.on_levels_monitor(True)
     assert started == [True]
+
+
+def test_library_retries_a_failed_job_after_switching_storage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(paths.ENV_STORAGE)
+    cfg = Config()
+    cfg.storage.root = str(tmp_path / "first")
+    rig = Rig(cfg)
+    with open_database(cfg) as db:
+        job = db.enqueue_job(paths.meetings_root(cfg) / "reunion")
+        db.claim_next_job()
+        db.fail_job(job.id, "interrupted")
+
+    new_cfg = Config()
+    new_cfg.storage.root = str(tmp_path / "second")
+    monkeypatch.setattr(
+        "micnaga.integration.application.default_hotkeys_factory", lambda *_: rig.app.hotkeys
+    )
+    rig.app._on_settings_saved(new_cfg)
+    assert rig.host is not None
+    api = rig.host.library_api()
+    result = api.failed_transcriptions()
+    assert result["ok"]
+    [row] = result["jobs"]
+    assert row["name"] == "reunion"
+    assert api.failed_transcriptions(row["key"]) == {"ok": True, "jobs": []}
+    with open_database(cfg) as db:
+        [queued] = db.list_jobs(JobState.PENDING)
+        assert queued.id == job.id and queued.attempts == 0

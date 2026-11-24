@@ -123,10 +123,12 @@ Invitar a gente o enviar un correo nunca viene marcado. Al aplicar, un filtro de
 ## Privacidad
 
 - **El audio nunca sale de tu PC.** Grabación, transcripción y separación de hablantes ocurren en local, en CPU.
-- **Sin la Secretaria, la única conexión es descargar los modelos**, desde URLs fijadas y verificadas con SHA-256.
-  Sin telemetría, analítica ni cuentas.
+- **Sin las funciones opcionales de Claude, el texto de las reuniones permanece en el equipo.** Micnaga
+  descarga los modelos y comprueba las actualizaciones. Sin telemetría, analítica ni cuentas.
 - **Con la Secretaria activada,** el *texto* de la reunión va a Claude (Anthropic) mediante tu propio `claude -p`,
   y Micnaga habla con tu Odoo y tus conectores de Google. Nada se escribe sin tu «Aplicar».
+- **Con el conector de Claude activado,** Claude puede consultar todas las reuniones terminadas e indexadas
+  de tu biblioteca. [Instalar el conector](docs/CLAUDE_CONNECTOR.md)
 - **Nunca graba en silencio:** mientras graba, la píldora está siempre en pantalla.
 
 ---
@@ -138,10 +140,9 @@ Licencias de terceros: [`THIRD_PARTY_LICENSES.md`](THIRD_PARTY_LICENSES.md).
 
 ### Privacidad en detalle
 
-* **Local y privado.** El audio nunca sale del equipo. El texto solo sale si activas la **Secretaria**
-  (desactivada por defecto), y solo hacia Claude (Anthropic, vía tu `claude -p`) y tu propio Odoo. Sin ella,
-  la **única** conexión de red es la descarga de modelos en el primer arranque, desde URLs de Hugging Face
-  fijadas y verificadas con SHA-256. Sin telemetría, sin analítica, sin cuentas.
+* **Local y privado.** El audio permanece en el equipo. Las funciones opcionales de Claude pueden
+  procesar el texto de una reunión con Anthropic. La **Secretaria** se activa en Ajustes y el
+  **conector** habilita la consulta de la biblioteca al instalarlo. [Privacidad del conector](docs/CLAUDE_CONNECTOR.md)
 * **Nunca hay grabación silenciosa:** mientras se graba hay siempre una pastilla visible en pantalla.
 * **Huellas de voz** (opcionales, desactivadas por defecto): cifradas con DPAPI de Windows (ligadas a tu
   cuenta) y borrables por persona. Son datos biométricos: pide consentimiento antes de guardar la de un

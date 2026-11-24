@@ -314,6 +314,13 @@ def test_live_disabled_in_config_ignores_the_cache(pair: tuple[Path, Path]) -> N
     assert not live.live_dir(session).exists()
 
 
+def test_live_cache_key_includes_effective_whisper_options() -> None:
+    cfg = Config()
+    start = live.fingerprint(cfg)
+    cfg.processing.glossary = ["Termino nuevo"]
+    assert live.fingerprint(cfg) != start
+
+
 def test_holding_a_session_deletes_its_live_transcription(pair: tuple[Path, Path]) -> None:
     session, _ = pair
     _as_recording(session)
@@ -382,6 +389,50 @@ def _owned_recording(session: Path) -> None:
         },
     )
     (session / paths.CAPTURE_JSON).write_text(meta.to_json(), encoding="utf-8")
+
+
+def test_final_handoff_saves_one_asr_load_with_identical_words(pair: tuple[Path, Path]) -> None:
+    cfg = _config()
+
+    def finish_recording(session: Path, *, warm: bool) -> Transcript:
+        _owned_recording(session)
+        deps = fake_live_deps(load_script(session))
+        create_asr = deps.create_asr
+        loads = 0
+
+        def counted(config: Config) -> Any:
+            nonlocal loads
+            loads += 1
+            return create_asr(config)
+
+        deps.create_asr = counted
+        engines = engines_from_deps(deps)
+        assert engines is not None
+
+        def end_capture(_seconds: float) -> None:
+            _finalized(session)
+            if warm:
+                folder = live.live_dir(session)
+                (folder / live.FINISH_REQUEST).touch()
+                live.atomic_write_json(folder / live.FINISH_READY, live.fingerprint(cfg))
+            else:
+                live.request_stop(session)
+
+        reason = live.run_live(session, cfg, engines, cpu_percent=lambda: 0.0, sleep=end_capture)
+        assert reason == ("warm ASR handoff completed" if warm else "stop requested")
+        assert loads == 1
+        runner = runner_for(config=cfg, deps=deps, rename=False)
+        runner.keep_work = True
+        result = runner.run(session)
+        assert result.transcript is not None
+        assert loads == (1 if warm else 2)
+        stats = _marker_info(session, "align")["live"]
+        assert stats["slices_cached"] == (3 if warm else 2)
+        assert (stats["blocks_done"] == 0) is warm
+        return result.transcript
+
+    warm, cold = pair
+    assert finish_recording(warm, warm=True).segments == finish_recording(cold, warm=False).segments
 
 
 def test_run_live_still_makes_progress_when_the_cpu_never_frees_up(

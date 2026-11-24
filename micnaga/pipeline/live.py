@@ -90,6 +90,9 @@ ECHO_LOOKBACK_S = _aec_policy.LOOKBACK_S
 MANIFEST = "manifest.json"
 SLICE_META = "slice.json"
 STOP_FILE = "stop"
+FINISH_REQUEST = "finish-request"
+FINISH_READY = "finish-ready.json"
+ASR_ENGINE_FILE = "asr_engine.json"
 TRACKS = ("mic", "system")
 WORDS_FILES = {"mic": "06_words_me.json", "system": "06_words_remote.json"}
 DEDUPE_TOLERANCE_S = 0.25
@@ -171,12 +174,15 @@ def request_stop(session: Path) -> None:
 
 
 def clear_stop(session: Path) -> None:
-    with contextlib.suppress(OSError):
-        (live_dir(session) / STOP_FILE).unlink(missing_ok=True)
+    for name in (STOP_FILE, FINISH_REQUEST, FINISH_READY):
+        with contextlib.suppress(OSError):
+            (live_dir(session) / name).unlink(missing_ok=True)
 
 
 def fingerprint(config: Config) -> dict[str, Any]:
     """Lo que, si cambia, invalida lo calculado en vivo."""
+    from micnaga.pipeline.asr_checkpoint import asr_key
+
     p, v = config.processing, config.vad
     return {
         "format": FORMAT,
@@ -184,6 +190,7 @@ def fingerprint(config: Config) -> dict[str, Any]:
         "slice_s": SLICE_S,
         "asr_engine": p.asr_engine,
         "whisper_model": p.whisper_model if p.asr_engine == "whisper" else "",
+        "asr_options": asr_key(config),
         "aec": _aec_policy.aec_mode(p.aec),
         "diarization": p.diarization,
         "vad": [v.min_speech_ms, v.min_silence_ms, v.pad_ms, v.max_block_s],
@@ -512,7 +519,8 @@ class LiveProcessor:
         mode = _aec_policy.aec_mode(self.config.processing.aec)
         a, b = lo_echo - lo, end - lo
         decision = _aec_policy.decide_slice(
-            mode, self.meta, wide["mic"][a:b], wide["system"][a:b], sr, (start, end)
+            mode, self.meta, wide["mic"][a:b], wide["system"][a:b], sr, (start, end),
+            offset=lo_echo,
         )
         res.echo, res.aec_reason = decision.echo, decision.reason
         if decision.apply:
@@ -688,7 +696,7 @@ class LiveProcessor:
             if self._asr is None:
                 t0 = time.perf_counter()
                 self._asr = self.engines.create_asr(self.config)
-                atomic_write_json(self.dir / "asr_engine.json", {"name": self._asr.name})
+                atomic_write_json(self.dir / ASR_ENGINE_FILE, {"name": self._asr.name})
                 log.info(
                     "live ASR engine %s loaded in %.1f s", self._asr.name, time.perf_counter() - t0
                 )
@@ -699,6 +707,8 @@ class LiveProcessor:
         track: str,
         blocks: Sequence[tuple[float, float]],
         regions: Sequence[tuple[float, float]] | None = None,
+        *,
+        on_block: Callable[[], None] | None = None,
     ) -> list[Word]:
         """Transcribe (o reutiliza) cada bloque; devuelve las palabras unidas de la pista.
 
@@ -734,16 +744,37 @@ class LiveProcessor:
                 atomic_write_json(file, [w.to_dict() for w in words])
                 self.stats.blocks_done += 1
             pieces.append((a, b, words))
+            if on_block is not None:
+                on_block()
         return stitch_words(pieces)
 
     def commit_asr(
-        self, probs: dict[str, NDArray[np.float32]], length: int, final: bool
+        self,
+        probs: dict[str, NDArray[np.float32]],
+        length: int,
+        final: bool,
+        *,
+        on_progress: Callable[[float], None] | None = None,
     ) -> dict[str, tuple[list[tuple[float, float]], list[Word]]]:
         """Transcribe (o reutiliza) los bloques estables de las dos pistas."""
         plan = {t: self.asr_blocks(probs[t], length, final) for t in TRACKS}
         (self.dir / "asr").mkdir(parents=True, exist_ok=True)
+        total = sum(len(blocks) for blocks in plan.values()) or 1
+        done = 0
+
+        def on_block() -> None:
+            nonlocal done
+            done += 1
+            if on_progress is not None:
+                on_progress(done / total)
+
         return {
-            t: (plan[t], self.transcribe_blocks(t, plan[t], self.speech_regions(probs[t], length)))
+            t: (
+                plan[t],
+                self.transcribe_blocks(
+                    t, plan[t], self.speech_regions(probs[t], length), on_block=on_block
+                ),
+            )
             for t in TRACKS
         }
 
@@ -843,6 +874,41 @@ def _load_npz(path: Path) -> dict[str, NDArray[np.float32]] | None:
 # ----------------------------------------------------------------------------- al colgar
 
 
+@dataclass
+class _FinalBlocks:
+    length: int
+    slices: list[SliceResult]
+    probs: dict[str, NDArray[np.float32]]
+    words: dict[str, tuple[list[tuple[float, float]], list[Word]]]
+
+
+def _final_blocks(
+    proc: LiveProcessor, meta: CaptureMeta, progress: Callable[[float], None]
+) -> _FinalBlocks | None:
+    proc.meta = meta
+    src = _open_sources(proc.session, meta, proc.sr, final=True)
+    length = src.length
+    if length <= 0:
+        return None
+    slices = proc.cached_slices(length)
+    proc.stats.slices_cached = len(slices)
+    proc.drop_slices_from(len(slices))
+    n_slices = -(-length // proc.slice_len)
+    for k in range(len(slices), n_slices):
+        if proc.stopped():
+            raise _Stopped
+        slices.append(proc.process_slice(k, src, slices[-1] if slices else None))
+        progress(0.3 * (k + 1) / n_slices)
+    probs = proc.slice_probs(slices)
+    _release_vad(proc)
+    t0 = time.perf_counter()
+    words = proc.commit_asr(
+        probs, length, final=True, on_progress=lambda frac: progress(0.3 + 0.6 * frac)
+    )
+    proc.stats.add_time("asr_wall", time.perf_counter() - t0)
+    return _FinalBlocks(length, slices, probs, words)
+
+
 def finish(
     ctx: StageContext,
     stages: Sequence[Stage],
@@ -867,30 +933,16 @@ def finish(
         return False
     t_start = time.perf_counter()
     try:
-        proc.meta = ctx.meta
-        src = _open_sources(ctx.session, ctx.meta, proc.sr, final=True)
-        length = src.length
-        if length <= 0:
-            return False
-        slices = proc.cached_slices(length)
-        proc.stats.slices_cached = len(slices)
-        proc.drop_slices_from(len(slices))
-        n_slices = -(-length // proc.slice_len)
-        for k in range(len(slices), n_slices):
-            slices.append(proc.process_slice(k, src, slices[-1] if slices else None))
-            progress(0.3 * (k + 1) / n_slices)
-        probs = proc.slice_probs(slices)
-        _release_vad(proc)
-        t0 = time.perf_counter()
-        words = proc.commit_asr(probs, length, final=True)
-        proc.stats.add_time("asr_wall", time.perf_counter() - t0)
-        if not any(words[t][1] for t in TRACKS):
+        final = _final_blocks(proc, ctx.meta, progress)
+        if final is None or not any(final.words[t][1] for t in TRACKS):
             # nunca se da por hecha una reunion sin palabras desde el vivo: el lote lo rehace
             # (si de verdad no hay voz solo cuesta repetir las etapas 2-6)
             log.info("live processing produced no words; processing in batch")
             return False
         progress(0.9)
-        _write_outputs(proc, ctx, stages, slices, probs, words, length, t_start)
+        _write_outputs(
+            proc, ctx, stages, final.slices, final.probs, final.words, final.length, t_start
+        )
         progress(1.0)
         return True
     finally:
@@ -923,13 +975,12 @@ def _write_outputs(
     sr = proc.sr
     # 04: audio acondicionado entero (PCM 16 bits, igual que la etapa 4)
     for t in TRACKS:
-        parts = [
-            sf.read(str(proc._slice_dir(s.index) / f"{t}.wav"), dtype="int16")[0] for s in slices
-        ]
-        data = np.concatenate(parts) if parts else np.zeros(0, dtype=np.int16)
         out = ctx.path(f"04_{t}.wav")
         tmp = out.with_name(f".tmp-04_{t}.wav")
-        sf.write(str(tmp), data, sr, subtype="PCM_16", format="WAV")
+        with sf.SoundFile(str(tmp), "w", sr, 1, subtype="PCM_16", format="WAV") as combined:
+            for s in slices:
+                part, _ = sf.read(str(proc._slice_dir(s.index) / f"{t}.wav"), dtype="int16")
+                combined.write(part)
         tmp.replace(out)
     # 05: tramos y bloques (mismo algoritmo y parametros que la etapa 5)
     params = region_params(ctx.config)
@@ -1004,7 +1055,7 @@ def _engine_name(proc: LiveProcessor) -> str:
     if proc._asr is not None:
         return str(proc._asr.name)
     try:
-        return str(json.loads((proc.dir / "asr_engine.json").read_text("utf-8"))["name"])
+        return str(json.loads((proc.dir / ASR_ENGINE_FILE).read_text("utf-8"))["name"])
     except (OSError, ValueError, KeyError, TypeError):
         return "unknown"
 
@@ -1072,6 +1123,8 @@ def quick_stop_reason(session: Path) -> str | None:
         return "stop requested"
     if (session / DISCARD_MARKER).exists():
         return "discarded"
+    if (live_dir(session) / FINISH_REQUEST).is_file():
+        return "finish requested"
     return None
 
 
@@ -1095,6 +1148,48 @@ def should_keep_running(session: Path) -> str | None:
 
 
 MAX_STEP_ERRORS = 5
+HANDOFF_READY_TIMEOUT_S = 15.0
+
+
+def _finish_handoff(proc: LiveProcessor, sleep: Callable[[float], None]) -> bool:
+    """Prepara solo los checkpoints; el worker conserva el job y las salidas finales."""
+    from micnaga.capture.recovery import _owner_alive
+    from micnaga.capture.session import STATE_FINALIZED
+
+    if proc._asr is None:
+        return False
+
+    def cancelled() -> bool:
+        return quick_stop_reason(proc.session) != "finish requested"
+
+    proc._stop = cancelled
+    ready = proc.dir / FINISH_READY
+    deadline = time.monotonic() + HANDOFF_READY_TIMEOUT_S
+    while not ready.is_file():
+        if cancelled() or time.monotonic() >= deadline:
+            return False
+        sleep(0.2)
+    expected = fingerprint(proc.config)
+    if (
+        cancelled()
+        or json.loads(ready.read_text("utf-8")) != expected
+        or json.loads((proc.dir / MANIFEST).read_text("utf-8")) != expected
+    ):
+        return False
+    meta = read_meta_shared(proc.session)
+    if (
+        meta.extra.get("state") != STATE_FINALIZED
+        or not meta.confirmed
+        or not _owner_alive(meta.extra)
+        or not live_supported(proc.config, meta)
+    ):
+        return False
+    before = proc.stats.blocks_done
+    final = _final_blocks(proc, meta, lambda _frac: None)
+    log.info(
+        "live handoff committed %d final blocks with warm ASR", proc.stats.blocks_done - before
+    )
+    return final is not None
 
 
 def run_live(
@@ -1174,6 +1269,14 @@ def run_live(
                 did = False
             if not did:
                 sleep(poll_s)
+        if reason == "finish requested":
+            try:
+                if _finish_handoff(proc, sleep):
+                    return "warm ASR handoff completed"
+            except _Stopped:
+                pass
+            except Exception:
+                log.warning("warm ASR handoff failed; the worker will resume", exc_info=True)
         return reason or "stopped"
     finally:
         st = proc.stats

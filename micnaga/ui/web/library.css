@@ -88,6 +88,7 @@
 .row-sub { flex-wrap: wrap; row-gap: 3px; }
 .row-sub > span { white-space: nowrap; }
 .row-sub .tag-mono { flex: none; padding: 0 5px; font-size: 10px; line-height: 15px; }
+.row-sub .pending-tag { color: var(--text-2); }
 .who-dots { display: none; }
 
 .res-info { padding: 12px 10px 6px; }
@@ -109,6 +110,9 @@ mark { background: var(--mark); color: var(--mark-ink); border-radius: 2px; padd
 .empty { margin: auto; display: grid; justify-items: center; gap: 14px; text-align: center; color: var(--text-3); padding: 24px 24px 96px; }
 .empty h2 { font-size: var(--fs-d2); color: var(--text-3); }
 .empty-art { display: none; }
+.pending-view { margin: auto; padding: 24px 24px 96px; text-align: center; color: var(--text-2); }
+.pending-view h3 { font-size: var(--fs-d2); }
+.pending-view p { margin-top: 8px; font-size: 14px; }
 
 .viewer { display: flex; flex-direction: column; min-height: 0; flex: 1; animation: view-in var(--dur-enter) var(--ease-out); }
 @keyframes view-in { from { opacity: 0; transform: translateY(4px); } }
@@ -336,7 +340,7 @@ dialog::backdrop { background: light-dark(rgb(243 243 240 / 0.72), rgb(0 0 0 / 0
 .held-n { margin-left: auto; font: 500 11px/1 var(--mono); color: var(--text-3); }
 .held-chev { display: grid; transition: transform var(--dur) var(--ease-out); }
 .held-chev .ico { width: 14px; height: 14px; }
-.held-h[aria-expanded="true"] .held-chev { transform: rotate(90deg); }
+.held-h[aria-expanded="true"] .held-chev, .held[open] > .held-h .held-chev { transform: rotate(90deg); }
 .held-list { display: grid; gap: 2px; max-height: 260px; overflow: auto; padding-top: 4px; }
 .held-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 6px; padding: 8px 6px 8px 10px; border-radius: var(--r); }
 .held-row:hover { background: var(--hover); }

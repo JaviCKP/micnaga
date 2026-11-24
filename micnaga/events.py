@@ -103,8 +103,17 @@ class JobDiscarded(Event):
     reason: str
 
 
+@dataclass(frozen=True)
+class OpenMeeting(Event):
+    type: ClassVar[str] = "open_meeting"
+    meeting_id: int
+    seconds: float
+    library_id: str
+
+
 _REGISTRY: dict[str, type[Event]] = {
-    cls.type: cls for cls in (JobStarted, JobProgress, JobDone, JobFailed, JobDiscarded)
+    cls.type: cls
+    for cls in (JobStarted, JobProgress, JobDone, JobFailed, JobDiscarded, OpenMeeting)
 }
 
 EVENT_TYPES: tuple[str, ...] = tuple(_REGISTRY)

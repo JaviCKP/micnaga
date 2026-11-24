@@ -31,6 +31,7 @@ from __future__ import annotations
 import ctypes
 import logging
 import threading
+import time
 from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
@@ -40,6 +41,7 @@ from micnaga import holding, paths
 from micnaga.config import Config
 from micnaga.integration.jobs import (
     Finisher,
+    Task,
     finalize_and_enqueue,
     finalize_and_hold,
     write_trim_marker,
@@ -55,6 +57,7 @@ from micnaga.watcher import (
 )
 
 if TYPE_CHECKING:
+    from micnaga.store.db import Database
     from micnaga.watcher import Watcher
 
 log = logging.getLogger(__name__)
@@ -101,6 +104,7 @@ class _Session:
         self.end_mark_s: float | None = None
         self.discard_paused = False  # la pausa la puso «Ahora no» (la quita «Deshacer»)
         self.discarding = False
+        self.capture_issue: str | None = None
 
 
 class AppController:
@@ -131,9 +135,11 @@ class AppController:
         self._live: LivePort = live if live is not None else NoLive()
         self._now = now
         self._lock = threading.RLock()
+        self._capture_idle = threading.Condition(self._lock)
         self._session: _Session | None = None
         self._watcher: Watcher | None = None
-        self._stoppers: list[threading.Thread] = []
+        self._closing = 0
+        self._quiesced = False
         self._popup_open = False
         # ticker (pastilla: sincroniza el cronometro cada 30 s)
         self._ticker_enabled = ticker
@@ -160,6 +166,28 @@ class AppController:
     @property
     def recording(self) -> bool:
         return self._session is not None
+
+    @property
+    def busy_for_update(self) -> bool:
+        with self._lock:
+            return (
+                self._session is not None
+                or self._closing > 0
+                or not self._finisher.wait_idle(0)
+                or bool(getattr(self._live, "running", ()))
+            )
+
+    def try_quiesce(self) -> bool:
+        """Blocks new sessions while an update closes an idle app."""
+        with self._lock:
+            if self.busy_for_update:
+                return False
+            self._quiesced = True
+            return True
+
+    def release_quiesce(self) -> None:
+        with self._lock:
+            self._quiesced = False
 
     @property
     def session_dir(self) -> Path | None:
@@ -190,7 +218,14 @@ class AppController:
     # ------------------------------------------------------------------ WatcherController
 
     def start_recording(self, *, provisional: bool, meeting: MeetingInfo) -> None:
+        from micnaga.capture.recorder import CaptureStorageError
+        from micnaga.capture.session import forget_recording, mark_in_person, remember_recording
+
         with self._lock:
+            if self._quiesced:
+                if self._watcher is not None:
+                    self._watcher.recording_failed()
+                return
             if self._session is not None:
                 log.warning("start_recording while a session is open; ignored")
                 return
@@ -199,6 +234,7 @@ class AppController:
                 title = IN_PERSON_TITLE
             when = self._now()
             error_key = "capture_failed"
+            directory: Path | None = None
             try:
                 # La carpeta (y su indice) se fijan aqui y la sesion los conserva hasta el final
                 # del procesado aunque se cambie la carpeta de reuniones (hallazgo P1-4). Un
@@ -209,6 +245,9 @@ class AppController:
                     directory = paths.unique_folder(
                         root, paths.meeting_folder_name(when, title or paths.DEFAULT_SLUG)
                     )
+                    remember_recording(directory)
+                    if meeting.in_person and not mark_in_person(directory):
+                        raise CaptureStorageError("could not persist the in-person marker")
                 except OSError:
                     error_key = "storage_failed"
                     raise
@@ -218,24 +257,27 @@ class AppController:
                     confirmed=not provisional,
                     meet_title=title,
                     meet_code=meeting.code,
+                    require_microphone=meeting.in_person,
                 )
             except Exception as exc:
+                if isinstance(exc, OSError | CaptureStorageError):
+                    error_key = "storage_failed"
+                if directory is not None and not directory.is_dir():
+                    forget_recording(directory)
                 log.exception("could not start recording")
                 self.last_start_error = f"{type(exc).__name__}: {exc}"
                 failed = True
             else:
+                assert directory is not None
                 failed = False
                 self.last_start_error = None
-                if meeting.in_person:  # en disco ya: sobrevive a un cierre brusco
-                    from micnaga.capture.session import mark_in_person
-
-                    mark_in_person(directory)
                 session = _Session(directory, meeting, recorder, db_path=db_path)
                 session.confirmed = not provisional
                 self._session = session
         if failed:
             self._report_start_failure(error_key)
             return
+        assert directory is not None
         log.info("recording started (provisional=%s, in_person=%s)", provisional, meeting.in_person)
         self._start_live(directory)
         self._wake_ticker()
@@ -388,12 +430,10 @@ class AppController:
         self._prepare_stop(s, confirmed=False, meeting=s.meeting)
 
         def stop_then_hold() -> None:
-            self._safe_stop(s)
+            stopped = self._safe_stop(s)
             self._stop_live(directory)
-            self._finisher.submit(
-                "hold",
-                finalize_and_hold(self._config, directory, reason=reason, end_s=end_s),
-            )
+            if stopped:
+                self._submit_hold(s, reason=reason, end_s=end_s)
 
         self._spawn_stopper(stop_then_hold)
         log.info("recording held (%s)", reason)
@@ -420,6 +460,7 @@ class AppController:
             provisional=provisional,
             monitor_hint=self._foreground(),
         )
+        self._report_capture_health(s)
 
     def hide_pill(self) -> None:
         self._ui.hide_pill()
@@ -480,12 +521,10 @@ class AppController:
                 directory = s.directory
 
                 def stop_then_hold() -> None:
-                    self._safe_stop(s)
+                    stopped = self._safe_stop(s)
                     self._stop_live(directory)
-                    self._finisher.submit(
-                        "hold",
-                        finalize_and_hold(self._config, directory, reason=reason, end_s=None),
-                    )
+                    if stopped:
+                        self._submit_hold(s, reason=reason, end_s=None)
 
                 self._spawn_stopper(stop_then_hold)
         self._ticker_stop.set()
@@ -493,15 +532,19 @@ class AppController:
 
     def wait_idle(self, timeout_s: float = 60.0) -> bool:
         """Espera a que terminen las paradas y el cierre/encolado en curso (pruebas y salida)."""
-        for t in list(self._stoppers):
-            t.join(timeout_s)
-        return self._finisher.wait_idle(timeout_s)
+        deadline = time.monotonic() + timeout_s
+        with self._capture_idle:
+            if not self._capture_idle.wait_for(lambda: self._closing == 0, timeout_s):
+                return False
+        return self._finisher.wait_idle(max(0, deadline - time.monotonic()))
 
     # ------------------------------------------------------------------ internos
 
     def _take_session(self) -> _Session | None:
         with self._lock:
             s, self._session = self._session, None
+            if s is not None:
+                self._closing += 1
         return s
 
     def _prepare_stop(self, s: _Session, *, confirmed: bool, meeting: MeetingInfo) -> None:
@@ -526,19 +569,39 @@ class AppController:
             write_trim_marker(directory, end_s)
 
         def enqueued() -> None:
+            from micnaga.capture.session import forget_recording
+
             if db_path is not None and self._on_job_queued_db is not None:
                 self._on_job_queued_db(db_path)
+            forget_recording(directory)
             self._on_job_queued()
 
         def stop_then_queue() -> None:
+            warm = False
+            if confirmed:
+                try:
+                    warm = self._live.prepare_finish(directory)
+                except Exception:
+                    log.warning("could not retain live ASR for final processing", exc_info=True)
             stopped = self._safe_stop(s)
-            self._stop_live(directory)
+            if not warm or not stopped:
+                self._stop_live(directory)
             if not stopped:
                 return
+
+            def finish_live(audio_finalized: bool) -> None:
+                self._live.finish(directory, audio_finalized=audio_finalized)
+
             # el indice de la carpeta donde se grabo, aunque la config ya apunte a otra (P1-4)
-            self._finisher.submit(
+            self._submit_save(
                 "finalize",
-                finalize_and_enqueue(self._config, directory, on_enqueued=enqueued, end_s=end_s),
+                finalize_and_enqueue(
+                    self._config,
+                    directory,
+                    on_enqueued=enqueued,
+                    end_s=end_s,
+                    before_enqueue=finish_live if warm else None,
+                ),
                 db_path=db_path,
             )
 
@@ -557,25 +620,52 @@ class AppController:
         except Exception:
             log.exception("could not stop live processing")
 
-    @staticmethod
-    def _safe_stop(s: _Session) -> bool:
+    def _safe_stop(self, s: _Session) -> bool:
         try:
             s.recorder.stop()
         except Exception:
             log.exception("stopping the recorder failed")
+            self._ui.notify_error("capture_save_failed")
             return False
+        if getattr(s.recorder, "capture_issue", None) == "capture_write_failed":
+            self._ui.notify_error("capture_write_failed")
         if s.meeting.in_person:  # con el grabador parado ya nadie reescribe capture.json
             from micnaga.capture.session import apply_in_person
 
             apply_in_person(s.directory)
         return True
 
+    def _submit_save(self, label: str, task: Task, *, db_path: Path | None) -> None:
+        def save(db: Database) -> None:
+            try:
+                task(db)
+            except Exception:
+                self._ui.notify_error("capture_save_failed")
+                raise
+
+        self._finisher.submit(label, save, db_path=db_path)
+
+    def _submit_hold(self, s: _Session, *, reason: str, end_s: float | None) -> None:
+        from micnaga.capture.session import forget_recording
+
+        task = finalize_and_hold(self._config, s.directory, reason=reason, end_s=end_s)
+
+        def hold(db: Database) -> None:
+            task(db)
+            forget_recording(s.directory)
+
+        self._submit_save("hold", hold, db_path=s.db_path)
+
     def _spawn_stopper(self, fn: Callable[[], None]) -> None:
-        thread = threading.Thread(target=fn, name="micnaga-stop", daemon=True)
-        with self._lock:
-            self._stoppers = [t for t in self._stoppers if t.is_alive()]
-            self._stoppers.append(thread)
-        thread.start()
+        def stop() -> None:
+            try:
+                fn()
+            finally:
+                with self._capture_idle:
+                    self._closing -= 1
+                    self._capture_idle.notify_all()
+
+        threading.Thread(target=stop, name="micnaga-stop", daemon=True).start()
 
     def _ui_hint(self, hint: MonitorHint | None) -> int | tuple[int, int, int, int] | None:
         if hint is not None:
@@ -594,10 +684,28 @@ class AppController:
             self._ticker.start()
 
     def _tick_loop(self) -> None:
-        while not self._ticker_stop.wait(self._sync_s):
+        last_sync = time.monotonic()
+        while not self._ticker_stop.wait(min(self._sync_s, 0.5)):
             s = self._session
-            if s is not None and not s.paused and not s.discarding:
-                self.tick_sync(s)
+            if s is not None and not s.discarding:
+                self._report_capture_health(s)
+                now = time.monotonic()
+                if not s.paused and (
+                    s.capture_issue == "capture_write_failed" or now - last_sync >= self._sync_s
+                ):
+                    self.tick_sync(s)
+                    last_sync = now
+
+    def _report_capture_health(self, s: _Session) -> None:
+        issue = getattr(s.recorder, "capture_issue", None)
+        if self._session is not s or issue == s.capture_issue:
+            return
+        s.capture_issue = issue
+        show_issue = getattr(self._ui, "set_capture_issue", None)
+        if callable(show_issue):
+            show_issue(issue)
+        if issue is not None:
+            self._ui.notify_error(issue)
 
     def tick_sync(self, s: _Session | None = None) -> None:
         s = s or self._session

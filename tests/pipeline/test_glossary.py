@@ -114,10 +114,34 @@ def test_hotwords_are_the_canonical_forms() -> None:
 
 def test_load_from_app_data_and_config(tmp_home: Path) -> None:
     paths.ensure_dir(tmp_home)
-    glossary_path().write_text("Zoltan\nAcme: akme\n", encoding="utf-8")
+    glossary_path().write_text("Zoltan\nAcme: akme\n", encoding="utf-8-sig")
     cfg = Config()
     cfg.processing.glossary = ["Parakeet"]
     g = Glossary.load(config=cfg)
-    assert sorted(g.hotwords()) == ["Acme", "Parakeet", "Zoltan"]
+    assert g.hotwords()[:3] == ["Zoltan", "Acme", "Parakeet"]
     assert g.apply_text("el modelo parakeet de akme") == "el modelo Parakeet de Acme"
     assert len(Glossary.load(path=tmp_home / "nada.txt")) == 0
+
+
+def test_bitnaga_defaults_only_correct_known_forms(tmp_home: Path) -> None:
+    g = Glossary.load(config=Config())
+    assert len(g.prompt()) <= 150
+    assert g.apply_text("¿Vitnaga revisa pe cu ce con crowd strike y Censis?") == (
+        "¿Bitnaga revisa PQC con CrowdStrike y Censys?"
+    )
+    untouched = "Claudio leyó los blogs de una diputación. Ciberseguridad y showdown."
+    assert g.apply_text(untouched) == untouched
+    assert g.apply_text("día que quede libre; pe, cu ce y vinagre.") == (
+        "día que quede libre; pe, cu ce y vinagre."
+    )
+
+
+def test_personal_forms_take_priority_over_builtins(tmp_home: Path) -> None:
+    cfg = Config()
+    cfg.processing.glossary = ["BITNAGA: vitnaga", "Proyecto: CrowdStrike"]
+    g = Glossary.load(config=cfg)
+    assert g.hotwords()[:2] == ["BITNAGA", "Proyecto"]
+    assert "Bitnaga" not in g.hotwords() and "CrowdStrike" not in g.hotwords()
+    assert g.apply_text("vitnaga habló con CrowdStrike.") == "BITNAGA habló con Proyecto."
+    cfg.processing.glossary = ["Strike"]
+    assert Glossary.load(config=cfg).apply_text("crowd strike") == "crowd Strike"

@@ -61,6 +61,8 @@ log = logging.getLogger(__name__)
 MIC = "mic"
 SYSTEM = "system"
 READ_TIMEOUT_S = 0.1
+STARTUP_AUDIO_TIMEOUT_S = 2.0
+MIC_STALL_S = 3.0
 REOPEN_RETRY_S = 1.0
 JOIN_TIMEOUT_S = 5.0
 RECORDER_FORMAT = 1
@@ -71,6 +73,10 @@ el paquete en curso, un cierre brusco pierde menos de ``chunk_flush_s`` (MIC-09)
 
 class CaptureError(Exception):
     """No se pudo empezar a grabar (ninguna fuente disponible, sesion ya iniciada...)."""
+
+
+class CaptureStorageError(CaptureError):
+    """No se ha podido escribir el audio o los metadatos de captura."""
 
 
 class RecorderState(enum.Enum):
@@ -120,6 +126,9 @@ class _Worker:
     source_channels: int = 0
     seen_mark_seq: int = 0
     fail_reported: bool = False
+    last_packet_ns: int | None = None
+    attached_ns: int = 0
+    first_committed: bool = False
 
 
 class Recorder:
@@ -154,6 +163,9 @@ class Recorder:
         self._workers: dict[str, _Worker] = {}
         self._monitor: threading.Thread | None = None
         self._stop_evt = threading.Event()
+        self._first_audio = threading.Event()
+        self._require_microphone = False
+        self._storage_error: OSError | None = None
         self._stop_ns: int | None = None
         self._started_at = ""
         self._confirmed = False
@@ -204,6 +216,18 @@ class Recorder:
             return tl.rt(self._stop_ns)
         return tl.elapsed_s()
 
+    @property
+    def capture_issue(self) -> str | None:
+        if self._storage_error is not None:
+            return "capture_write_failed"
+        mic = self._workers.get(MIC)
+        system = self._workers.get(SYSTEM)
+        if mic is not None and mic.fail_reported:
+            return "capture_mic_lost"
+        if system is not None and system.fail_reported:
+            return "capture_system_lost"
+        return None
+
     def levels(self) -> tuple[float, float]:
         """``(micro, sistema)``: RMS del ultimo bloque en [0, 1]. Sin bloqueos (20 fps)."""
         if self._state is not RecorderState.RECORDING:
@@ -237,6 +261,7 @@ class Recorder:
         confirmed: bool = False,
         meet_title: str | None = None,
         meet_code: str | None = None,
+        require_microphone: bool = False,
     ) -> Path:
         """Empieza a grabar en ``session_dir`` (se crea). Devuelve la carpeta."""
         with self._lock:
@@ -250,6 +275,7 @@ class Recorder:
             session_dir = paths.ensure_dir(Path(session_dir))
             self._session_dir = session_dir
             self._confirmed = confirmed
+            self._require_microphone = require_microphone
             self._meet_title, self._meet_code = meet_title, meet_code
             self._started_at = datetime.now().astimezone().isoformat(timespec="seconds")
             try:
@@ -262,35 +288,45 @@ class Recorder:
             # t0 antes de abrir: el tiempo de apertura queda como ceros, no se pierde audio.
             self._timeline = tl = Timeline(self._clock)
             cfg = self.config
-            for name, wav, gap in (
-                (MIC, paths.AUDIO_ME_WAV, self._mic_gap),
-                (SYSTEM, paths.AUDIO_REMOTE_WAV, self._sys_gap),
-            ):
-                writer = ChunkedWavWriter(
-                    session_dir / wav,
-                    cfg.sample_rate,
-                    block_samples=max(1, round(cfg.chunk_flush_s * cfg.sample_rate)),
-                    fsync=self._fsync,
-                )
-                track = Track(
-                    name,
-                    tl,
-                    writer,
-                    gap_threshold_s=gap,
-                    sync_interval_s=cfg.sync_log_interval_s,
-                    flush_interval_s=max(0.25, cfg.chunk_flush_s - FLUSH_SLACK_S),
-                )
-                self._workers[name] = _Worker(name=name, track=track)
+            try:
+                for name, wav, gap in (
+                    (MIC, paths.AUDIO_ME_WAV, self._mic_gap),
+                    (SYSTEM, paths.AUDIO_REMOTE_WAV, self._sys_gap),
+                ):
+                    writer = ChunkedWavWriter(
+                        session_dir / wav,
+                        cfg.sample_rate,
+                        block_samples=max(1, round(cfg.chunk_flush_s * cfg.sample_rate)),
+                        fsync=self._fsync,
+                    )
+                    track = Track(
+                        name,
+                        tl,
+                        writer,
+                        gap_threshold_s=gap,
+                        sync_interval_s=cfg.sync_log_interval_s,
+                        flush_interval_s=max(0.25, cfg.chunk_flush_s - FLUSH_SLACK_S),
+                    )
+                    self._workers[name] = _Worker(name=name, track=track)
+            except OSError:
+                for w in self._workers.values():
+                    with contextlib.suppress(OSError):
+                        w.track.writer.close()
+                with contextlib.suppress(Exception):
+                    backend.close()
+                raise
 
             # capture.json ya existe antes de abrir nada: un cierre en este punto es recuperable.
-            self._write_meta(STATE_RECORDING)
-            opened = 0
-            for w in self._workers.values():
-                if self._attach(w, initial=True):
-                    opened += 1
+            metadata_saved = self._write_meta(STATE_RECORDING)
+            opened = (
+                sum(self._attach(w, initial=True) for w in self._workers.values())
+                if metadata_saved
+                else 0
+            )
             if opened == 0:
                 for w in self._workers.values():
-                    w.track.writer.close()
+                    with contextlib.suppress(OSError):
+                        w.track.writer.close()
                     with contextlib.suppress(OSError):
                         w.track.writer.path.unlink()
                 for leftover in (
@@ -308,6 +344,8 @@ class Recorder:
                     backend.close()
                 except Exception:
                     log.exception("backend close failed")
+                if not metadata_saved:
+                    raise CaptureStorageError("could not persist initial capture metadata")
                 raise CaptureError("no audio source could be opened (mic and system failed)")
             self._state = RecorderState.RECORDING
             self._write_meta(STATE_RECORDING)
@@ -320,8 +358,22 @@ class Recorder:
                 target=self._monitor_loop, name="micnaga-cap-monitor", daemon=True
             )
             self._monitor.start()
-            self._fire("state", RecorderState.RECORDING.value)
-            return session_dir
+        started = self._first_audio.wait(STARTUP_AUDIO_TIMEOUT_S)
+        if not started or self._storage_error is not None:
+            with self._lock:
+                self._confirmed = False
+            try:
+                self.stop()
+            except Exception:
+                log.exception("could not close a failed recording start")
+            if self._storage_error is not None:
+                raise CaptureStorageError(
+                    "could not write the first audio block"
+                ) from self._storage_error
+            required = "microphone" if require_microphone else "audio sources"
+            raise CaptureError(f"no audio packet received from {required}")
+        self._fire("state", RecorderState.RECORDING.value)
+        return session_dir
 
     def pause(self) -> bool:
         """Pausa privada (MIC-13). ``False`` si no estaba grabando."""
@@ -380,28 +432,39 @@ class Recorder:
             if self._state is not RecorderState.RECORDING or self._timeline is None:
                 raise CaptureError("not recording")
             tl = self._timeline
-            end_ns = self._clock()
+            end_ns = self._stop_ns if self._stop_ns is not None else self._clock()
             tl.close(end_ns)
             self._stop_ns = end_ns
             self._stop_evt.set()
             workers = list(self._workers.values())
+        alive = False
         for w in workers:
             if w.thread is not None:
                 w.thread.join(JOIN_TIMEOUT_S)
                 if w.thread.is_alive():
                     log.error("capture thread %s did not stop in %.0f s", w.name, JOIN_TIMEOUT_S)
+                    alive = True
         if self._monitor is not None:
             self._monitor.join(JOIN_TIMEOUT_S)
-        for w in workers:
-            w.track.writer.close()
-        with self._lock:
-            self._state = RecorderState.STOPPED
-        self._write_meta(STATE_STOPPED)
+            if self._monitor.is_alive():
+                log.error("capture device monitor did not stop in %.0f s", JOIN_TIMEOUT_S)
+                alive = True
+        if alive:
+            raise CaptureStorageError("capture threads did not finish; leaving files for recovery")
         if self._backend is not None:
             try:
                 self._backend.close()
             except Exception:
                 log.exception("backend close failed")
+        for w in workers:
+            try:
+                w.track.writer.close()
+            except OSError as exc:
+                self._note_storage_error(exc)
+        with self._lock:
+            self._state = RecorderState.STOPPED
+        if not self._write_meta(STATE_STOPPED):
+            raise CaptureStorageError("could not persist stopped capture metadata")
         self._fire("state", RecorderState.STOPPED.value)
         assert self._session_dir is not None
         return self._session_dir
@@ -432,16 +495,13 @@ class Recorder:
         w.track.set_input_format(src.sample_rate)
         w.source = src
         changed = (not initial) and bool(w.device_id) and src.info.id != w.device_id
-        recovered = w.fail_reported
-        w.fail_reported = False
+        w.attached_ns = self._clock()
         w.device, w.device_id = src.info.name, src.info.id
         w.source_rate, w.source_channels = src.sample_rate, src.channels
         if w.name == SYSTEM:
             self._note_kind(src.info, initial)
         if changed:
             self._record_device_change(w.name, src.info)
-        elif recovered and not initial:
-            self._fire("source_recovered", f"{w.name}: {src.info.name}", w.name)
         return True
 
     def _note_kind(self, info: EndpointInfo, initial: bool) -> None:
@@ -503,17 +563,50 @@ class Recorder:
                 if pkt is not None and stop_ns is not None and pkt.arrival_ns > stop_ns:
                     pkt = None  # llego despues de pedir la parada: no pertenece a la sesion
                 if pkt is not None:
+                    before = track.writer.samples
                     track.feed(pkt.frames, pkt.arrival_ns)
+                    if pkt.frames.size:
+                        w.last_packet_ns = pkt.arrival_ns
+                        if not w.first_committed and track.writer.samples > before:
+                            track.writer.flush()
+                            w.first_committed = True
+                            if not self._require_microphone or w.name == MIC:
+                                self._first_audio.set()
+                        if w.fail_reported:
+                            w.fail_reported = False
+                            self._fire("source_recovered", f"{w.name}: {w.device}", w.name)
                 else:
-                    track.idle(self._clock())
+                    now = self._clock()
+                    # WASAPI loopback puede no emitir paquetes cuando nadie reproduce audio.
+                    if w.name == MIC and w.source is not None:
+                        last = max(w.last_packet_ns or 0, w.attached_ns)
+                        if now - last >= int(MIC_STALL_S * 1e9):
+                            self._fail_source(
+                                w, SourceError("microphone stopped delivering packets")
+                            )
+                    track.idle(now)
                 track.tick(self._clock())
                 if track.mark_seq != w.seen_mark_seq:
                     w.seen_mark_seq = track.mark_seq
                     self._write_meta(STATE_RECORDING)
+            except OSError as exc:
+                self._note_storage_error(exc)
             except Exception:
                 log.exception("capture loop error on %s", w.name)
                 self._stop_evt.wait(0.05)
         self._drain_and_finish(w)
+
+    def _note_storage_error(self, exc: OSError) -> None:
+        with self._lock:
+            if self._storage_error is not None:
+                return
+            self._storage_error = exc
+            if self._stop_ns is None and self._timeline is not None:
+                self._stop_ns = self._clock()
+                self._timeline.close(self._stop_ns)
+            self._stop_evt.set()
+            self._first_audio.set()
+        log.error("could not write capture audio: %s", exc)
 
     def _fail_source(self, w: _Worker, exc: Exception) -> None:
         log.warning("%s source failed: %s", w.name, exc)
@@ -533,7 +626,7 @@ class Recorder:
         assert end_ns is not None
         src = w.source
         try:
-            while src is not None:
+            while src is not None and self._storage_error is None:
                 try:
                     pkt = src.read(0.0)
                 except SourceError:
@@ -542,6 +635,8 @@ class Recorder:
                     break
                 if pkt.arrival_ns <= end_ns:
                     w.track.feed(pkt.frames, pkt.arrival_ns)
+        except OSError as exc:
+            self._note_storage_error(exc)
         except Exception:
             log.exception("draining %s failed", w.name)
         finally:
@@ -551,10 +646,13 @@ class Recorder:
                 except Exception:
                     log.exception("closing %s source failed", w.name)
                 w.source = None
-        try:
-            w.track.finish(end_ns)
-        except Exception:
-            log.exception("finishing %s failed", w.name)
+        if self._storage_error is None:
+            try:
+                w.track.finish(end_ns)
+            except OSError as exc:
+                self._note_storage_error(exc)
+            except Exception:
+                log.exception("finishing %s failed", w.name)
 
     def _monitor_loop(self) -> None:
         backend = self._backend
@@ -626,6 +724,8 @@ class Recorder:
                 },
                 "duration_s": round(self.elapsed_s(), 3),
             }
+            if self._storage_error is not None:
+                extra["incomplete_audio"] = True
             return CaptureMeta(
                 started_at=self._started_at,
                 mic=self._track_info(mic, paths.AUDIO_ME_WAV),
@@ -640,11 +740,11 @@ class Recorder:
                 extra=extra,
             )
 
-    def _write_meta(self, state: str) -> None:
+    def _write_meta(self, state: str) -> bool:
         if self._session_dir is None or self._timeline is None:
-            return
+            return False
         with self._meta_lock:
-            write_capture_json(self._session_dir, self.build_meta(state))
+            return write_capture_json(self._session_dir, self.build_meta(state))
 
 
 def _source_format(w: _Worker) -> dict[str, Any]:

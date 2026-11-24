@@ -27,6 +27,9 @@ class FakeLive:
     def signal_stop(self, session: Path) -> None:
         self.calls.append(("signal_stop", session))
 
+    def prepare_finish(self, session: Path) -> bool:
+        return False
+
     def stop(self, session: Path, *, wait_s: float | None = None) -> None:
         self.calls.append(("stop", session))
 
@@ -139,6 +142,25 @@ def test_runner_does_nothing_when_disabled_or_without_models(tmp_path: Path) -> 
         tmp_path
     )
     assert spawned == []
+
+
+def test_warm_handoff_uses_the_same_bounded_stop_and_terminates_if_stuck(
+    tmp_path: Path,
+) -> None:
+    proc = FakeProc(exits=False)
+    cfg = Config()
+    runner = LiveRunner(lambda: cfg, spawn=lambda _: proc, stop_wait_s=0.01)
+    runner.start(tmp_path)
+    assert not runner.prepare_finish(tmp_path)
+    folder = live.live_dir(tmp_path)
+    folder.mkdir(parents=True)
+    (folder / live.ASR_ENGINE_FILE).touch()
+    assert runner.prepare_finish(tmp_path)
+    assert live.quick_stop_reason(tmp_path) == "finish requested"
+    runner.finish(tmp_path, audio_finalized=True)
+    assert (folder / live.FINISH_READY).is_file()
+    assert proc.killed and not runner.running
+    assert live.quick_stop_reason(tmp_path) == "stop requested"
 
 
 def test_runner_logs_why_live_processing_does_not_start(

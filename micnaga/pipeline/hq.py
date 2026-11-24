@@ -32,18 +32,21 @@ import shutil
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
+from functools import partial
 from pathlib import Path
 from typing import Any, Protocol
 
 from micnaga import paths
 from micnaga.config import Config
+from micnaga.glossary import Glossary
 from micnaga.pipeline.stages.phrases import (
+    apply_glossary,
     build_phrases,
     default_speaker_name,
     drop_echo,
     merge_segments,
 )
-from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word, is_mic_speaker
+from micnaga.types import SPEAKER_ME, Segment, Speaker, Transcript, Word
 
 log = logging.getLogger(__name__)
 
@@ -137,7 +140,7 @@ def _remote_turns(transcript: Transcript, *, mic: bool = False) -> list[tuple[fl
     Con ``mic=True``, los del micro (``me`` y personas de la sala ``P<n>``)."""
     turns: list[tuple[float, float, str]] = []
     for seg in transcript.segments:
-        if is_mic_speaker(seg.speaker) != mic:
+        if (seg.audio_track == "mic") != mic:
             continue
         if seg.words:
             turns.extend((w.s, max(w.e, w.s), seg.speaker) for w in seg.words)
@@ -168,6 +171,13 @@ def remote_speaker_for(word: Word, turns: Sequence[tuple[float, float, str]]) ->
 def assign_words(
     transcript: Transcript, mic: Sequence[Word], system: Sequence[Word]
 ) -> list[tuple[str, Word]]:
+    mic_words, system_words = _assign_by_track(transcript, mic, system)
+    return mic_words + system_words
+
+
+def _assign_by_track(
+    transcript: Transcript, mic: Sequence[Word], system: Sequence[Word]
+) -> tuple[list[tuple[str, Word]], list[tuple[str, Word]]]:
     """Palabras nuevas con hablante: sistema = tramo remoto actual por tiempo; micro = «Yo», o la
     persona de la sala (``P<n>``) de ese momento si la reunion era presencial.
 
@@ -175,27 +185,33 @@ def assign_words(
     mas frecuente si es la primera); una del micro, «Yo»."""
     mic_turns = _remote_turns(transcript, mic=True)
     if any(sp != SPEAKER_ME for _a, _b, sp in mic_turns):
-        out: list[tuple[str, Word]] = [
+        mic_words = [
             (remote_speaker_for(w, mic_turns) or SPEAKER_ME, w) for w in mic
         ]
     else:
-        out = [(SPEAKER_ME, w) for w in mic]
+        mic_words = [(SPEAKER_ME, w) for w in mic]
     turns = _remote_turns(transcript)
     counts: dict[str, float] = {}
     for a, b, sp in turns:
         counts[sp] = counts.get(sp, 0.0) + (b - a)
-    fallback = max(counts, key=lambda k: counts[k]) if counts else "S1"
+    if counts:
+        fallback = max(counts, key=lambda k: counts[k])
+    else:
+        used = {s.id[1:] for s in transcript.speakers if s.id.startswith(("S", "P"))}
+        number = next(i for i in range(1, len(used) + 2) if str(i) not in used)
+        fallback = f"S{number}"
+    system_words: list[tuple[str, Word]] = []
     prev: str | None = None
     for w in sorted(system, key=lambda w: (w.s, w.e)):
         sp = remote_speaker_for(w, turns) or prev or fallback
-        out.append((sp, w))
+        system_words.append((sp, w))
         prev = sp
-    return out
+    return mic_words, system_words
 
 
 def _round(s: Segment) -> Segment:
     words = [Word(w.w, round(w.s, 3), round(w.e, 3), round(w.p, 3)) for w in s.words]
-    return Segment(round(s.start, 3), round(s.end, 3), s.speaker, s.text, words)
+    return replace(s, start=round(s.start, 3), end=round(s.end, 3), words=words)
 
 
 def rebuild(
@@ -206,9 +222,14 @@ def rebuild(
     engine_name: str,
 ) -> Transcript:
     """Transcripcion nueva con los hablantes, nombres y marcadores de ``transcript``."""
-    phrases = build_phrases(assign_words(transcript, mic, system))
+    mic_words, system_words = _assign_by_track(transcript, mic, system)
+    phrases = build_phrases(mic_words, track="mic") + build_phrases(system_words, track="system")
     kept, _dropped = drop_echo(phrases, similarity=config.processing.echo_similarity)
-    segments = [_round(s) for s in merge_segments(kept, merge_gap_s=config.processing.merge_gap_s)]
+    glossary = Glossary.load(config=config)
+    corrected = [apply_glossary(p, glossary) for p in kept]
+    segments = [
+        _round(s) for s in merge_segments(corrected, merge_gap_s=config.processing.merge_gap_s)
+    ]
     speakers = list(transcript.speakers)
     known = {s.id for s in speakers}
     for seg in segments:
@@ -396,6 +417,7 @@ def improve(
     """Re-transcribe ``folder`` con el motor de ``create_engine`` (ver el docstring del modulo).
 
     Lanza ``Cancelled`` sin tocar la transcripcion si se cancela antes de escribir."""
+    from micnaga.pipeline.asr_checkpoint import BlockCheckpoint, asr_key
     from micnaga.pipeline.stages.base import read_audio_file
     from micnaga.pipeline.stages.s06_asr import track_regions, transcribe_block
 
@@ -406,7 +428,11 @@ def improve(
     # vuelve a leer la del disco
     Transcript.from_json((folder / paths.TRANSCRIPT_JSON).read_text(encoding="utf-8"))
     work = paths.work_dir(folder)
-    created_work = not work.is_dir()  # si se crea aqui, se borra al final (tambien si falla)
+    owner = work / ".hq-generated"
+    if not work.is_dir():
+        work.mkdir(parents=True, exist_ok=True)
+        owner.touch()
+    done_ok = False
     try:
         _ensure_vad(folder, config, report)
         vad: dict[str, Any] = json.loads((work / "05_vad.json").read_text(encoding="utf-8"))
@@ -417,16 +443,23 @@ def improve(
         report("transcribe", 0.0)
         engine = create_engine()
         try:
+            checkpoint = BlockCheckpoint(
+                work / "hq-checkpoint",
+                [engine.name, sr, asr_key(config, whisper_model=model_name(config)), vad],
+                (work / f"04_{track}.wav" for track in words if vad[track]["chunks"]),
+            )
             for track in ("mic", "system"):
                 chunks: list[list[float]] = vad[track]["chunks"]
                 if not chunks:
                     continue
                 audio = read_audio_file(work / f"04_{track}.wav", sr)
                 regions = track_regions(vad, track)
-                for a, b in chunks:
+                for index, (a, b) in enumerate(chunks):
                     if is_cancelled():
                         raise Cancelled()
-                    block = transcribe_block(engine, audio, a, b, sr, regions)
+                    block = checkpoint.words(
+                        track, index, partial(transcribe_block, engine, audio, a, b, sr, regions)
+                    )
                     words[track].extend(drop_loops(block))
                     done += b - a
                     report("transcribe", done / total)
@@ -454,11 +487,12 @@ def improve(
             save_previa(folder)
             output.write_transcript(folder, new)
             _reindex(folder, new)
+        done_ok = True
         return HqResult(before, after, time.monotonic() - t0, name)
     finally:
         (folder / CANCEL).unlink(missing_ok=True)
-        if created_work:
-            shutil.rmtree(work, ignore_errors=True)
+        if done_ok:
+            shutil.rmtree(work if owner.is_file() else work / "hq-checkpoint", ignore_errors=True)
 
 
 # ----------------------------------------------------------------------------- modelo
