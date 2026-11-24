@@ -341,12 +341,13 @@ class LiveTitler:
         from micnaga.brain.claude import ClaudeRequest, ClaudeRunner
         from micnaga.brain.prompt import build_title_input, system_prompt
         from micnaga.brain.schema import TITLE_SCHEMA, clean_title, confidence
+        from micnaga.glossary import Glossary
 
         cfg = self._config()
         runner = ClaudeRunner(auth=cfg.secretaria.auth)
         res = runner.run(
             ClaudeRequest(
-                prompt=build_title_input(text),
+                prompt=build_title_input(text, glossary=Glossary.load(config=cfg).prompt()),
                 system_prompt=system_prompt("titulo"),
                 model=cfg.secretaria.model_title,
                 schema=TITLE_SCHEMA,

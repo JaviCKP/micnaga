@@ -1,4 +1,4 @@
-"""Actualizaciones automaticas desde GitHub Releases (``JaviCKP/micnaga``). Solo stdlib.
+"""Actualizaciones automaticas desde GitHub Releases (``JaviCKP/micnaga``).
 
 Que hace
 --------
@@ -22,9 +22,8 @@ Que hace
      editor esperado, ``EXPECTED_PUBLISHER``); un instalador sin firmar se rechaza si
      ``REQUIRE_SIGNATURE`` o si la app que corre ahora esta firmada (no se baja de firmado a sin
      firmar, ``REFUSE_SIGNED_TO_UNSIGNED``).
-* Instalar solo en reposo (sin grabar ni procesar): si no, queda pendiente y se instala al quedar
-  libre. ``/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS``; el ``[Run]`` del
-  instalador vuelve a abrir Micnaga. La version nueva muestra una vez «Novedades de la X».
+* Instalar solo en reposo: se bloquean los nuevos trabajos antes de lanzar el instalador y
+  este espera al cierre ordenado. Su ``[Run]`` vuelve a abrir Micnaga.
 
 Estado (no es configuracion): ``<datos de app>/updates.json`` (version omitida, ETag, ultima
 comprobacion, release en cache, novedades pendientes). La configuracion solo tiene
@@ -47,7 +46,7 @@ import threading
 import time
 import urllib.error
 import urllib.request
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -84,7 +83,7 @@ INSTALLER_ARGS: tuple[str, ...] = (
     "/VERYSILENT",
     "/SUPPRESSMSGBOXES",
     "/NORESTART",
-    "/CLOSEAPPLICATIONS",
+    "/NOCLOSEAPPLICATIONS",
     "/SP-",
 )
 
@@ -100,7 +99,7 @@ REFUSE_SIGNED_TO_UNSIGNED = True
 
 STATE_FILE = "updates.json"
 ENV_DISABLE = "MICNAGA_NO_UPDATES"
-"""Con esta variable no se comprueba nada (ni a mano): despliegues gestionados, pruebas."""
+"""Desactiva las comprobaciones y la instalacion: despliegues gestionados, pruebas."""
 
 
 class UpdateError(RuntimeError):
@@ -124,7 +123,10 @@ def parse_version(text: object) -> tuple[int, int, int] | None:
     m = _VERSION_RE.match(text.strip())
     if m is None:
         return None
-    return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    try:
+        return int(m.group(1)), int(m.group(2)), int(m.group(3))
+    except ValueError:
+        return None
 
 
 def is_newer(candidate: str, current: str) -> bool:
@@ -171,7 +173,17 @@ class ReleaseInfo:
             )
         except (KeyError, TypeError, ValueError):
             return None
-        return info if parse_version(info.version) else None
+        ver = parse_version(info.version)
+        if (
+            ver is None
+            or info.version != ".".join(str(n) for n in ver)
+            or info.asset_name != ASSET_TEMPLATE.format(version=info.version)
+            or not 0 < info.asset_size <= MAX_INSTALLER_BYTES
+            or not url_allowed(info.asset_url)
+            or (info.checksums_url and not url_allowed(info.checksums_url))
+        ):
+            return None
+        return info
 
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
@@ -286,8 +298,11 @@ def sanitize_notes(
 
 def url_allowed(url: str) -> bool:
     """Solo ``https`` hacia GitHub (API, web y CDN de activos)."""
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
+    try:
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
     if parsed.scheme != "https" or not host:
         return False
     return host in ALLOWED_HOSTS or any(host.endswith(s) for s in ALLOWED_SUFFIXES)
@@ -344,7 +359,11 @@ class SignatureInfo:
 
 _PS_SCRIPT = (
     "$ErrorActionPreference='Stop';"
-    "$s=Get-AuthenticodeSignature -LiteralPath $env:MICNAGA_VERIFY_PATH;"
+    "[Console]::OutputEncoding=[System.Text.Encoding]::UTF8;"
+    r"Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Security"
+    r"\Microsoft.PowerShell.Security.psd1');"
+    r"$s=Microsoft.PowerShell.Security\Get-AuthenticodeSignature "
+    "-LiteralPath $env:MICNAGA_VERIFY_PATH;"
     "$c=$s.SignerCertificate;"
     "[pscustomobject]@{status=[string]$s.Status;"
     "subject=$(if($c){$c.Subject}else{''});"
@@ -357,9 +376,10 @@ def authenticode(path: Path, *, run: Callable[..., Any] = subprocess.run) -> Sig
     dentro de la orden). Cualquier fallo -> ``Unknown``."""
     if sys.platform != "win32":
         return SignatureInfo("Unknown")
+    import win32api
+
     env = dict(os.environ, MICNAGA_VERIFY_PATH=str(path))
-    system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-    exe = Path(system_root) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    exe = Path(win32api.GetSystemDirectory()) / "WindowsPowerShell" / "v1.0" / "powershell.exe"
     try:
         out = run(
             [
@@ -372,7 +392,8 @@ def authenticode(path: Path, *, run: Callable[..., Any] = subprocess.run) -> Sig
                 _PS_SCRIPT,
             ],
             capture_output=True,
-            text=True,
+            check=True,
+            encoding="utf-8",
             timeout=60,
             env=env,
             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -399,6 +420,10 @@ def signature_verdict(
     refuse_downgrade: bool = REFUSE_SIGNED_TO_UNSIGNED,
 ) -> str | None:
     """``None`` si se puede instalar; si no, la clave del error (``updates.err.*``)."""
+    if new.status == "Unknown":
+        return "updates.err.signature"
+    if current is not None and current.status not in ("Valid", "NotSigned"):
+        return "updates.err.signature"
     current_valid = current is not None and current.status == "Valid"
     if new.status == "Valid":
         if publisher and new.common_name != publisher:
@@ -406,11 +431,9 @@ def signature_verdict(
         if current_valid and current is not None and current.common_name != new.common_name:
             return "updates.err.publisher"
         return None
-    if new.status in ("NotSigned", "Unknown"):
+    if new.status == "NotSigned":
         if require or (refuse_downgrade and current_valid):
             return "updates.err.unsigned"
-        if new.status == "Unknown" and current_valid:
-            return "updates.err.signature"
         return None
     return "updates.err.signature"  # firma presente pero rota (HashMismatch, NotTrusted...)
 
@@ -420,6 +443,23 @@ def signature_verdict(
 
 def is_frozen() -> bool:
     return bool(getattr(sys, "frozen", False))
+
+
+def installed_peer_active() -> bool:
+    """Hay otro ejecutable de esta instalacion en uso, incluso de una sesion anterior."""
+    if not is_frozen():
+        return False
+    import psutil
+
+    install_dir = Path(sys.executable).resolve().parent
+    names = {"micnaga.exe", "micnaga-cli.exe", "micnaga-host.exe"}
+    for proc in psutil.process_iter(["exe"]):
+        exe = proc.info["exe"]
+        if proc.pid != os.getpid() and exe:
+            path = Path(exe)
+            if path.name.lower() in names and path.parent == install_dir:
+                return True
+    return False
 
 
 _BUILD_CACHE: dict[str, str] | None = None
@@ -525,11 +565,13 @@ class UpdateHooks:
     """Aviso discreto (toast) la primera vez que se ve una version (nunca grabando)."""
     on_updated: Callable[[str], None] = lambda _v: None
     """Primer arranque tras actualizar: aviso «Novedades»."""
-    before_install: Callable[[], None] = lambda: None
-    """Parada ordenada (vigilante, cola...) justo antes de lanzar el instalador."""
+    before_install: Callable[[], bool | None] = lambda: None
+    """Reserva el reposo hasta salir. ``False`` indica que hay que esperar."""
     quit_app: Callable[[], None] = lambda: None
     open_ui: Callable[[], None] = lambda: None
     """Abre Ajustes > Acerca de (la bandeja «Actualizar a la version X»)."""
+    install_aborted: Callable[[], None] = lambda: None
+    """Devuelve la app a servicio si falla el lanzamiento tras reservar el reposo."""
 
 
 @dataclass
@@ -578,7 +620,7 @@ class UpdateService:
         self._lock = threading.RLock()
         self._snap = _Snapshot()
         self._release: ReleaseInfo | None = ReleaseInfo.from_dict(self._state.get("release") or {})
-        self._ready: Path | None = None
+        self._ready: tuple[ReleaseInfo, Path] | None = None
         self._expected: dict[str, str] = {}
         self._current_sig: SignatureInfo | None = None
         self._install_pending = False
@@ -616,10 +658,10 @@ class UpdateService:
     # ------------------------------------------------------------------ ciclo de vida
     def start(self) -> None:
         """Hilo de fondo: novedades tras actualizar, primera comprobacion y cada 12 h."""
-        self._note_version_change()
-        self._prune_downloads()
         if self._snap.state == "disabled" or self._worker is not None:
             return
+        self._note_version_change()
+        self._prune_downloads()
         self._worker = threading.Thread(target=self._loop, name="micnaga-updates", daemon=True)
         self._worker.start()
 
@@ -670,7 +712,7 @@ class UpdateService:
         if self._snap.state == "disabled":
             return self.status()
         with self._lock:
-            if self._snap.state in ("downloading", "verifying", "installing"):
+            if self._install_pending or self._installing:
                 return self.status()
             self._snap.manual = manual
         self._set("checking")
@@ -750,7 +792,7 @@ class UpdateService:
     def available(self) -> ReleaseInfo | None:
         """La release nueva que se ofrece (no omitida), o ``None``."""
         with self._lock:
-            rel = self._release
+            rel = None if self._snap.state == "disabled" else self._release
         if rel is None or not is_newer(rel.version, self.current):
             return None
         if self._state.get("skipped") == rel.version:
@@ -787,7 +829,7 @@ class UpdateService:
             "done": prog.done,
             "total": prog.total,
             "pending": pending,
-            "can_install": self._can_install,
+            "can_install": self._can_install and state != "disabled",
             "auto": self._auto_on(),
             "checked_at": float(self._state.get("last_check", 0) or 0),
             "whats_new": self.whats_new(),
@@ -860,6 +902,8 @@ class UpdateService:
         """«Instalar y reiniciar»: descarga y verifica en segundo plano y, en reposo, instala.
 
         Grabando o procesando queda pendiente (``pending``) y se instala al quedar libre."""
+        if self._snap.state == "disabled" or self._stop.is_set():
+            return self.status()
         if open_ui:
             with contextlib.suppress(Exception):
                 self.hooks.open_ui()
@@ -870,7 +914,7 @@ class UpdateService:
             self._set("error", "updates.err.dev")
             return self.status()
         with self._lock:
-            if self._snap.state in ("downloading", "verifying", "installing"):
+            if self._install_pending or self._installing:
                 return self.status()
             self._install_pending = True
             self._snap.state = "downloading"
@@ -903,13 +947,13 @@ class UpdateService:
             self._set("error", "updates.err.generic")
             return
         with self._lock:
-            self._ready = path
+            self._ready = rel, path
         self._maybe_install_pending(from_loop=False)
 
     def _maybe_install_pending(self, *, from_loop: bool = True) -> None:
         with self._lock:
-            path, pending = self._ready, self._install_pending
-        if path is None or not pending:
+            ready = self._ready
+        if ready is None or self._stop.is_set():
             return
         if self._busy():
             if self._snap.state != "waiting":
@@ -917,21 +961,28 @@ class UpdateService:
             if not from_loop:
                 self._wake.set()  # el hilo de fondo pasa a mirar cada IDLE_POLL_S
             return
-        rel = self._newer_release()
-        if rel is None:
-            return
         with self._lock:  # el hilo de descarga y el sondeo de reposo no lanzan dos instaladores
-            if self._installing:
+            if self._installing or self._ready is not ready:
                 return
             self._installing = True
+        rel, path = ready
         try:
-            self.install(rel, path)
+            if self.install(rel, path):
+                with self._lock:
+                    self._install_pending = False
+                    self._ready = None
         except UpdateError as exc:
             log.warning("update install refused: %s", exc)
             with self._lock:
                 self._install_pending = False
                 self._ready = None
             self._set("error", exc.key)
+        except Exception:
+            log.exception("update install failed")
+            with self._lock:
+                self._install_pending = False
+                self._ready = None
+            self._set("error", "updates.err.generic")
         finally:
             with self._lock:
                 self._installing = False
@@ -1062,38 +1113,81 @@ class UpdateService:
         new = self._signature(path)
         current: SignatureInfo | None = None
         if is_frozen():
-            if self._current_sig is None:
+            if self._current_sig is None or self._current_sig.status == "Unknown":
                 self._current_sig = self._signature(self._current_exe)
             current = self._current_sig
         verdict = signature_verdict(new, current)
         if verdict is not None:
             raise UpdateError(verdict, f"{new.status} {new.common_name}")
 
-    def install(self, rel: ReleaseInfo, path: Path) -> None:
-        """Ultima verificacion, instalador en marcha (separado de este proceso) y salida."""
+    def install(self, rel: ReleaseInfo, path: Path) -> bool:
+        """Verifica el archivo inmovilizado, reserva reposo y lanza el instalador."""
+        if self._snap.state == "disabled" or self._stop.is_set():
+            return False
         if not self._can_install:
             raise UpdateError("updates.err.dev")
         self._set("verifying")
-        if path.stat().st_size != rel.asset_size or _sha256(path) != self._expected_sha256(rel):
-            path.unlink(missing_ok=True)
-            raise UpdateError("updates.err.checksum")
-        self._check_signature(path)
-        if self._busy():  # pudo empezar una grabacion mientras se verificaba
-            self._set("waiting")
-            return
-        self._set("installing")
-        self._state.update(pending_notes={"version": rel.version, "notes": rel.notes})
-        log_path = path.with_name("install.log")
+        expected = self._expected_sha256(rel)
+        reserved = False
+        launched = False
         try:
-            self._launch([str(path), *INSTALLER_ARGS, f"/LOG={log_path}"])
+            with _pin_installer(path) as pinned:
+                if pinned.stat().st_size != rel.asset_size or _sha256(pinned) != expected:
+                    raise UpdateError("updates.err.checksum")
+                self._check_signature(pinned)
+                if self._stop.is_set():
+                    return False
+                if self._busy() or self.hooks.before_install() is False:
+                    self._set("waiting")
+                    return False
+                reserved = True
+                self._set("installing")
+                if self._stop.is_set():
+                    return False
+                self._state.update(pending_notes={"version": rel.version, "notes": rel.notes})
+                log_path = pinned.with_name("install.log")
+                self._launch([str(pinned), *INSTALLER_ARGS, f"/LOG={log_path}"])
+                launched = True
         except OSError as exc:
             raise UpdateError("updates.err.launch", str(exc)) from exc
+        finally:
+            if reserved and not launched:
+                self.hooks.install_aborted()
         log.info("installer %s launched; quitting for the update", rel.version)
-        for step in (self.hooks.before_install, self.hooks.quit_app):
-            try:
-                step()
-            except Exception:
-                log.exception("update shutdown step failed")
+        try:
+            self.hooks.quit_app()
+        except Exception:
+            log.exception("update shutdown step failed")
+        return True
+
+
+@contextlib.contextmanager
+def _pin_installer(path: Path) -> Iterator[Path]:
+    """Mantiene bloqueadas la escritura y la sustitucion hasta CreateProcess."""
+    path = path.resolve(strict=True)
+    if sys.platform != "win32":
+        yield path
+        return
+    import pywintypes
+    import win32con
+    import win32file
+
+    try:
+        handle = win32file.CreateFile(
+            str(path),
+            win32con.GENERIC_READ,
+            win32con.FILE_SHARE_READ,
+            None,
+            win32con.OPEN_EXISTING,
+            0,
+            None,
+        )
+    except pywintypes.error as exc:
+        raise OSError(str(exc)) from exc
+    try:
+        yield path
+    finally:
+        handle.Close()
 
 
 def _sha256(path: Path) -> str:
@@ -1134,9 +1228,9 @@ def _launch_detached(argv: list[str]) -> None:  # pragma: no cover - lanza el in
     )
     breakaway = 0x01000000  # CREATE_BREAKAWAY_FROM_JOB: que sobreviva a la salida de la app
     try:
-        subprocess.Popen(argv, creationflags=flags | breakaway, close_fds=True)
+        subprocess.Popen(argv, executable=argv[0], creationflags=flags | breakaway, close_fds=True)
     except OSError:
-        subprocess.Popen(argv, creationflags=flags, close_fds=True)
+        subprocess.Popen(argv, executable=argv[0], creationflags=flags, close_fds=True)
 
 
 # ===================================================================== servicio global

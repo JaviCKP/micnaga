@@ -128,7 +128,7 @@ def _diarize_room(
     ctx: StageContext,
     diarizer: Diarizer,
     emb_engine: SpeakerEmbedder | None,
-    remote_turns: list[Turn],
+    first_number: int,
     remote_emb: dict[str, NDArray[np.float32]],
 ) -> tuple[list[Turn], dict[str, NDArray[np.float32]], dict[str, Any]]:
     """Turnos del micro (``me`` / ``P<n>``), embeddings de las ``P<n>`` e ``info``."""
@@ -148,7 +148,7 @@ def _diarize_room(
         postfilter.speech_by_speaker(turns),
         mic_emb,
         remote_emb,
-        room.next_speaker_number(remote_turns),
+        first_number,
     )
     room_ids = sorted({t.speaker for t in labelled if t.speaker != SPEAKER_ME})
     info["room_speakers"] = len(room_ids)
@@ -211,7 +211,11 @@ def run(ctx: StageContext) -> StageResult:
         if want_room:
             ctx.progress(0.6)
             mic_turns, room_emb, mic_info = _diarize_room(
-                ctx, diarizer, emb_engine, turns, remote_emb
+                ctx,
+                diarizer,
+                emb_engine,
+                room.next_speaker_number(turns, has_remote_words=bool(words)),
+                remote_emb,
             )
             remote_emb.update(room_emb)
             room_emb.clear()

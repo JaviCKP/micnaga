@@ -105,6 +105,9 @@
   background: linear-gradient(90deg, var(--pill-text) 0 2px, transparent 2px 4px, var(--pill-text) 4px 6px);
   transition: transform var(--dur) var(--ease-out), opacity var(--dur) var(--ease);
 }
+.capture-issue { display: none; position: absolute; color: #ffba69; font: 700 13px/10px var(--mono); }
+.pill[data-capture-issue] .capture-issue { display: block; }
+.pill[data-capture-issue] :is(.rec-dot, .pause-glyph) { visibility: hidden; }
 
 .pill-time {
   font: 500 13px/1 var(--mono); letter-spacing: 0.02em; font-variant-numeric: tabular-nums; font-variant-ligatures: none;

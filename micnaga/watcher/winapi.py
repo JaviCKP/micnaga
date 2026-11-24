@@ -114,8 +114,7 @@ class UiaTabNameReader:
         import comtypes
         import comtypes.client
 
-        comtypes.client.GetModule("UIAutomationCore.dll")
-        from comtypes.gen import UIAutomationClient as uia_mod
+        uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
 
         self._module = uia_mod
         self._uia = comtypes.client.CreateObject(

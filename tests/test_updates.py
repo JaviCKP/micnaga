@@ -215,7 +215,10 @@ def test_signature_policy() -> None:
     assert signature_verdict(valid, valid) is None
     assert signature_verdict(other, valid) == "updates.err.publisher"
     assert signature_verdict(valid, None, publisher="Otra") == "updates.err.publisher"
-    assert signature_verdict(SignatureInfo("Unknown"), valid) == "updates.err.unsigned"
+    unknown = SignatureInfo("Unknown")
+    assert signature_verdict(unknown, None) == "updates.err.signature"
+    assert signature_verdict(unknown, valid) == "updates.err.signature"
+    assert signature_verdict(unsigned, unknown) == "updates.err.signature"
 
 
 def test_authenticode_passes_the_path_by_environment(tmp_path: Path) -> None:
@@ -307,11 +310,16 @@ def test_auto_check_loop_respects_the_setting(tmp_path: Path) -> None:
 
 
 def test_disabled_by_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv(updates.ENV_DISABLE, "1")
     fake = FakeHttps()
     serve_latest(fake, release_json())
-    assert make_service(tmp_path, fake).check()["state"] == "disabled"
-    assert not fake.requests
+    assert make_service(tmp_path, fake).check()["available"]
+    requests = len(fake.requests)
+    monkeypatch.setenv(updates.ENV_DISABLE, "1")
+    svc = make_service(tmp_path, fake)
+    assert svc.check()["state"] == "disabled"
+    assert svc.available() is None
+    assert not svc.request_install()["pending"]
+    assert len(fake.requests) == requests
 
 
 # ------------------------------------------------------------------------ descargar e instalar
@@ -430,23 +438,23 @@ def test_install_launches_the_silent_installer_then_quits(tmp_path: Path) -> Non
     serve_asset(fake)
     events: list[Any] = []
     hooks = UpdateHooks(
-        before_install=lambda: events.append("shutdown"),
+        before_install=lambda: events.append("quiesce"),
         quit_app=lambda: events.append("quit"),
     )
     svc = make_service(tmp_path, fake, hooks, launch=lambda argv: events.append(argv))
     svc.check()
     svc.request_install()
     _wait(lambda: "quit" in events)
-    argv = events[0]
+    argv = events[1]
     assert argv[0].endswith("Micnaga-Setup-0.2.0.exe")
     assert argv[1:6] == [
         "/VERYSILENT",
         "/SUPPRESSMSGBOXES",
         "/NORESTART",
-        "/CLOSEAPPLICATIONS",
+        "/NOCLOSEAPPLICATIONS",
         "/SP-",
     ]
-    assert events[1:] == ["shutdown", "quit"]
+    assert events[0] == "quiesce" and events[2:] == ["quit"]
     state = json.loads((tmp_path / "updates.json").read_text(encoding="utf-8"))
     assert state["pending_notes"]["version"] == "0.2.0"
 
@@ -455,12 +463,12 @@ def test_install_waits_while_busy_and_runs_when_idle(tmp_path: Path) -> None:
     fake = FakeHttps()
     serve_latest(fake, release_json())
     serve_asset(fake)
-    busy = {"v": True}
+    busy = {"v": True, "can_reserve": False}
     launched: list[list[str]] = []
     svc = make_service(
         tmp_path,
         fake,
-        UpdateHooks(is_busy=lambda: busy["v"]),
+        UpdateHooks(is_busy=lambda: busy["v"], before_install=lambda: busy["can_reserve"]),
         launch=launched.append,
     )
     svc.check()
@@ -469,7 +477,32 @@ def test_install_waits_while_busy_and_runs_when_idle(tmp_path: Path) -> None:
     assert not launched and svc.status()["pending"]
     busy["v"] = False
     svc._maybe_install_pending()
+    assert not launched and svc.status()["state"] == "waiting"
+    busy["can_reserve"] = True
+    svc._maybe_install_pending()
     assert launched
+
+
+def test_install_launch_error_releases_the_reservation(tmp_path: Path) -> None:
+    fake = FakeHttps()
+    serve_latest(fake, release_json())
+    serve_asset(fake)
+    events: list[str] = []
+
+    def launch(_argv: list[str]) -> None:
+        raise OSError("launch failed")
+
+    hooks = UpdateHooks(
+        before_install=lambda: events.append("quiesce"),
+        install_aborted=lambda: events.append("release"),
+        quit_app=lambda: events.append("quit"),
+    )
+    svc = make_service(tmp_path, fake, hooks, launch=launch)
+    rel = _rel(svc)
+    path = svc.download(rel)
+    with pytest.raises(updates.UpdateError, match=r"updates\.err\.launch"):
+        svc.install(rel, path)
+    assert events == ["quiesce", "release"]
 
 
 def test_no_install_from_a_dev_checkout(tmp_path: Path) -> None:

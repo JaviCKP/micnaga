@@ -10,7 +10,7 @@
 * **Idioma forzado** (``asr_language``): el de ``ui.language`` si es un codigo de Whisper, si no
   ``es``. Sin forzarlo Whisper detecta el idioma con los primeros 30 s de **cada** bloque, y un
   bloque corto o con un anglicismo («Claude», «wrapper») podia salir en ingles.
-* **Glosario** (``glossary.txt`` + ``processing.glossary``) como ``hotwords`` de faster-whisper:
+* **Glosario** personal y de Bitnaga como ``hotwords`` de faster-whisper:
   van en el prompt de **cada** pasada de decodificacion (un ``initial_prompt`` solo llega a la
   primera pasada del bloque cuando ``condition_on_previous_text`` es ``False``).
 * ``condition_on_previous_text=False`` (evita bucles de repeticion) y ``vad_filter=False`` (el VAD
@@ -210,7 +210,7 @@ def asr_language(config: Config) -> str:
 
 
 def glossary_prompt(config: Config) -> str | None:
-    """Glosario del usuario para ``hotwords`` (``None`` si esta vacio)."""
+    """Terminos personales y de Bitnaga para ``hotwords``."""
     from micnaga.glossary import Glossary
 
     try:

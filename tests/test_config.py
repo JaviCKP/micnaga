@@ -284,6 +284,15 @@ def test_v1_without_processing_section_gets_new_asr_default(tmp_path: Path) -> N
     assert load_config(path).processing.asr_engine == "whisper"
 
 
+def test_partial_v2_asr_choices_keep_the_old_effective_pair() -> None:
+    for old, expected in (
+        ({"asr_engine": "whisper"}, ("whisper", "small")),
+        ({"whisper_model": "large-v3"}, ("parakeet", "large-v3")),
+    ):
+        proc = config_from_dict({"meta": {"version": 2}, "processing": old}).processing
+        assert (proc.asr_engine, proc.whisper_model) == expected
+
+
 def test_whisper_model_must_be_in_the_manifest() -> None:
     with pytest.raises(ConfigError):
         config_from_dict({"meta": {"version": 3}, "processing": {"whisper_model": 5}})

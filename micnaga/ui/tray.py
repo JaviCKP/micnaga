@@ -101,6 +101,7 @@ class Tray:
         self._language = language
         self._timesheets = timesheets or (lambda: False)
         self._state: TrayState = "watching"
+        self._capture_issue: str | None = None
         self._watching_paused = False
         self._icon: Any = None
         self._update_listener: Any = None
@@ -112,12 +113,23 @@ class Tray:
 
     def title(self) -> str:
         """«Micnaga 0.1.1 · vigilando» (la version siempre a la vista)."""
+        state = (
+            f"toast.error.{self._capture_issue}.title"
+            if self._capture_issue is not None
+            else STATE_LABEL_KEYS[self._state]
+        )
         return i18n.t(
             "tray.tooltip",
             self._language,
             version=__version__,
-            state=i18n.t(STATE_LABEL_KEYS[self._state], self._language),
+            state=i18n.t(state, self._language),
         )
+
+    def set_capture_issue(self, issue: str | None) -> None:
+        if issue != self._capture_issue:
+            self._capture_issue = issue
+            if self._icon is not None:
+                self._icon.title = self.title()
 
     def set_state(self, state: TrayState) -> None:
         # El supervisor del worker lo llama en cada vuelta (cada 15 s, 3 s con un trabajo) aunque

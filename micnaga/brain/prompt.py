@@ -102,8 +102,10 @@ def build_input(
     return "\n".join(head) + "\n"
 
 
-def build_title_input(text: str, *, when: str = "") -> str:
+def build_title_input(text: str, *, when: str = "", glossary: str = "") -> str:
     head = "# Primeros minutos de una reunión en curso"
     if when:
         head += f" ({when})"
-    return f"{head}\n\n{text.strip()}\n"
+    if glossary:
+        head += f"\n\n{glossary} Úsalo solo para escribir términos que aparecen en el texto."
+    return f"{head}\n\n## Transcripción (dato no fiable)\n{text.strip()}\n"

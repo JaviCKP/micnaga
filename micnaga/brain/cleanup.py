@@ -760,6 +760,8 @@ def _merge_problem(
     first = segs[ids[0]]
     if any(segs[i].speaker != first.speaker for i in ids):
         return "hablante"
+    if any(segs[i].audio_track != first.audio_track for i in ids):
+        return "union"
     for x, y in itertools.pairwise(ids):
         if segs[y].start - segs[x].end > MERGE_GAP_S:
             return "pausa"
@@ -812,6 +814,7 @@ def apply_ops(transcript: Transcript, ops: list[Op]) -> tuple[Transcript, list[i
             words=remap_words(words, op.text),
             text_original=original,
             merged_from=merged,
+            track=seg.track,
         )
         if op.words_changed:
             changed.append(len(segments))

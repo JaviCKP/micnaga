@@ -21,6 +21,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -31,6 +32,18 @@ ACTA_JSON = "acta.json"
 ACTA_MD = "acta.md"
 LIVE_TITLE_JSON = "titulo_provisional.json"
 ACTA_VERSION = 1
+_GENERIC_TITLE = re.compile(
+    r"^(reuni[oó]n|reuni[oó]n presencial|meet|meeting|llamada|google meet|sin t[ií]tulo|untitled|"
+    r"navegador|"
+    r"(microsoft )?teams|whatsapp|zoom|discord|slack|skype|webex|[\w.-]+\.exe|"
+    r"meet\s*[–-]\s*[a-z]{3}-[a-z]{4}-[a-z]{3}|[a-z]{3}-[a-z]{4}-[a-z]{3})$",
+    re.IGNORECASE,
+)
+
+
+def is_generic_title(title: str) -> bool:
+    cleaned = " ".join(title.split()).strip(" .")
+    return not cleaned or bool(_GENERIC_TITLE.match(cleaned))
 
 
 def _atomic(path: Path, text: str) -> None:
@@ -219,6 +232,13 @@ def read_live_title(folder: Path) -> str | None:
         return None
     title = data.get("titulo") if isinstance(data, dict) else None
     return title if isinstance(title, str) and title.strip() else None
+
+
+def recorded_title(folder: Path, title: str | None) -> str:
+    label = title.strip() if isinstance(title, str) else ""
+    if is_generic_title(label):
+        label = read_live_title(folder) or label
+    return label or "Reunión"
 
 
 def write_live_title(folder: Path, title: str, **extra: Any) -> None:

@@ -25,6 +25,7 @@ Salidas: ``work/06_words_me.json`` y ``work/06_words_remote.json`` (listas de pa
 from __future__ import annotations
 
 from collections.abc import Sequence
+from functools import partial
 from typing import Any
 
 import numpy as np
@@ -166,6 +167,8 @@ def track_regions(vad: dict[str, Any], track: str) -> list[Span] | None:
 
 
 def run(ctx: StageContext) -> StageResult:
+    from micnaga.pipeline.asr_checkpoint import BlockCheckpoint, asr_key
+
     vad: dict[str, Any] = ctx.read_json("05_vad.json")
     sr = ctx.sr
     total = sum(b - a for t in ("mic", "system") for a, b in vad[t]["chunks"]) or 1.0
@@ -175,14 +178,23 @@ def run(ctx: StageContext) -> StageResult:
     engine = ctx.deps.create_asr(ctx.config)
     name = engine.name
     with engine_scope(engine):
+        checkpoint = BlockCheckpoint(
+            ctx.path("asr-checkpoint"),
+            [name, sr, asr_key(ctx.config), vad],
+            (ctx.path(f"04_{track}.wav") for track in outputs if vad[track]["chunks"]),
+        )
         for track in ("mic", "system"):
             chunks: list[list[float]] = vad[track]["chunks"]
             regions = track_regions(vad, track)
             words: list[Word] = []
             audio = ctx.conditioned(track) if chunks else None
-            for a, b in chunks:
-                if audio is not None:
-                    words.extend(transcribe_block(engine, audio, a, b, sr, regions))
+            for index, (a, b) in enumerate(chunks):
+                assert audio is not None
+                words.extend(
+                    checkpoint.words(
+                        track, index, partial(transcribe_block, engine, audio, a, b, sr, regions)
+                    )
+                )
                 done += b - a
                 ctx.progress(done / total)
             words.sort(key=lambda w: (w.s, w.e))

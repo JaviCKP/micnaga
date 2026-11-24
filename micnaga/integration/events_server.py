@@ -90,7 +90,6 @@ class EventsServer:
         except pywintypes.error:
             log.exception("cannot create the events pipe")
             return False
-        self._ready.set()
         ov = pywintypes.OVERLAPPED()
         ov.hEvent = win32event.CreateEvent(None, True, False, None)
         try:
@@ -98,6 +97,7 @@ class EventsServer:
                 err = win32pipe.ConnectNamedPipe(handle, ov)
             except pywintypes.error as exc:
                 err = exc.winerror
+            self._ready.set()
             if err == ERROR_IO_PENDING:
                 which = win32event.WaitForMultipleObjects(
                     [ov.hEvent, self._stop_event], False, win32event.INFINITE

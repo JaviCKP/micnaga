@@ -30,6 +30,7 @@ AudioArray: TypeAlias = NDArray[np.float32]
 
 OutputKind: TypeAlias = Literal["headphones", "speakers", "unknown"]
 """Tipo de dispositivo de salida (seccion 7). ``unknown`` se trata como altavoces."""
+AudioTrack: TypeAlias = Literal["mic", "system"]
 
 SPEAKER_ME = "me"
 SPEAKER_ME_NAME = "Yo"
@@ -42,6 +43,11 @@ def is_mic_speaker(speaker_id: str) -> bool:
     return speaker_id == SPEAKER_ME or (
         speaker_id.startswith(ROOM_PREFIX) and speaker_id[len(ROOM_PREFIX) :].isdigit()
     )
+
+
+def speaker_track(speaker_id: str) -> AudioTrack:
+    return "mic" if is_mic_speaker(speaker_id) else "system"
+
 
 TRANSCRIPT_VERSION = 1
 CAPTURE_VERSION = 1
@@ -159,6 +165,12 @@ class Segment:
     """Texto del ASR antes de la limpieza con IA (``micnaga.brain.cleanup``); solo si cambio."""
     merged_from: list[int] = field(default_factory=list)
     """Indices (antes de la limpieza) de los segmentos que la limpieza unio en este."""
+    track: AudioTrack | None = None
+    """Pista real cuando una fusion de hablantes hace insuficiente el prefijo del ID."""
+
+    @property
+    def audio_track(self) -> AudioTrack:
+        return self.track or speaker_track(self.speaker)
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {
@@ -172,11 +184,14 @@ class Segment:
             d["text_original"] = self.text_original
         if self.merged_from:
             d["merged_from"] = list(self.merged_from)
+        if self.track is not None:
+            d["track"] = self.track
         return d
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> Segment:
         original = d.get("text_original")
+        track = d.get("track")
         return cls(
             start=float(d["start"]),
             end=float(d["end"]),
@@ -185,6 +200,7 @@ class Segment:
             words=[Word.from_dict(w) for w in d.get("words", [])],
             text_original=None if original is None else str(original),
             merged_from=[int(i) for i in d.get("merged_from") or []],
+            track="mic" if track == "mic" else "system" if track == "system" else None,
         )
 
 

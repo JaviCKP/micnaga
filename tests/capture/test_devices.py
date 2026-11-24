@@ -371,7 +371,11 @@ def test_recorder_device_changes_keep_portaudio_on_one_thread(
 
     def open_mic() -> Any:
         openers.append(("mic", threading.current_thread().name))
-        return real_mic()
+        source = real_mic()
+        stream = fake_pa.instances[-1].streams[-1].kwargs
+        frames = stream["frames_per_buffer"]
+        stream["stream_callback"](bytes(frames * stream["channels"] * 4), frames, {}, 0)
+        return source
 
     def open_system() -> Any:
         openers.append(("system", threading.current_thread().name))

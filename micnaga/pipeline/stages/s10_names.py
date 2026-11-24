@@ -8,8 +8,8 @@
   cifrados (DPAPI) en su carpeta para poder aprender la huella al renombrar (``output``). El
   ``07_embeddings.json`` en claro de versiones antiguas nunca se lee: se borra. Si el fichero
   cifrado no se puede descifrar se avisa y se sigue sin huellas.
-* Glosario: ``Glossary.load`` (``glossary.txt`` + ``processing.glossary``) aplicado a las palabras
-  de cada frase; el texto de la frase se reconstruye con las palabras corregidas.
+* Glosario: ``Glossary.load`` aplicado a las palabras de cada frase; el texto se
+  reconstruye cuando cambian las palabras.
 
 Salidas: ``work/10_phrases.json`` y ``work/10_names.json``
 (``{"S1": {"name": "Laura", "voiceprint_match": 0.84}}``).
@@ -24,7 +24,7 @@ import numpy as np
 
 from micnaga.glossary import Glossary
 from micnaga.pipeline.stages.base import StageContext, StageResult
-from micnaga.pipeline.stages.phrases import words_text
+from micnaga.pipeline.stages.phrases import apply_glossary
 from micnaga.pipeline.stages.s07_diarize import EMBEDDINGS, remove_legacy_embeddings
 from micnaga.types import Segment
 
@@ -87,21 +87,8 @@ def run(ctx: StageContext) -> StageResult:
     phrases = [Segment.from_dict(d) for d in ctx.read_json("09_phrases.json")]
     names, n_emb = match_voiceprints(ctx, {p.speaker for p in phrases})
     glossary = Glossary.load(config=ctx.config)
-    changed = 0
-    out: list[Segment] = []
-    for p in phrases:
-        if len(glossary) and p.words:
-            words = glossary.apply_words(p.words)
-            text = words_text(words)
-            if text != p.text:
-                changed += 1
-            out.append(Segment(p.start, p.end, p.speaker, text, words))
-        elif len(glossary):
-            text = glossary.apply_text(p.text)
-            changed += text != p.text
-            out.append(Segment(p.start, p.end, p.speaker, text, p.words))
-        else:
-            out.append(p)
+    out = [apply_glossary(p, glossary) for p in phrases]
+    changed = sum(p.text != q.text for p, q in zip(phrases, out, strict=True))
     ctx.write_json(PHRASES, [p.to_dict() for p in out])
     ctx.write_json(NAMES, names)
     return StageResult(

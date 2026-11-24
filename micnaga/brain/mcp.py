@@ -1,5 +1,7 @@
 """Servidor MCP (stdio, JSON-RPC 2.0 por lineas) con herramientas de **solo lectura**.
 
+``micnaga tools --library`` ofrece solo la biblioteca local de reuniones terminadas.
+
 ``python -m micnaga.brain.mcp`` (o ``micnaga tools`` / ``micnaga-cli tools`` congelado). Lo lanza
 ``claude -p`` con ``--mcp-config``; Micnaga solo autoriza ``mcp__micnaga__*``.
 
@@ -28,6 +30,7 @@ de **solo lectura**: un metodo de escritura falla antes de salir a la red.
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import os
@@ -38,6 +41,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from micnaga import __version__
+from micnaga.brain.library_mcp import LibraryError, LibraryTools
 
 log = logging.getLogger(__name__)
 
@@ -197,6 +201,9 @@ class ToolError(Exception):
 
 class Tools:
     """Implementacion de las herramientas (inyectable en tests)."""
+
+    specs = TOOL_SPECS
+    instructions = "Herramientas de solo lectura de Micnaga (Odoo y biblioteca)."
 
     def __init__(
         self,
@@ -405,7 +412,7 @@ def _model(args: dict[str, Any]) -> str:
 
 
 class Server:
-    def __init__(self, tools: Tools) -> None:
+    def __init__(self, tools: Tools | LibraryTools) -> None:
         self.tools = tools
 
     def handle(self, msg: dict[str, Any]) -> dict[str, Any] | None:
@@ -414,7 +421,10 @@ class Server:
         if mid is None:  # notificacion
             return None
         try:
-            result = self._dispatch(str(method), msg.get("params") or {})
+            params = msg.get("params")
+            if params is not None and not isinstance(params, dict):
+                raise _RpcError(-32602, "invalid params")
+            result = self._dispatch(str(method), params or {})
         except _RpcError as exc:
             return {"jsonrpc": "2.0", "id": mid, "error": {"code": exc.code, "message": str(exc)}}
         return {"jsonrpc": "2.0", "id": mid, "result": result}
@@ -422,33 +432,38 @@ class Server:
     def _dispatch(self, method: str, params: dict[str, Any]) -> Any:
         if method == "initialize":
             client = params.get("protocolVersion")
+            capabilities = {"tools": {"listChanged": False}}
+            if isinstance(self.tools, LibraryTools):
+                capabilities["prompts"] = {"listChanged": False}
             return {
                 "protocolVersion": client if isinstance(client, str) else PROTOCOL_VERSION,
-                "capabilities": {"tools": {"listChanged": False}},
+                "capabilities": capabilities,
                 "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                "instructions": "Herramientas de solo lectura de Micnaga (Odoo y biblioteca).",
+                "instructions": self.tools.instructions,
             }
         if method == "ping":
             return {}
         if method == "tools/list":
             return {
                 "tools": [
-                    {"name": n, **TOOL_SPECS[n], "annotations": {"readOnlyHint": True}}
+                    {"name": n, "annotations": {"readOnlyHint": True}, **self.tools.specs[n]}
                     for n in self.tools.names()
                 ]
             }
         if method == "tools/call":
             name = str(params.get("name", ""))
-            args = params.get("arguments") or {}
-            if not isinstance(args, dict):
-                args = {}
+            args = params.get("arguments")
             try:
-                data = self.tools.call(name, args)
+                if isinstance(self.tools, LibraryTools) and args is not None and not isinstance(
+                    args, dict
+                ):
+                    raise LibraryError("Los argumentos deben ser un objeto.")
+                data = self.tools.call(name, args if isinstance(args, dict) else {})
                 text = json.dumps(data, ensure_ascii=False, default=str)
                 if len(text) > MAX_RESULT_CHARS:
                     text = text[:MAX_RESULT_CHARS] + "…(recortado)"
                 return {"content": [{"type": "text", "text": text}], "isError": False}
-            except ToolError as exc:
+            except (ToolError, LibraryError) as exc:
                 return {"content": [{"type": "text", "text": str(exc)}], "isError": True}
             except Exception as exc:  # Odoo caido, permisos...
                 kind = getattr(exc, "kind", "failed")
@@ -459,6 +474,15 @@ class Server:
                     "access": "Sin permiso en Odoo",
                 }.get(kind, "Error al consultar")
                 return {"content": [{"type": "text", "text": msg}], "isError": True}
+        if method in ("prompts/list", "prompts/get") and isinstance(self.tools, LibraryTools):
+            from micnaga.brain import library_prompts
+
+            if method == "prompts/list":
+                return {"prompts": library_prompts.descriptions()}
+            try:
+                return library_prompts.get(params)
+            except ValueError as exc:
+                raise _RpcError(-32602, str(exc)) from exc
         if method in ("resources/list", "prompts/list"):
             return {method.split("/")[0]: []}
         raise _RpcError(-32601, f"method not found: {method}")
@@ -470,7 +494,7 @@ class _RpcError(Exception):
         self.code = code
 
 
-def serve(tools: Tools, stdin: BinaryIO, stdout: BinaryIO) -> None:
+def serve(tools: Tools | LibraryTools, stdin: BinaryIO, stdout: BinaryIO) -> None:
     server = Server(tools)
     for raw in iter(stdin.readline, b""):
         line = raw.strip()
@@ -528,6 +552,15 @@ def tools_from_env() -> Tools:
 
 def run(argv: list[str] | None = None) -> int:
     """Punto de entrada (``micnaga tools``)."""
+    parser = argparse.ArgumentParser(prog="micnaga tools")
+    parser.add_argument(
+        "--library",
+        action="store_true",
+        help="ofrecer solo la biblioteca local de reuniones terminadas",
+    )
+    if parser.parse_args(argv or []).library:
+        serve(LibraryTools(), sys.stdin.buffer, sys.stdout.buffer)
+        return 0
     try:
         from micnaga.logging_setup import setup_logging
 

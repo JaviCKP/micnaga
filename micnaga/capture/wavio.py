@@ -69,8 +69,13 @@ class ChunkedWavWriter:
         self._flushed = 0
         self._closed = False
         self._f: BinaryIO = open(path, "wb")  # noqa: SIM115 - se cierra en close()
-        self._f.write(build_header(0, sample_rate))
-        self._sync_file()
+        try:
+            self._f.write(build_header(0, sample_rate))
+            self._sync_file()
+        except BaseException:
+            with contextlib.suppress(OSError):
+                self._f.close()
+            raise
 
     @property
     def samples(self) -> int:
@@ -105,15 +110,19 @@ class ChunkedWavWriter:
             data = (
                 self._pending[0] if len(self._pending) == 1 else np.concatenate(self._pending)
             ).tobytes()
+            self._f.seek(HEADER_BYTES + self._flushed * BYTES_PER_SAMPLE)
             self._f.write(data)
-            self._flushed += self._pending_n
+            samples = self._flushed + self._pending_n
+            self._write_sizes(samples)
+            self._sync_file()
+            self._flushed = samples
             self._pending = []
             self._pending_n = 0
-            self._write_sizes()
-        self._sync_file()
+        else:
+            self._sync_file()
 
-    def _write_sizes(self) -> None:
-        data = self._flushed * BYTES_PER_SAMPLE
+    def _write_sizes(self, samples: int) -> None:
+        data = samples * BYTES_PER_SAMPLE
         end = self._f.tell()
         self._f.seek(4)
         self._f.write(struct.pack("<I", 36 + data))
@@ -124,15 +133,16 @@ class ChunkedWavWriter:
     def _sync_file(self) -> None:
         self._f.flush()
         if self._fsync:
-            with contextlib.suppress(OSError):
-                os.fsync(self._f.fileno())
+            os.fsync(self._f.fileno())
 
     def close(self) -> None:
         if self._closed:
             return
-        self.flush()
-        self._closed = True
-        self._f.close()
+        try:
+            self.flush()
+        finally:
+            self._closed = True
+            self._f.close()
 
 
 def repair_wav(path: Path, sample_rate: int = 16000) -> int:
@@ -267,6 +277,8 @@ def wav_to_flac(wav: Path, flac: Path, *, level: int = 5, delete_wav: bool = Tru
                 dst.write(block)
                 total += len(block)
         _verify_flac(wav, tmp, total)
+        with tmp.open("r+b") as fh:
+            os.fsync(fh.fileno())
         os.replace(tmp, flac)
     finally:
         with contextlib.suppress(OSError):

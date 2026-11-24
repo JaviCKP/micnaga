@@ -29,7 +29,10 @@
 
   const S = { elapsed: 0, since: performance.now(), paused: false, running: false };
   let tickTimer = 0;
-  function now() { return S.elapsed + (S.running && !S.paused ? (performance.now() - S.since) / 1000 : 0); }
+  function now() {
+    const running = S.running && !S.paused && el.dataset.captureIssue !== "capture_write_failed";
+    return S.elapsed + (running ? (performance.now() - S.since) / 1000 : 0);
+  }
   // the clock only touches the DOM when the second changes (no repaint 3 times out of 4)
   function paint() { const t = mic.fmtClock(now()); if (timeEl.textContent !== t) timeEl.textContent = t; }
   function startLoop() { if (!tickTimer) tickTimer = setInterval(paint, 250); }
@@ -303,9 +306,22 @@
       node.textContent = t;
       node.hidden = !t;
       el.dataset.hasTitle = String(!!t);
-      if (t) el.setAttribute("title", t); else el.removeAttribute("title");
+      if (!el.dataset.captureIssue) {
+        if (t) el.setAttribute("title", t); else el.removeAttribute("title");
+      }
     },
-    stop() { S.running = false; stopLoop(); poll.stop(); meters.mic.reset(); meters.sys.reset(); api.pill.setTitle(""); },
+    setCaptureIssue(key) {
+      if (key) {
+        el.dataset.captureIssue = key;
+        const label = mic.t("toast.error." + key + ".title");
+        el.setAttribute("title", label);
+        live.textContent = label;
+      } else {
+        delete el.dataset.captureIssue;
+        api.pill.setTitle(document.getElementById("ptitle").textContent);
+      }
+    },
+    stop() { S.running = false; stopLoop(); poll.stop(); meters.mic.reset(); meters.sys.reset(); api.pill.setCaptureIssue(null); api.pill.setTitle(""); },
     settle,
     vanish,
     /** for screenshots / standalone */

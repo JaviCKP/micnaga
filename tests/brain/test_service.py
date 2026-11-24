@@ -26,11 +26,9 @@ RESEARCH = [{"tool": "reuniones_con", "args": {"texto": "Dental Triana"}}]
 class Notes:
     def __init__(self) -> None:
         self.items: list[tuple[str, str, float, int, int]] = []
-        self.event = threading.Event()
 
     def __call__(self, *args: Any) -> None:
         self.items.append(args)
-        self.event.set()
 
 
 def cfg(enabled: bool = True) -> Config:
@@ -46,7 +44,7 @@ def test_disabled_notifies_immediately_without_proposals(meeting: Path) -> None:
     assert notes.items == [(meeting.name, "Reunión", 600.0, 3, 0)]
 
 
-def test_toast_waits_for_the_pass_and_carries_the_count(
+def test_toast_is_immediate_and_analysis_keeps_its_proposal_count(
     fake_claude: FakeClaude, meeting: Path, secrets_file: Path
 ) -> None:
     fake_claude({"structured": canned.structured(with_crm=False)})
@@ -55,11 +53,13 @@ def test_toast_waits_for_the_pass_and_carries_the_count(
     try:
         notes = Notes()
         svc.on_job_done(meeting.name, "Reunión", 600.0, 3, notes)
-        assert notes.event.wait(60)
-        folder, title, _d, _s, n = notes.items[0]
+        assert notes.items == [(meeting.name, "Reunión", 600.0, 3, 0)]
+        for _ in range(100):
+            if svc.resolve_folder(meeting.name) != meeting.name:
+                break
+            threading.Event().wait(0.1)
+        folder = svc.resolve_folder(meeting.name)
         assert folder == "2026-11-19_1030_dental-triana-alcance-ampliado"
-        assert title == "Dental Triana: alcance ampliado"
-        assert n == 4  # cuatro correcciones
         with open_database() as db:
             run = bstore.get_run(db, folder)
             assert run is not None and run.state == "done" and run.proposals == 4
@@ -74,16 +74,18 @@ def test_failure_backs_off_and_uses_the_live_title(meeting: Path) -> None:
         def analyze(self, folder: Path, **_kw: Any) -> AnalysisResult:
             raise ClaudeOfflineError("no network")
 
-    svc = BrainService(lambda: cfg(), secretary_factory=lambda _c: Boom(), toast_wait_s=30)
+    svc = BrainService(lambda: cfg(), secretary_factory=lambda _c: Boom())
     svc.start()
     try:
         notes = Notes()
         svc.on_job_done(meeting.name, "Reunión", 600.0, 3, notes)
-        assert notes.event.wait(30)
-        folder = notes.items[0][0]
+        assert notes.items == [(meeting.name, "Reunión", 600.0, 3, 0)]
+        for _ in range(100):
+            if svc.resolve_folder(meeting.name) != meeting.name:
+                break
+            threading.Event().wait(0.1)
+        folder = svc.resolve_folder(meeting.name)
         assert folder == "2026-11-19_1030_dental-triana-presupuesto"
-        assert notes.items[0][1] == "Dental Triana presupuesto"
-        assert notes.items[0][4] == 0
         with open_database() as db:
             run = bstore.get_run(db, folder)
             assert run is not None and run.state == "failed" and run.error_kind == "offline"
@@ -101,12 +103,11 @@ def test_slow_pass_does_not_hold_the_toast(meeting: Path) -> None:
             gate.wait(10)
             return AnalysisResult(folder, {}, 0)
 
-    svc = BrainService(lambda: cfg(), secretary_factory=lambda _c: Slow(), toast_wait_s=0.3)
+    svc = BrainService(lambda: cfg(), secretary_factory=lambda _c: Slow())
     svc.start()
     try:
         notes = Notes()
         svc.on_job_done(meeting.name, "Reunión", 60.0, 2, notes)
-        assert notes.event.wait(5)
         assert notes.items == [(meeting.name, "Reunión", 60.0, 2, 0)]
     finally:
         gate.set()

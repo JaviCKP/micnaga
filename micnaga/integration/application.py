@@ -11,7 +11,9 @@ grabacion en curso SIN descartarla, espera al cierre/encolado y para los hilos.
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import math
 import os
 import sqlite3
 import threading
@@ -29,6 +31,7 @@ from micnaga.events import (
     JobFailed,
     JobProgress,
     JobStarted,
+    OpenMeeting,
 )
 from micnaga.integration.controller import AppController
 from micnaga.integration.events_server import EventsServer
@@ -37,12 +40,15 @@ from micnaga.integration.jobs import (
     Finisher,
     WorkerSupervisor,
     finalize_and_enqueue,
+    open_database_at,
 )
 from micnaga.integration.levels import LevelMonitor
 from micnaga.integration.library_ops import AppLibraryOps
 from micnaga.integration.ports import RecorderFactory, UiPort
-from micnaga.store.db import Database, open_database
-from micnaga.ui.bridge import ACTION_MODEL_DOWNLOADER
+from micnaga.meeting_links import library_id, link_pipe_name
+from micnaga.store.db import Database, JobState, open_database
+from micnaga.store.locate import meeting_dir
+from micnaga.ui.bridge import ACTION_FAILED_JOBS, ACTION_HQ_STARTER, ACTION_MODEL_DOWNLOADER
 from micnaga.ui.contracts import (
     Diagnostic,
     InPersonResult,
@@ -231,7 +237,12 @@ class Application:
         self._exit_after_s = exit_after_s
         self._stopped = threading.Event()
         self._shutdown_lock = threading.Lock()
+        self._update_lock = threading.RLock()
+        self._updating = False
+        self._boot_recovery_running = threading.Event()
+        self._hq_work: dict[Path, Any] = {}
         self._active_jobs: set[int] = set()
+        self._library_job_stage: tuple[int, int] | None = None
         self._db_busy = False
         self._monitor = level_monitor or LevelMonitor()
         self.library_ops: LibraryOps = AppLibraryOps(lambda: self.config)
@@ -243,6 +254,7 @@ class Application:
         self.callbacks = self._build_callbacks()
         self._models_downloading = 0
         self.model_downloader = self._track_download(make_model_downloader(lambda: self.config))
+        set_app_action(ACTION_HQ_STARTER, lambda: self._start_hq)
         self.ui: UiPort = ui_factory(
             self.callbacks,
             self.library_ops,
@@ -276,7 +288,7 @@ class Application:
             self.ui,
             self.finisher,
             recorder_factory=recorder_factory,
-            on_job_queued=self.supervisor.kick,
+            on_job_queued=self._job_queued,
             on_job_queued_db=self.supervisor.watch,
             live=live,
             **ctl_kwargs,
@@ -286,12 +298,14 @@ class Application:
         self.controller.bind_watcher(self.watcher)
         # Ajustes > Transcripcion baja los modelos que falten con el mismo descargador.
         set_app_action(ACTION_MODEL_DOWNLOADER, lambda: self.model_downloader)
+        set_app_action(ACTION_FAILED_JOBS, lambda: self._failed_transcriptions)
         self.held_ops = AppHeldOps(self)
         set_held = getattr(self.ui, "set_held_ops", None)
         if callable(set_held):
             set_held(self.held_ops)
         self.hotkeys = hotkeys_factory(config, self._marker, self.watcher.toggle_private_pause)
         self.events_server = EventsServer(self.handle_event, events_name)
+        self.links_server = EventsServer(self.open_meeting_link, link_pipe_name())
         # Secretaria (capa de IA, opcional: inerte con secretaria.enabled = false).
         self.brain = brain if brain is not None else self._make_brain()
         setter = getattr(self.ui, "set_brain", None)
@@ -313,22 +327,82 @@ class Application:
         """Cuenta las descargas de modelos en curso: con una a medias no se instala nada."""
 
         def run(callback: Callable[[ModelProgress], None]) -> None:
-            self._models_downloading += 1
+            with self._update_lock:
+                self._require_work_allowed()
+                self._models_downloading += 1
             try:
                 download(callback)
             finally:
-                self._models_downloading -= 1
+                with self._update_lock:
+                    self._models_downloading -= 1
 
         return run
 
+    def _require_work_allowed(self) -> None:
+        if self._updating or self.stopped:
+            raise RuntimeError("Micnaga is closing for an update or shutdown")
+
+    def _start_hq(self, meeting: Path) -> Any:
+        from micnaga.pipeline import hq
+
+        with self._update_lock:
+            self._require_work_allowed()
+            previous = self._hq_work.get(meeting)
+            if previous is not None and previous.poll() is None:
+                return None
+            proc = hq.spawn(meeting)
+            self._hq_work[meeting] = proc
+            return proc
+
     def _busy_for_update(self) -> bool:
-        """Grabando, procesando (el instalador cierra tambien el worker) o bajando modelos."""
-        return bool(
-            self.controller.recording
-            or self._db_busy
-            or self._active_jobs
-            or self._models_downloading
-        )
+        """Incluye los trabajos que no pasan por la cola principal."""
+        from micnaga.updates import installed_peer_active
+
+        with self._update_lock:
+            self._hq_work = {
+                folder: proc for folder, proc in self._hq_work.items() if proc.poll() is None
+            }
+            return bool(
+                self.stopped
+                or self.controller.busy_for_update
+                or self._db_busy
+                or self._models_downloading
+                or self._hq_work
+                or self._boot_recovery_running.is_set()
+                or self.supervisor.worker_active
+                or installed_peer_active()
+            )
+
+    def _prepare_update(self) -> bool:
+        """Reserva el reposo y vuelve a comprobar la cola antes de arrancar el instalador."""
+        with self._update_lock:
+            if self._updating or self.stopped:
+                return False
+            self.supervisor.set_spawn_paused(True)
+            capture_reserved = False
+            try:
+                if self._busy_for_update():
+                    return False
+                capture_reserved = self.controller.try_quiesce()
+                if not capture_reserved:
+                    return False
+                with self._db_factory() as db:
+                    if self.supervisor.has_pending_work(db):
+                        return False
+                self._updating = True
+                return True
+            finally:
+                if not self._updating:
+                    if capture_reserved:
+                        self.controller.release_quiesce()
+                    self.supervisor.set_spawn_paused(False)
+
+    def _abort_update(self) -> None:
+        with self._update_lock:
+            if not self.stopped:
+                self._updating = False
+                self.controller.release_quiesce()
+                self.supervisor.set_spawn_paused(False)
 
     def _make_updates(self) -> Any:
         try:
@@ -359,8 +433,9 @@ class Application:
                 is_busy=self._busy_for_update,
                 on_available=on_available,
                 on_updated=on_updated,
-                before_install=lambda: self.shutdown(wait_s=30.0, reason="update"),
-                quit_app=lambda: self.ui.quit("update"),
+                before_install=self._prepare_update,
+                quit_app=lambda: self.request_quit(reason="update"),
+                install_aborted=self._abort_update,
                 open_ui=open_about,
             )
             svc = updates.UpdateService(hooks, state_path=updates.default_state_path())
@@ -444,8 +519,10 @@ class Application:
             threading.Thread(target=self._warm_up, name="micnaga-warmup", daemon=True).start()
         if self._start_events_server:
             self.events_server.start()
+            self.links_server.start()
         self.supervisor.start()
         if self._recover_at_boot:
+            self._boot_recovery_running.set()
             threading.Thread(target=self._boot_recovery, name="micnaga-boot", daemon=True).start()
         self.hotkey_results = self.hotkeys.start()
         for name, result in self.hotkey_results.items():
@@ -482,6 +559,8 @@ class Application:
             self._stopped.set()
         log.info("shutting down (reason: %s)", reason)
         set_app_action(ACTION_MODEL_DOWNLOADER, None)
+        set_app_action(ACTION_FAILED_JOBS, None)
+        set_app_action(ACTION_HQ_STARTER, None)
         if self.updates is not None:
             from micnaga import updates
 
@@ -496,6 +575,7 @@ class Application:
             lambda: self.finisher.stop(5.0),
             self.supervisor.stop,
             self.events_server.stop,
+            self.links_server.stop,
             *(x.stop for x in (self.google_context, self.live_title, self.brain) if x is not None),
         ):
             try:
@@ -556,8 +636,12 @@ class Application:
     def _on_settings_saved(self, cfg: Any) -> None:
         if not isinstance(cfg, Config):
             return
-        self.config = cfg
-        self.controller.set_config(cfg)
+        with self._update_lock:
+            previous_db = paths.db_path(self.config)
+            self.config = cfg
+            self.controller.set_config(cfg)
+            if previous_db != paths.db_path(cfg) and previous_db.is_file():
+                self.supervisor.watch(previous_db)
         # Los atajos se vuelven a registrar; el resto (deteccion...) rige al reiniciar la app.
         try:
             self.hotkeys.stop()
@@ -607,9 +691,73 @@ class Application:
 
     # ------------------------------------------------------------------ worker -> UI
 
+    def open_meeting_link(self, event: Event) -> None:
+        if not isinstance(event, OpenMeeting) or self.stopped:
+            return
+        if (
+            type(event.meeting_id) is not int
+            or not 0 < event.meeting_id < 2**63
+            or type(event.seconds) not in (int, float)
+            or not 0 <= event.seconds < 1_000_000_000
+            or not math.isfinite(event.seconds)
+        ):
+            return
+        config = self.config
+        root = paths.meetings_root(config)
+        if library_id(root) != event.library_id or not paths.db_path(config).is_file():
+            return
+        with open_database(config) as db:
+            meeting = db.get_meeting_by_id(event.meeting_id)
+            if meeting is None or meeting_dir(
+                root, meeting.folder, require=paths.TRANSCRIPT_JSON
+            ) is None:
+                return
+        self.ui.open_library(meeting.folder, min(event.seconds, meeting.duration_s))
+
+    def _library_jobs_changed(self, state: str) -> None:
+        notify = getattr(self.ui, "library_jobs_changed", None)
+        if callable(notify):
+            notify(state)
+
+    def _job_queued(self) -> None:
+        self._library_jobs_changed("queued")
+        self.supervisor.kick()
+
     def _on_busy(self, busy: bool) -> None:
         self._db_busy = busy
+        if not busy:
+            self._active_jobs.clear()  # una caida puede dejar JobStarted sin el evento terminal
+            self._library_job_stage = None
         self._refresh_processing()
+
+    def _failed_transcriptions(self, retry: str | None = None) -> list[dict[str, str]]:
+        def inspect() -> list[dict[str, str]]:
+            rows: list[dict[str, str]] = []
+            retried = False
+            for path in self.supervisor.job_indexes(paths.db_path(self.config)):
+                if not path.is_file():
+                    continue
+                with open_database_at(path) as db:
+                    for job in db.list_jobs(JobState.FAILED):
+                        identity = f"{path}\n{job.id}\n{job.session_dir}"
+                        key = hashlib.sha256(identity.encode("utf-8")).hexdigest()
+                        if retry == key and not retried:
+                            db.retry_job(job.id, reset_attempts=True)
+                            self.supervisor.watch(path)
+                            retried = True
+                        else:
+                            rows.append({"key": key, "name": Path(job.session_dir).name})
+            if retry is not None and not retried:
+                raise LookupError("failed transcription is no longer available")
+            if retried:
+                self._job_queued()
+            return rows
+
+        if retry is None:
+            return inspect()
+        with self._update_lock:
+            self._require_work_allowed()
+            return inspect()
 
     def _refresh_processing(self) -> None:
         self.ui.set_processing(self._db_busy or bool(self._active_jobs))
@@ -620,13 +768,16 @@ class Application:
             self._active_jobs.add(event.job_id)
             self._refresh_processing()
         elif isinstance(event, JobProgress):
-            return
+            stage = (event.job_id, event.stage)
+            if self._library_job_stage != stage:
+                self._library_job_stage = stage
+                self._library_jobs_changed("processing")
         elif isinstance(event, JobDone):
             self._active_jobs.discard(event.job_id)
             self._refresh_processing()
+            self._library_jobs_changed("done")
             folder = Path(event.session_dir).name
             if self.brain is not None:
-                # La Secretaria decide cuando sale el aviso (con «· N propuestas»).
                 self.brain.on_job_done(
                     folder, event.title, event.duration_s, event.n_speakers, self._notify_ready
                 )
@@ -636,12 +787,14 @@ class Application:
         elif isinstance(event, JobFailed):
             self._active_jobs.discard(event.job_id)
             self._refresh_processing()
+            self._library_jobs_changed("failed")
             self.last_job_error = event.error
             log.warning("job %d failed: %s", event.job_id, event.error)
             self.supervisor.kick()
         elif isinstance(event, JobDiscarded):
             self._active_jobs.discard(event.job_id)
             self._refresh_processing()
+            self._library_jobs_changed("discarded")
             log.info("job %d discarded: %s", event.job_id, event.reason)
             self.supervisor.kick()
 
@@ -669,12 +822,14 @@ class Application:
         """«Recuperar» de la biblioteca: vuelve a la raiz, confirmada, y se encola."""
         from micnaga import holding
 
-        root = paths.meetings_root(self.config)
-        session = holding.restore_held(root, name)
-        self.finisher.submit(
-            "recover",
-            finalize_and_enqueue(self.config, session, on_enqueued=self.supervisor.kick),
-        )
+        with self._update_lock:
+            self._require_work_allowed()
+            root = paths.meetings_root(self.config)
+            session = holding.restore_held(root, name)
+            self.finisher.submit(
+                "recover",
+                finalize_and_enqueue(self.config, session, on_enqueued=self._job_queued),
+            )
 
     def _boot_recovery(self) -> None:
         try:
@@ -682,13 +837,17 @@ class Application:
 
             db = self._db_factory()
             try:
-                self.boot_queued = recover_and_enqueue(self.config, db)
+                self.boot_queued = recover_and_enqueue(
+                    self.config, db, on_recovered_db=self.supervisor.watch
+                )
             finally:
                 db.close()
             if self.boot_queued:
-                self.supervisor.kick()
+                self._job_queued()
         except Exception:
             log.exception("boot recovery failed")
+        finally:
+            self._boot_recovery_running.clear()
 
     def _default_models_ready(self) -> bool:
         try:

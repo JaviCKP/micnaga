@@ -279,6 +279,12 @@ class Database:
             counts[JobState(row["state"])] = int(row["n"])
         return counts
 
+    def list_open_jobs(self) -> list[Job]:
+        rows = self._conn.execute(
+            "SELECT * FROM jobs WHERE state IN ('pending', 'processing') ORDER BY id"
+        )
+        return [_job(row) for row in rows]
+
     def claim_next_job(self) -> Job | None:
         """Toma atomicamente el trabajo ``pending`` mas antiguo y lo pasa a ``processing``."""
         with self.transaction() as conn:
@@ -299,6 +305,12 @@ class Database:
         """Anota la etapa en curso (solo mientras esta ``processing``)."""
         return self._transition(
             job_id, None, (JobState.PROCESSING,), "stage = ?", (stage,), "set_stage"
+        )
+
+    def touch_job_progress(self, job_id: int) -> None:
+        self._conn.execute(
+            "UPDATE jobs SET updated_at = ? WHERE id = ? AND state = 'processing'",
+            (self._clock(), job_id),
         )
 
     def finish_job(self, job_id: int) -> Job:
@@ -483,6 +495,10 @@ class Database:
 
     def get_meeting(self, folder: str) -> MeetingRecord | None:
         row = self._conn.execute("SELECT * FROM meetings WHERE folder = ?", (folder,)).fetchone()
+        return None if row is None else _meeting(row)
+
+    def get_meeting_by_id(self, meeting_id: int) -> MeetingRecord | None:
+        row = self._conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
         return None if row is None else _meeting(row)
 
     def list_meetings(self, limit: int = 200, offset: int = 0) -> list[MeetingRecord]:

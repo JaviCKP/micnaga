@@ -9,9 +9,9 @@ from typing import Any
 
 import pytest
 
-from micnaga import paths
+from micnaga import holding, paths
 from micnaga.capture import Recorder
-from micnaga.capture.session import read_capture_json, write_capture_json
+from micnaga.capture.session import read_capture_json, remember_recording, write_capture_json
 from micnaga.capture.synthetic import demo_backend
 from micnaga.integration.recovery import recover_and_enqueue
 from micnaga.store.db import Database, open_database
@@ -66,11 +66,11 @@ def test_provisional_session_is_queued_unconfirmed() -> None:
     assert len(rig.jobs()) == 1
 
 
-def test_no_with_the_real_recorder_is_held_and_the_mark_survives_stop() -> None:
+def test_no_with_the_real_recorder_is_held_and_the_mark_survives_stop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Hallazgo 1 con el grabador real: la marca sobrevive a ``stop()`` (que reescribe
     ``capture.json``) y la sesion acaba apartada (FLAC), nunca en la cola."""
-    from micnaga import holding
-
     rig = make_rig()
     rig.ctl.start_recording(provisional=True, meeting=MeetingInfo(title="Teams"))
     session = rig.ctl.session_dir
@@ -81,6 +81,7 @@ def test_no_with_the_real_recorder_is_held_and_the_mark_survives_stop() -> None:
     rec = rig.ctl._session.recorder  # type: ignore[union-attr]
     rec.stop()  # p. ej. la app se cierra justo aqui: stop() reescribe capture.json
     assert holding.discard_reason(session) == holding.REASON_DECLINED
+    monkeypatch.setattr("micnaga.integration.recovery._owner_alive", lambda _: False)
     db = open_database()
     try:
         assert recover_and_enqueue(rig.cfg, db) == []  # el arranque NO la encola...
@@ -127,8 +128,6 @@ def _make_it_look_crashed(folder: Path) -> None:
 
 
 def test_boot_recovery_holds_an_unconfirmed_crashed_session(tmp_storage: Path) -> None:
-    from micnaga import holding
-
     folder = _record(tmp_storage / "2026-11-18_1000_sin-si")
     _make_it_look_crashed(folder)
     db = open_database()
@@ -155,6 +154,30 @@ def test_boot_recovery_enqueues_crashed_session(tmp_storage: Path) -> None:
         db.close()
     assert read_capture_json(folder).extra["state"] == "finalized"
     assert (folder / paths.AUDIO_ME_FLAC).is_file()
+
+
+def test_boot_recovers_journaled_sessions_after_the_library_moved(
+    tmp_storage: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous_root = tmp_storage.with_name("previous-library")
+    confirmed = _record(previous_root / "confirmed", 0.1, confirmed=True)
+    unknown = _record(previous_root / "missing-metadata", 0.1)
+    (unknown / paths.CAPTURE_JSON).unlink()
+    remember_recording(confirmed)
+    remember_recording(unknown)
+    monkeypatch.setattr("micnaga.integration.recovery._owner_alive", lambda _: False)
+    watched: list[Path] = []
+    with open_database() as db:
+        assert recover_and_enqueue(Rig().cfg, db, on_recovered_db=watched.append) == [confirmed]
+        assert db.list_jobs() == []
+    previous_index = previous_root / paths.db_path().name
+    with Database(previous_index) as previous:
+        assert previous.find_job(confirmed) is not None
+    assert watched == [previous_index]
+    recovered = holding.held_root(tmp_storage) / unknown.name
+    assert (recovered / paths.AUDIO_ME_FLAC).is_file()
+    assert read_capture_json(recovered).confirmed is False
+    assert holding.list_held(tmp_storage)[0].expires_at == ""
 
 
 def test_boot_sweep_picks_up_stopped_orphans_but_not_known_or_done(tmp_storage: Path) -> None:

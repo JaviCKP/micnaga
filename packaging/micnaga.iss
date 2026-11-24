@@ -3,8 +3,7 @@
 ; Experiencia: se abre el instalador, copia los ficheros con una barra de progreso y arranca
 ; Micnaga solo al terminar. Sin paginas de bienvenida, carpeta, grupo de programas, resumen,
 ; tareas ni final. El arranque con Windows queda SIEMPRE activado (clave HKCU Run); se puede
-; apagar luego en Ajustes. Actualizar = ejecutar el instalador nuevo encima: cierra la app en
-; marcha, sustituye los ficheros y la vuelve a abrir.
+; apagar luego en Ajustes. La actualizacion sustituye los ficheros tras el cierre de la app.
 ;
 ; Compilar (despues de `scripts\build.ps1`, que genera dist\micnaga):
 ;   iscc /DAppVersion=0.1.0 packaging\micnaga.iss       -> dist\installer\Micnaga-Setup-<version>.exe
@@ -60,7 +59,7 @@ ShowLanguageDialog=no
 LanguageDetectionMethod=none
 ; Un segundo instalador a la vez no tiene sentido.
 SetupMutex=MicnagaSetup
-; La app se cierra en PrepareToInstall (mas abajo); no se usa el Restart Manager (pediria permiso).
+; Micnaga se cierra de forma ordenada. El instalador espera sin forzar el cierre.
 CloseApplications=no
 RestartApplications=no
 OutputDir=..\dist\installer
@@ -86,11 +85,8 @@ Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
 Type: files; Name: "{app}\{#HostName}.json"
 
 [InstallDelete]
-; Al actualizar, Inno solo sobrescribe: lo que la version nueva ya no trae se quedaria (p. ej.
-; _internal\pyaec\aec.dll, sin firmar, o modulos retirados). Se borra el runtime anterior entero.
-; Va despues de PrepareToInstall, que ya ha cerrado la app. Los datos del usuario
-; (%APPDATA%\Micnaga, Documentos\Micnaga) no estan aqui.
-Type: filesandordirs; Name: "{app}\_internal"
+; Retira solo binarios obsoletos conocidos. Una biblioteca personalizada puede vivir en _internal.
+Type: files; Name: "{app}\_internal\pyaec\aec.dll"
 
 [Files]
 ; La carpeta congelada completa. Hay que conservar la estructura onedir (DLL, .pyd y pystray/*.py
@@ -110,23 +106,28 @@ Root: HKCU; Subkey: "{#RunKey}"; ValueType: string; ValueName: "{#AppName}"; Val
 Root: HKCU; Subkey: "Software\Google\Chrome\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\Microsoft\Edge\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
 Root: HKCU; Subkey: "Software\BraveSoftware\Brave-Browser\NativeMessagingHosts\{#HostName}"; ValueType: string; ValueData: "{app}\{#HostName}.json"; Flags: uninsdeletekey
+; Citas del conector de Claude, dentro de la biblioteca del usuario.
+Root: HKCU; Subkey: "Software\Classes\micnaga"; ValueType: string; ValueData: "URL:Micnaga"; Flags: uninsdeletekey
+Root: HKCU; Subkey: "Software\Classes\micnaga"; ValueType: string; ValueName: "URL Protocol"; ValueData: ""
+Root: HKCU; Subkey: "Software\Classes\micnaga\shell\open\command"; ValueType: string; ValueData: """{app}\{#AppExe}"" app --open-url ""%1"""
 
 [Run]
 ; Arranca Micnaga al terminar, TAMBIEN en instalaciones silenciosas: es lo que relanza la app tras
 ; una actualizacion automatica (micnaga/updates.py ejecuta el instalador con /VERYSILENT
-; /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS). Sin "postinstall" (exige pagina final y con
+; /SUPPRESSMSGBOXES /NORESTART /NOCLOSEAPPLICATIONS). Sin "postinstall" (exige pagina final y con
 ; /VERYSILENT no habria nada que marcar) ni "skipifsilent": una entrada asi se ejecuta siempre.
 ; runasoriginaluser = con la cuenta del usuario.
 Filename: "{app}\{#AppExe}"; Parameters: "app"; Flags: nowait runasoriginaluser
 
 [UninstallRun]
-; Micnaga y su worker son el mismo ejecutable: se cierran antes de borrar la carpeta.
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM {#AppExe}"; Flags: runhidden; RunOnceId: "StopMicnaga"
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /IM micnaga-host.exe"; Flags: runhidden; RunOnceId: "StopMicnagaHost"
+; El registro de desinstalacion conserva ordenes de versiones anteriores. Sustituye sus cierres
+; forzados usando los mismos RunOnceId para que solo se ejecuten estas ordenes sin efectos.
+Filename: "{sys}\cmd.exe"; Parameters: "/D /C exit /B 0"; Flags: runhidden; RunOnceId: "StopMicnaga"
+Filename: "{sys}\cmd.exe"; Parameters: "/D /C exit /B 0"; Flags: runhidden; RunOnceId: "StopMicnagaHost"
 
 [Code]
 // ---------------------------------------------------------------------------------------------
-// Actualizaciones y mutex de la app
+// Actualizaciones y ejecutables en uso
 // ---------------------------------------------------------------------------------------------
 
 function IsUpgrade(): Boolean;
@@ -139,40 +140,51 @@ begin
   Result := (not IsUpgrade()) or RegValueExists(HKCU, '{#RunKey}', '{#AppName}');
 end;
 
-// Mismo nombre que micnaga/app.py (SingleInstance): "Local\micnaga-app-" + sha1(ruta de datos en
-// minusculas)[:10]. GetSHA1OfString hace lo mismo que hashlib en rutas ASCII (comprobado); con
-// nombres de usuario no ASCII el hash difiere y solo se pierde la espera: la app se cierra igual.
-function AppMutexName(): String;
+// Windows rechaza el acceso de escritura si hay una imagen ejecutable cargada.
+// Se comprueba la ruta de esta instalacion, tambien para el worker y el host de Meet.
+function ExecutableInUse(const Name: String): Boolean;
 var
-  DataDir: String;
+  FileName: String;
+  Stream: TFileStream;
 begin
-  DataDir := GetEnv('MICNAGA_HOME');
-  if DataDir = '' then
-    DataDir := ExpandConstant('{userappdata}\Micnaga');
-  Result := 'Local\micnaga-app-' + Copy(GetSHA1OfString(Lowercase(DataDir)), 1, 10);
-end;
-
-procedure StopMicnaga();
-var
-  Code, I: Integer;
-begin
-  // La app, su worker y el host de la extension. Una parada forzada es segura: el audio ya
-  // escrito se recupera al arrancar y los trabajos a medias vuelven a la cola (spec: nunca
-  // perder una grabacion).
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM {#AppExe}', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  Exec(ExpandConstant('{sys}\taskkill.exe'), '/F /IM micnaga-host.exe', '', SW_HIDE, ewWaitUntilTerminated, Code);
-  for I := 1 to 50 do
-  begin
-    if not CheckForMutexes(AppMutexName()) then
-      Break;
-    Sleep(100);
+  Result := False;
+  FileName := ExpandConstant('{app}\') + Name;
+  if not FileExists(FileName) then
+    Exit;
+  try
+    Stream := TFileStream.Create(FileName, fmOpenReadWrite or fmShareDenyNone);
+    Stream.Free;
+  except
+    Result := True;
   end;
 end;
 
-function PrepareToInstall(var NeedsRestart: Boolean): String;
+function MicnagaInUse(): Boolean;
 begin
-  StopMicnaga();
+  Result := ExecutableInUse('{#AppExe}') or ExecutableInUse('micnaga-cli.exe') or
+            ExecutableInUse('micnaga-host.exe');
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  I: Integer;
+begin
   Result := '';
+  for I := 1 to 300 do
+  begin
+    if not MicnagaInUse() then
+      Exit;
+    Sleep(100);
+  end;
+  Result := 'Espera a que Micnaga termine de grabar o procesar. Cierra Micnaga y las pestanas ' +
+            'de Meet y vuelve a ejecutar la instalacion.';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := not MicnagaInUse();
+  if not Result and not UninstallSilent then
+    MsgBox('Cierra Micnaga y las pestanas de Meet antes de desinstalar.', mbError, MB_OK);
 end;
 
 // ---------------------------------------------------------------------------------------------
@@ -199,14 +211,12 @@ end;
 // Manifiesto del host de native messaging (el [Registry] apunta aqui). Se borra con {app}.
 procedure WriteHostManifest();
 var
-  HostPath, Json: String;
+  Json: String;
 begin
-  HostPath := ExpandConstant('{app}\micnaga-host.exe');
-  StringChangeEx(HostPath, '\', '\', True);
   Json := '{' + #13#10 +
           '  "name": "{#HostName}",' + #13#10 +
           '  "description": "Micnaga: senal de llamada de Google Meet para el vigilante",' + #13#10 +
-          '  "path": "' + HostPath + '",' + #13#10 +
+          '  "path": "micnaga-host.exe",' + #13#10 +
           '  "type": "stdio",' + #13#10 +
           '  "allowed_origins": ["chrome-extension://{#ExtensionId}/"]' + #13#10 +
           '}' + #13#10;

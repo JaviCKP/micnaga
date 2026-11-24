@@ -29,6 +29,14 @@
       <button class="icon-btn clear" id="q-clear" type="button" hidden data-i18n-aria-label="library.search_clear" data-icon="x"></button>
     </div>
     <div class="side-scroll" id="side" tabindex="-1"></div>
+    <details class="held" id="failed-jobs" hidden>
+      <summary class="held-h">
+        <span class="caps" data-i18n="library.failed.title">Transcripciones interrumpidas</span>
+        <span class="held-n tnum" id="failed-jobs-n"></span>
+        <span class="held-chev" data-icon="chevron" aria-hidden="true"></span>
+      </summary>
+      <div class="held-list" id="failed-jobs-list"></div>
+    </details>
     <section class="held" id="held" hidden>
       <button class="held-h" id="held-h" type="button" aria-expanded="false" aria-controls="held-list">
         <span class="caps" data-i18n="library.held.title">Descartadas</span>
@@ -71,6 +79,11 @@
       </header>
 
       <div class="transcript selectable" id="tr" role="group" data-i18n-aria-label="library.transcript_label" tabindex="-1"><section class="sec" id="sec" hidden aria-live="polite"></section></div>
+      <div class="pending-view" id="pending-view" hidden>
+        <h3 class="display" data-i18n="library.pending.saved">Audio guardado</h3>
+        <p id="pending-phase" role="status"></p>
+        <p id="pending-audio-unavailable" hidden data-i18n="library.pending.audio_unavailable">La reproducción aún no está disponible.</p>
+      </div>
 
       <footer class="player" id="player">
         <button class="play" id="play" type="button" data-i18n-aria-label="library.play" data-i18n-title="library.play">

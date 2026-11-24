@@ -155,6 +155,7 @@ def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="micnaga app", description="Bandeja, vigilante y ventanas.")
     p.add_argument("--exit-after", type=float, default=0.0, metavar="S", help="salir tras S s")
     p.add_argument("--no-single-instance", action="store_true", help="no usar el mutex")
+    p.add_argument("--open-url", metavar="URL", help="abrir una cita de Micnaga")
     return p
 
 
@@ -162,17 +163,25 @@ def run(argv: list[str]) -> int:
     """Punto de entrada de ``micnaga app``."""
     started = _process_start_time()
     _limit_blas_threads()
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
 
     from micnaga.config import ConfigError, ensure_config
     from micnaga.logging_setup import setup_logging
+    from micnaga.meeting_links import parse_meeting_link, send_meeting_link
+
+    link = parse_meeting_link(args.open_url) if args.open_url is not None else None
+    if args.open_url is not None and (link is None or args.no_single_instance):
+        parser.error("la cita de Micnaga no es válida")
 
     setup_logging("app")
-    crash_log = _enable_crash_traces()
     guard = SingleInstance()
     if not args.no_single_instance and not guard.acquire():
+        if link is not None and send_meeting_link(link):
+            return 0
         log.info("another instance is already running; exiting")
         return EXIT_ALREADY_RUNNING
+    crash_log = _enable_crash_traces()
     try:
         try:
             config = ensure_config()
@@ -193,7 +202,12 @@ def run(argv: list[str]) -> int:
         console = ConsoleGuard(app.request_quit)
         console.install()
         try:
-            app.ui.run(app.start)
+            def ready(host: object) -> None:
+                app.start(host)
+                if link is not None:
+                    app.open_meeting_link(link)
+
+            app.ui.run(ready)
         finally:
             reason = getattr(app.ui, "exit_reason", "") or "gui_loop_ended"
             app.shutdown(reason=reason)

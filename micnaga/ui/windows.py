@@ -164,9 +164,14 @@ class PywebviewWindow:
         hilo, que no es el de la interfaz."""
         try:
             native = self._win.native
-            if native is not None and native.IsHandleCreated:
+            if native is not None:
+                if not native.IsHandleCreated:
+                    self._hwnd = 0
+                    return 0
                 handle = int(native.Handle.ToInt64())
                 if handle:
+                    if handle != self._hwnd:
+                        self._rendering = None
                     self._hwnd = handle
                     return handle
         except Exception:
@@ -268,6 +273,12 @@ class PywebviewWindow:
 
     def on_moved(self, callback: Callable[[int, int], None]) -> None:
         self._win.events.moved += callback
+
+    def on_handle_created(self, callback: Callable[[], None]) -> None:
+        try:
+            self._win.native.HandleCreated += lambda *_args: callback()
+        except Exception:
+            log.debug("cannot subscribe to handle creation on %s", self.key, exc_info=True)
 
     def set_title(self, title: str) -> None:
         with contextlib.suppress(Exception):

@@ -1,0 +1,37 @@
+{
+  "manifest_version": "0.3",
+  "name": "micnaga-meetings",
+  "display_name": "Micnaga · Reuniones",
+  "version": "1.0.0",
+  "description": "Busca y consulta las reuniones terminadas e indexadas de tu biblioteca local de Micnaga.",
+  "author": {
+    "name": "Micnaga contributors",
+    "url": "https://github.com/JaviCKP/micnaga"
+  },
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "server.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/server.js"],
+      "env": {
+        "MICNAGA_CLI": "${user_config.micnaga_cli}"
+      }
+    }
+  },
+  "tools_generated": true,
+  "compatibility": {
+    "platforms": ["win32"],
+    "runtimes": {"node": ">=18.0.0"}
+  },
+  "user_config": {
+    "micnaga_cli": {
+      "type": "string",
+      "title": "Ejecutable de Micnaga",
+      "description": "Ruta absoluta al ejecutable micnaga-cli.exe. Déjalo vacío si Micnaga está instalado en la carpeta predeterminada.",
+      "default": "",
+      "required": false
+    }
+  }
+}

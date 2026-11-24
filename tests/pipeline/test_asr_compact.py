@@ -99,6 +99,7 @@ def test_glossary_prompt_lists_canonical_forms_within_a_budget() -> None:
     long = Glossary([f"Termino{i:03d}" for i in range(200)])
     text = long.prompt(max_chars=100)
     assert len(text) <= 100 and text.endswith(".") and "Termino000" in text
+    assert Glossary(["f" * 100, "PQC"]).prompt(max_chars=14) == "Glosario: PQC."
 
 
 def test_blocks_grouped_by_stage_5_never_exceed_30_s_once_compacted() -> None:

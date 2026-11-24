@@ -13,9 +13,11 @@ from typing import Any
 import pytest
 
 from micnaga import paths
+from micnaga.brain.acta import write_live_title
+from micnaga.capture.session import write_capture_json
 from micnaga.config import Config
-from micnaga.store.db import Database
-from micnaga.types import Transcript
+from micnaga.store.db import Database, MeetingRecord
+from micnaga.types import CaptureMeta, TrackInfo, Transcript
 from micnaga.ui import fake, startup
 from micnaga.ui.bridge import (
     LibraryApi,
@@ -72,6 +74,45 @@ def test_list_meetings_newest_first_with_speakers(env: Env) -> None:
     assert first["title"] == "Revisión semanal" and first["duration_s"] == 2820
     assert [s["name"] for s in first["speakers"]] == ["Yo", "Laura", "Hablante 2"]
     assert len(lib(env).list_meetings(limit=2)) == 2
+
+
+def test_saved_recording_is_playable_while_queued_and_keeps_identity_after_rename(
+    env: Env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    api = lib(env)
+    directory = env.root / "2026-11-24_1030_reunion"
+    directory.mkdir()
+    meta = CaptureMeta(
+        "2026-11-24T10:30:00+01:00",
+        mic=TrackInfo(paths.AUDIO_ME_FLAC, "micro", samples=32_000),
+        system=TrackInfo(paths.AUDIO_REMOTE_FLAC, "system"),
+        confirmed=True,
+        extra={"state": "finalized", "in_person": True},
+    )
+    assert write_capture_json(directory, meta)
+    (directory / paths.AUDIO_ME_FLAC).touch()
+    monkeypatch.setattr("micnaga.models.missing_models", lambda _config: [])
+    with Database(env.root / "micnaga.db") as db:
+        job = db.enqueue_job(directory)
+        [row] = api.list_pending_meetings()
+        assert (row["title"], row["phase"], row["duration_s"]) == ("Reunión", "queued", 2)
+        write_live_title(directory, "Plan PQC de Bitnaga")
+        assert db.claim_next_job() is not None
+        db.set_stage(job.id, 6)
+        detail = api.get_pending_meeting(job.id)
+        assert detail["meeting"]["title"] == "Plan PQC de Bitnaga"
+        assert detail["meeting"]["phase"] == "transcribing"
+        assert detail["audio"]["yo"].endswith("/yo")
+        db.set_stage(job.id, 7)
+        assert api.list_pending_meetings()[0]["phase"] == "diarizing"
+        final = directory.with_name("2026-11-24_1030_plan-pqc")
+        directory.rename(final)
+        db.set_session_dir(job.id, final)
+        db.upsert_meeting(MeetingRecord(final.name, "Plan PQC", meta.started_at, 2))
+        db.finish_job(job.id)
+
+    assert api.list_pending_meetings() == []
+    assert api.get_pending_meeting(job.id) == {"ok": True, "final_folder": final.name}
 
 
 def test_search_returns_safe_highlight_parts_and_resolves_names(env: Env) -> None:

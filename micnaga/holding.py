@@ -63,8 +63,7 @@ def _write_json_sync(path: Path, data: dict[str, Any]) -> None:
     with open(tmp, "w", encoding="utf-8") as fh:
         fh.write(json.dumps(data, ensure_ascii=False))
         fh.flush()
-        with contextlib.suppress(OSError):
-            os.fsync(fh.fileno())
+        os.fsync(fh.fileno())
     for attempt in range(10):
         try:
             os.replace(tmp, path)
@@ -130,7 +129,12 @@ def _move(src: Path, dst: Path) -> None:
 
 
 def move_to_held(
-    session_dir: Path, reason: str, *, meetings_root: Path | None = None, detail: str = ""
+    session_dir: Path,
+    reason: str,
+    *,
+    meetings_root: Path | None = None,
+    detail: str = "",
+    retain: bool = False,
 ) -> Path:
     """Aparta la carpeta en ``_descartadas`` (anota motivo y fecha). Devuelve la ruta nueva.
 
@@ -151,16 +155,18 @@ def move_to_held(
     else:
         target_root.mkdir(parents=True, exist_ok=True)
         dest = paths.unique_folder(target_root, session_dir.name)
-        _move(session_dir, dest)
     _write_json_sync(
-        dest / HELD_FILE,
+        session_dir / HELD_FILE,
         {
             "reason": reason,
             "held_at": _now().isoformat(timespec="seconds"),
             "original": session_dir.name,
             "detail": detail,
+            "retain": retain,
         },
     )
+    if dest != session_dir:
+        _move(session_dir, dest)
     unmark_discarded(dest)
     log.info("session held (%s)", reason)  # sin titulo ni ruta
     return dest
@@ -268,7 +274,11 @@ def list_held(meetings_root: Path, keep_days: int = 7) -> list[HeldSession]:
                     duration_s=round(float(duration), 1),
                     reason=str(info.get("reason") or REASON_DECLINED),
                     held_at=held_at.isoformat(timespec="seconds"),
-                    expires_at=(held_at + timedelta(days=keep_days)).isoformat(timespec="seconds"),
+                    expires_at=(
+                        ""
+                        if info.get("retain") is True
+                        else (held_at + timedelta(days=keep_days)).isoformat(timespec="seconds")
+                    ),
                     has_audio=audio,
                     detail=str(info.get("detail") or ""),
                 ),
@@ -342,7 +352,10 @@ def purge_held(meetings_root: Path, keep_days: int, *, now: datetime | None = No
         if not d.is_dir():
             continue
         try:
-            when = _held_at(d, _held_info(d))
+            info = _held_info(d)
+            if info.get("retain") is True:
+                continue
+            when = _held_at(d, info)
         except OSError:
             continue
         if when.tzinfo is None:

@@ -1,9 +1,8 @@
-"""Glosario personal (MIC-16, spec secciones 3 y 8.10).
+"""Glosario de transcripcion (MIC-16, spec secciones 3 y 8.10).
 
 Lista de nombres propios y siglas que el modelo suele escribir mal. Se aplica como correccion
 posterior a la transcripcion (``Glossary.apply_words`` / ``apply_text``) y, si el motor ASR lo
-admite, como palabras clave (``Glossary.hotwords``) o como ``initial_prompt`` de Whisper
-(``Glossary.prompt``).
+admite, como palabras clave (``Glossary.hotwords`` y ``Glossary.prompt``).
 
 Fichero ``glossary.txt`` en la carpeta de datos de la app (``paths.app_data_dir()``), una entrada
 por linea::
@@ -17,6 +16,8 @@ por linea::
 La forma canonica va a la izquierda de ``:`` y las variantes (formas que el ASR suele producir,
 coincidencia exacta tras normalizar) a la derecha, separadas por comas. Ademas se aceptan las
 entradas de ``config.processing.glossary`` (misma sintaxis, una cadena por entrada).
+En la transcripcion se añaden términos de Bitnaga detrás de los personales. Sus correcciones
+exigen coincidencia exacta o una variante conocida.
 
 Coincidencia
 ------------
@@ -38,12 +39,13 @@ Las variantes solo casan de forma exacta. Una ventana no cruza signos de fin de 
 
 from __future__ import annotations
 
+import logging
 import re
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Literal
 
 from rapidfuzz import fuzz, process
 
@@ -52,6 +54,8 @@ from micnaga.types import Word
 
 if TYPE_CHECKING:
     from micnaga.config import Config
+
+log = logging.getLogger(__name__)
 
 GLOSSARY_FILENAME = "glossary.txt"
 MIN_LENGTH_RATIO = 0.8
@@ -76,6 +80,26 @@ def normalize(text: str) -> str:
 class GlossaryEntry:
     canonical: str
     variants: tuple[str, ...] = ()
+    mode: Literal["fuzzy", "exact", "hint"] = "fuzzy"
+
+
+_BITNAGA_GLOSSARY = (
+    GlossaryEntry("Bitnaga", ("vitnaga",), mode="exact"),
+    GlossaryEntry("PQC", ("pe cu ce",), mode="exact"),
+    GlossaryEntry("CrowdStrike", mode="exact"),
+    GlossaryEntry("ciberseguridad", mode="hint"),
+    GlossaryEntry("Diputación", mode="hint"),
+    GlossaryEntry("postcuántica", mode="hint"),
+    GlossaryEntry("Día Q", mode="exact"),
+    GlossaryEntry("Shodan", mode="exact"),
+    GlossaryEntry("Censys", ("censis",), mode="exact"),
+    GlossaryEntry("Dunning-Kruger", ("inkruger", "linkruger"), mode="exact"),
+    GlossaryEntry("Odoo", mode="exact"),
+    GlossaryEntry("TLS", ("te ele ese",), mode="exact"),
+    GlossaryEntry("SSH", ("ese ese hache",), mode="exact"),
+    GlossaryEntry("VPN", ("uve pe ene",), mode="exact"),
+    GlossaryEntry("SaaS", mode="hint"),
+)
 
 
 def parse_entries(lines: Iterable[str]) -> list[GlossaryEntry]:
@@ -141,6 +165,8 @@ class Glossary:
         self._fuzzy_choices: list[str] = []
         self._sizes: set[int] = set()
         for entry in self.entries:
+            if entry.mode == "hint":
+                continue
             canon_norm = normalize(entry.canonical)
             if not canon_norm:
                 continue
@@ -148,7 +174,7 @@ class Glossary:
             threshold, first = _threshold(len(canon_norm))
             self._exact.setdefault(canon_norm, entry)
             self._sizes.update({max(1, k - 1), k, k + 1})
-            if threshold < 100.0:
+            if entry.mode == "fuzzy" and threshold < 100.0:
                 self._fuzzy_forms.append(_Form(entry, canon_norm, k, threshold, first))
                 self._fuzzy_choices.append(canon_norm)
             for variant in entry.variants:
@@ -162,13 +188,22 @@ class Glossary:
 
     @classmethod
     def load(cls, path: Path | None = None, config: Config | None = None) -> Glossary:
-        """``glossary.txt`` (si existe) + ``config.processing.glossary``."""
+        """Glosario personal y, en transcripcion, el vocabulario habitual de Bitnaga."""
         entries: list[GlossaryEntry] = []
         file = path or glossary_path()
-        if file.is_file():
-            entries.extend(parse_entries(file.read_text(encoding="utf-8").splitlines()))
+        try:
+            if file.is_file():
+                entries.extend(parse_entries(file.read_text(encoding="utf-8-sig").splitlines()))
+        except (OSError, UnicodeError) as exc:
+            if config is None:
+                raise
+            log.warning("cannot read glossary %s: %s", file, exc)
         if config is not None:
             entries.extend(parse_entries(config.processing.glossary))
+            personal = {
+                normalize(form) for entry in entries for form in (entry.canonical, *entry.variants)
+            }
+            entries.extend(e for e in _BITNAGA_GLOSSARY if normalize(e.canonical) not in personal)
         return cls(entries)
 
     def __len__(self) -> int:
@@ -182,16 +217,16 @@ class Glossary:
         return list(seen)
 
     def prompt(self, max_chars: int = PROMPT_MAX_CHARS) -> str:
-        """Texto para el ``initial_prompt`` de Whisper: ``"Glosario: A, B, C."`` ("" si vacio).
+        """Texto para las ``hotwords`` de Whisper: ``"Glosario: A, B, C."`` ("" si vacio).
 
         Solo formas canonicas (las variantes son lo que el ASR oye mal: no se le sugieren), en
         orden y sin pasar de ``max_chars`` (Whisper admite unos 220 tokens de prompt)."""
         terms: list[str] = []
-        size = len(PROMPT_PREFIX) + 1
+        size = len(PROMPT_PREFIX) + 2  # un espacio y el punto final
         for term in self.hotwords():
-            extra = len(term) + 2
-            if terms and size + extra > max_chars:
-                break
+            extra = len(term) + (2 if terms else 0)
+            if size + extra > max_chars:
+                continue
             terms.append(term)
             size += extra
         return f"{PROMPT_PREFIX} {', '.join(terms)}." if terms else ""
@@ -200,16 +235,17 @@ class Glossary:
 
     def _find(self, tokens: Sequence[str]) -> list[_Match]:
         """Coincidencias sin solapes entre ventanas de ``tokens`` (cadenas con su puntuacion)."""
-        if not self.entries or not tokens:
+        if not self._sizes or not tokens:
             return []
         parts = [_split_token(t) for t in tokens]
         norms = [normalize(p[1]) for p in parts]
         candidates: list[_Match] = []
+        max_size = max(self._sizes)
         for i in range(len(tokens)):
             if not norms[i]:
                 continue
             joined = ""
-            for size in range(1, max(self._sizes) + 1):
+            for size in range(1, max_size + 1):
                 j = i + size
                 if j > len(tokens):
                     break
@@ -228,7 +264,9 @@ class Glossary:
                 if match is not None:
                     entry, score = match
                     candidates.append(_Match(i, j, entry, score))
-        candidates.sort(key=lambda m: (-m.score, -(m.end - m.start), m.start))
+        candidates.sort(
+            key=lambda m: (-m.score, m.entry.mode != "fuzzy", -(m.end - m.start), m.start)
+        )
         taken = [False] * len(tokens)
         chosen: list[_Match] = []
         for m in candidates:

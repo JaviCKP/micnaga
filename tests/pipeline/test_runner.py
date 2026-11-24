@@ -242,8 +242,18 @@ def test_crash_in_the_middle_of_asr_leaves_no_marker_and_resumes(db: Database) -
     work = session / paths.WORK_DIRNAME
     assert (work / "05_vad.done.json").is_file() and not (work / "06_asr.done.json").exists()
     assert not list(work.glob("06_words*"))  # nada a medias (escritura atomica)
-    result = runner_for(db=db, rename=False).run(session)
+    calls["n"] = 0
+
+    class Counting(FakeAsr):
+        def transcribe(self, audio, sr):  # type: ignore[no-untyped-def]
+            calls["n"] += 1
+            return super().transcribe(audio, sr)
+
+    resumed = Deps(**{**base.__dict__, "create_asr": lambda _c: Counting(load_script(session))})
+    result = runner_for(db=db, deps=resumed, rename=False, keep_work=True).run(session)
     assert result.status == "done" and result.skipped == list(PIPELINE_STAGES[:5])
+    vad_data = json.loads((work / "05_vad.json").read_text(encoding="utf-8"))
+    assert calls["n"] == sum(len(track["chunks"]) for track in vad_data.values()) - 1
 
 
 # ------------------------------------------------------------------ descarte
@@ -791,6 +801,23 @@ def test_crash_after_the_rename_resumes_from_the_final_folder(
     assert result.status == "done" and result.session_dir == final
     assert result.skipped == list(PIPELINE_STAGES)  # nada se reprocesa
     assert db.get_meeting(FINAL_NAME) is not None
+
+
+def test_playing_saved_audio_does_not_prevent_finishing_the_job(
+    db: Database, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    session = make_session("audio-open")
+    job = claim(db, session)
+    runner = runner_for(db=db)
+
+    def locked(_src: Path, _dst: Path) -> None:
+        raise PermissionError("audio open in the library")
+
+    monkeypatch.setattr(runner, "_rename", locked)
+    result = runner.run(session, job)
+    assert result.status == "done" and result.session_dir == session
+    assert db.get_job(job.id).session_dir == str(session)
+    assert db.get_meeting(session.name) is not None
 
 
 def test_already_processed_folder_without_work_is_only_closed(db: Database) -> None:

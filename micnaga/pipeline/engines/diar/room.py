@@ -3,8 +3,8 @@
 En una reunion presencial todos hablan por el mismo micro. La etapa 7 diariza tambien esa pista
 y aqui se decide la etiqueta de cada hablante del micro (funciones puras, sin modelos):
 
-* **«Yo»** es el hablante con mas **energia** total en el micro (suma de la energia de sus turnos):
-  el dueno del portatil es quien esta mas cerca del micro. Con un solo hablante, es «Yo».
+* **«Yo»** es el hablante con mas **energia** total en el micro entre los que no son eco.
+  Si todos coinciden con voces remotas, se mantiene el criterio de energia.
 * Un hablante del micro que **se parece a un hablante remoto** (coseno >= ``ECHO_SIMILARITY``)
   es eco que el cancelador no quito: pasa a «Yo» y la etapa 9 descarta sus frases si repiten lo
   remoto.
@@ -81,7 +81,13 @@ def label_room_speakers(
     labels = list(dict.fromkeys(t.speaker for t in sorted(turns, key=lambda t: t.start)))
     if not labels:
         return [], {}
-    me = max(labels, key=lambda s: (energy.get(s, 0.0), speech_s.get(s, 0.0)))
+    echoes = {
+        lab
+        for lab, vec in mic_embeddings.items()
+        if any(_cos(vec, remote) >= echo_similarity for remote in remote_embeddings.values())
+    }
+    candidates = [lab for lab in labels if lab not in echoes]
+    me = max(candidates or labels, key=lambda s: (energy.get(s, 0.0), speech_s.get(s, 0.0)))
     reason: dict[str, str] = {me: "me"}
     me_vec = mic_embeddings.get(me)
     mapping: dict[str, str] = {me: SPEAKER_ME}
@@ -90,9 +96,7 @@ def label_room_speakers(
         if lab == me:
             continue
         vec = mic_embeddings.get(lab)
-        if vec is not None and any(
-            _cos(vec, r) >= echo_similarity for r in remote_embeddings.values()
-        ):
+        if lab in echoes:
             reason[lab] = "echo"
         elif vec is not None and me_vec is not None and _cos(vec, me_vec) >= same_voice:
             reason[lab] = "same_voice"
@@ -117,7 +121,7 @@ def label_room_speakers(
     return out, reason
 
 
-def next_speaker_number(remote_turns: Sequence[Turn]) -> int:
-    """Numero siguiente al mayor ``S<n>`` remoto (1 si no hay)."""
+def next_speaker_number(remote_turns: Sequence[Turn], *, has_remote_words: bool = False) -> int:
+    """Numero tras el ultimo remoto, incluido el S1 de respaldo cuando no hay turnos."""
     nums = [int(t.speaker[1:]) for t in remote_turns if t.speaker[1:].isdigit()]
-    return max(nums, default=0) + 1
+    return max(nums, default=int(has_remote_words)) + 1
