@@ -98,6 +98,11 @@ class UiWindow(Protocol):
 
     def run_js(self, script: str) -> None: ...
 
+    def post_message(self, text: str) -> None:
+        """Mensaje de texto a la pagina (``chrome.webview`` «message»), sin esperar: lo mas
+        barato para datos frecuentes (niveles). No compila ni evalua nada en la pagina."""
+        ...
+
     def show(self, *, activate: bool) -> None: ...
 
     def hide(self) -> None: ...
@@ -150,6 +155,7 @@ class PywebviewWindow:
         self._spec = spec
         self._w32 = w32
         self._hwnd = 0
+        self._rendering: bool | None = None
 
     @property
     def hwnd(self) -> int:
@@ -178,7 +184,31 @@ class PywebviewWindow:
         except Exception:
             log.debug("run_js failed on %s", self.key, exc_info=True)
 
+    def post_message(self, text: str) -> None:
+        """``CoreWebView2.PostWebMessageAsString`` en el hilo de la interfaz (como hace pywebview
+        con ``evaluate_js``, pero sin compilar script ni esperar respuesta). A ~10 veces por
+        segundo, ``evaluate_js`` (envuelto, serializado y esperando respuesta) costaba ~2 % de un
+        nucleo en Python (medido)."""
+        try:
+            native = self._win.native
+            from System import Action  # type: ignore[import-not-found,unused-ignore]
+        except Exception:
+            log.debug("post_message unavailable on %s", self.key, exc_info=True)
+            return
+
+        def send() -> None:  # en el hilo de la interfaz: CoreWebView2 solo vive ahi
+            try:
+                native.browser.webview.CoreWebView2.PostWebMessageAsString(text)
+            except Exception:
+                log.debug("post_message failed on %s", self.key, exc_info=True)
+
+        try:
+            native.browser.webview.Invoke(Action(send))
+        except Exception:
+            log.debug("post_message not delivered on %s", self.key, exc_info=True)
+
     def show(self, *, activate: bool) -> None:
+        self._set_rendering(True)
         if activate:
             self._win.show()
             with contextlib.suppress(Exception):
@@ -188,6 +218,31 @@ class PywebviewWindow:
 
     def hide(self) -> None:
         winapi.hide(self.hwnd, self._w32)
+        self._set_rendering(False)
+
+    def _set_rendering(self, on: bool) -> None:
+        """Las superposiciones se ocultan con Win32 (``ShowWindow``), que WinForms no ve: el
+        control WebView2 seguia «visible» y Chromium pintaba fotogramas (GPU incluida) con la
+        ventana oculta. ``Visible`` del control pone ``CoreWebView2Controller.IsVisible``: oculto,
+        el navegador deja de dibujar y de dar fotogramas (DECISIONS §34)."""
+        if not self._spec.overlay or self._rendering is on:
+            return
+        try:
+            native = self._win.native
+            view = native.browser.webview
+
+            def apply() -> None:
+                view.Visible = on
+
+            if getattr(native, "InvokeRequired", False):
+                from System import Action  # type: ignore[import-not-found,unused-ignore]
+
+                native.Invoke(Action(apply))
+            else:
+                apply()
+            self._rendering = on
+        except Exception:
+            log.debug("WebView2 visibility not set on %s", self.key, exc_info=True)
 
     def is_visible(self) -> bool:
         return bool(self.hwnd) and self._w32.is_visible(self.hwnd)
@@ -349,6 +404,9 @@ class FakeWindow:
 
     def is_visible(self) -> bool:
         return self.visible
+
+    def post_message(self, text: str) -> None:
+        self.log.append(("post", text))
 
     def place(self, rect: Rect) -> None:
         self.current_rect = rect

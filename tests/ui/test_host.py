@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 import re
 from typing import Any
@@ -825,3 +826,68 @@ def test_region_failure_and_css_scale_mismatch_are_logged(
     assert any("SetWindowRgn failed" in m for m in warnings)
     assert sum("css scale" in m for m in warnings) == 1
     assert any("devicePixelRatio 1.250" in rec.getMessage() for rec in caplog.records)
+
+
+# ------------------------------------------------------------- niveles reales empujados (§34)
+
+
+def test_levels_are_pushed_smoothed_only_while_shown_and_sounding() -> None:
+    """La pastilla no sondea: Python empuja (micro, sistema) reales y suavizados mientras se ve;
+    nada en silencio ni con la superficie oculta (cero trabajo en reposo)."""
+    r = Rig()
+    level = {"v": (0.0, 0.0)}
+    r.host.set_levels_provider(lambda: level["v"])
+    tail = round(host_mod.LEVEL_TAIL_S * host_mod.LEVELS_HZ)
+
+    def pushes() -> list[tuple[float, float]]:
+        out = []
+        for k, a in r.pill.log:
+            if k == "post":
+                m, s = str(a).removeprefix("lv:").split(",")
+                out.append((float(m), float(s)))
+        return out
+
+    assert not r.host._push_levels() and pushes() == [], "oculta: no se envia nada"
+    r.host.show_pill()
+    assert not r.host._push_levels() and pushes() == [], "silencio: nada que dibujar"
+    level["v"] = (0.002, 0.0)  # siseo bajo la puerta de ruido
+    assert not r.host._push_levels() and pushes() == []
+    level["v"] = (0.1, 0.05)
+    r.host._push_levels()
+    assert 0.06 < pushes()[-1][0] < 0.1, "ataque rapido, pero suavizado"
+    r.host._push_levels()
+    assert pushes()[-1][0] > 0.09
+    level["v"] = (0.0, 0.0)
+    r.host._push_levels()
+    first_fall = pushes()[-1][0]
+    assert 0.05 < first_fall < pushes()[-2][0], "caida lenta: no salta a cero"
+    for _ in range(tail * 3):
+        r.host._push_levels()
+    sent = len(pushes())
+    assert pushes()[-1] == (0.0, 0.0), "termina en reposo exacto"
+    assert sent < 3 + tail * 2, "tras vaciar la onda deja de enviar"
+    r.host._push_levels()
+    assert len(pushes()) == sent
+    r.host.hide_pill()
+    r.host._vanish()
+    level["v"] = (0.5, 0.5)
+    assert not r.host._push_levels() and len(pushes()) == sent
+
+
+def test_levels_reach_the_card_without_a_pill() -> None:
+    """La tarjeta «¿Estas en una reu?» (sin pastilla grabando) tambien recibe los niveles."""
+    r = Rig()
+    r.host.set_levels_provider(lambda: (0.05, 0.1))
+    r.host.show_popup("x")
+    assert r.host._push_levels()
+    assert any(k == "post" and str(a).startswith("lv:0.0") for k, a in r.pill.log)
+
+
+def test_level_envelope_gates_attacks_and_releases() -> None:
+    env = host_mod.LevelEnvelope(hz=15)
+    assert env.step(0.003) == 0.0, "puerta de ruido"
+    up = env.step(0.2)
+    assert 0.13 < up < 0.2
+    down = [env.step(0.0) for _ in range(30)]
+    assert all(a > b for a, b in itertools.pairwise(down) if a > 0)
+    assert down[0] > 0.1 and down[-1] == 0.0

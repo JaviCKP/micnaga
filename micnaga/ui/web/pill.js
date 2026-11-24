@@ -30,14 +30,17 @@
   const S = { elapsed: 0, since: performance.now(), paused: false, running: false };
   let tickTimer = 0;
   function now() { return S.elapsed + (S.running && !S.paused ? (performance.now() - S.since) / 1000 : 0); }
-  function paint() { timeEl.textContent = mic.fmtClock(now()); }
+  // the clock only touches the DOM when the second changes (no repaint 3 times out of 4)
+  function paint() { const t = mic.fmtClock(now()); if (timeEl.textContent !== t) timeEl.textContent = t; }
   function startLoop() { if (!tickTimer) tickTimer = setInterval(paint, 250); }
   function stopLoop() { clearInterval(tickTimer); tickTimer = 0; }
 
-  const poll = mic.pollLevels((m, s) => {
+  // real levels, smoothed and pushed by Python while the pill is up (none in silence: the
+  // dithered line just rests, nothing is redrawn)
+  const poll = mic.levelFeed((m, s) => {
     if (S.paused) { meters.mic.push(0); meters.sys.push(0); return; }
-    meters.mic.push(mic.levelToUi(m));
-    meters.sys.push(mic.levelToUi(s));
+    meters.mic.push(mic.levelToMeter(m));
+    meters.sys.push(mic.levelToMeter(s));
   });
 
   /** Apply a style change without letting it animate (layout, re-show). Re-entrant. */
@@ -306,7 +309,7 @@
     settle,
     vanish,
     /** for screenshots / standalone */
-    setLevels(m, s) { meters.mic.fill(mic.levelToUi(m)); meters.sys.fill(mic.levelToUi(s)); },
+    setLevels(m, s) { meters.mic.fill(mic.levelToMeter(m)); meters.sys.fill(mic.levelToMeter(s)); },
     setHover,
     undo,
     undoEnd,

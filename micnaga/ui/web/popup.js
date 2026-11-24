@@ -36,8 +36,8 @@
   const embedded = () => (window.micnaga && window.micnaga.surface) || null;
   const clearTimers = () => { S.timers.forEach(clearTimeout); S.timers = []; };
 
-  const poll = mic.pollLevels((m, s) => {
-    const um = mic.levelToUi(m), us = mic.levelToUi(s);
+  const poll = mic.levelFeed((m, s) => {
+    const um = mic.levelToMeter(m), us = mic.levelToMeter(s);
     waves.mic.push(um);
     waves.sys.push(us);
     const t = performance.now();
@@ -307,7 +307,7 @@
       leave(reason === "answered" ? "leaving" : "fading");
     },
     accept, dismiss, end, expire,
-    setLevels(m, s) { waves.mic.fill(mic.levelToUi(m)); waves.sys.fill(mic.levelToUi(s)); },
+    setLevels(m, s) { waves.mic.fill(mic.levelToMeter(m)); waves.sys.fill(mic.levelToMeter(s)); },
     get phase() { return S.phase; },
     get authority() { return S.authority; },
   };

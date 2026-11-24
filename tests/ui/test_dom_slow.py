@@ -267,6 +267,9 @@ def test_popup_end_before_answer_fades(world: dict[str, Any]) -> None:
     p = page(world, "popup.html", "popup", 372, 112, timeout=40)
     p.eval("micnaga.popup.end()")
     assert p.wait_for("micnaga.popup.phase === 'done'", 2)
+    deadline = time.time() + 2  # the bridge calls are async HTTP posts in this harness
+    while time.time() < deadline and ("handle_popup_closed", ("fading",)) not in spy.calls:
+        time.sleep(0.05)
     assert ("handle_popup_closed", ("fading",)) in spy.calls
     assert not any(n == "handle_popup_decide" for n, _ in spy.calls)
 
@@ -361,7 +364,7 @@ def test_pill_provisional_variant_shows_label(world: dict[str, Any]) -> None:
     assert p2.eval("getComputedStyle(document.getElementById('tag')).display") == "none"
 
 
-def test_pill_is_200_by_40_with_pulsing_dot(world: dict[str, Any]) -> None:
+def test_pill_is_200_by_40_with_a_still_dot(world: dict[str, Any]) -> None:
     p = page(world, "pill.html", "pill", 320, 48)
     assert p.eval("(() => { const b = micnaga.surface.box(); return [b.width, b.height]; })()") == [
         200,
@@ -369,10 +372,12 @@ def test_pill_is_200_by_40_with_pulsing_dot(world: dict[str, Any]) -> None:
     ]
     # a fully round capsule: radius = height / 2
     assert "round 20px" in str(p.eval("getComputedStyle(document.getElementById('pill')).clipPath"))
-    assert (
-        p.eval("getComputedStyle(document.querySelector('.rec-dot'), '::after').animationDuration")
-        == "1.2s"
-    )
+    # the red square stays still while recording (the user's call): no looping animation, so
+    # a pill at rest asks the browser for no frames at all
+    after = "getComputedStyle(document.querySelector('.rec-dot'), '::after')"
+    assert p.eval(f"{after}.display") == "none" and p.eval(f"{after}.animationName") == "none"
+    time.sleep(0.5)
+    assert p.eval("document.getAnimations().filter(a => a.playState === 'running').length") == 0
 
 
 def test_library_search_is_debounced_highlighted_and_opens_the_phrase(
@@ -461,7 +466,8 @@ def test_wizard_is_one_click_downloads_by_itself_and_closes(world: dict[str, Any
     finished.clear()
     p = page(world, "wizard.html", "wizard", 600, 680)
     # no «Descargar» / «Continuar»: the download starts on its own
-    assert p.eval("document.querySelectorAll('button:not([hidden])').length") == 1  # retry only
+    # retry only («Cancelar» is just the way out while it downloads)
+    assert p.eval("document.querySelectorAll('button:not([hidden]):not(#cancel)').length") == 1
     assert p.eval("document.getElementById('fail').hidden") is True
     assert p.wait_for(
         "+document.getElementById('overall-bar').getAttribute('aria-valuenow') > 0", 4
@@ -593,3 +599,32 @@ def test_reduced_motion_cross_fades_instead_of_morphing(world: dict[str, Any]) -
         assert set(str(duration).replace(" ", "").split(",")) == {"0s"}, (sel, duration)
     row = p.eval("getComputedStyle(document.querySelector('.pill-row')).transitionDuration")
     assert set(str(row).replace(" ", "").split(",")) == {"0s"}, row
+
+
+def test_pill_meter_follows_the_real_level_and_rests_in_silence(world: dict[str, Any]) -> None:
+    """La onda punteada de la pastilla refleja el audio real: en silencio solo la linea central
+    (quieta), hablando las filas exteriores se llenan segun el nivel (DECISIONS §34)."""
+    p = page(world, "pill.html", "pill", 320, 48)
+    p.eval("micnaga.pill.stop()")
+    # pixeles encendidos por fila de celdas: [exterior superior, centro, exterior inferior]
+    lit = (
+        "(() => { const c = document.getElementById('pm-mic'), x = c.getContext('2d');"
+        " const d = x.getImageData(0, 0, c.width, c.height).data, rows = [0, 0, 0];"
+        " for (let y = 0; y < c.height; y++) for (let i = 0; i < c.width; i++) {"
+        "  if (d[(y * c.width + i) * 4 + 3] < 128) continue;"
+        "  const f = y / c.height; rows[f < 0.25 ? 0 : f >= 0.75 ? 2 : 1]++; }"
+        " return rows; })()"
+    )
+    quiet = p.eval(lit)
+    assert quiet[0] == 0 and quiet[2] == 0 and quiet[1] > 0, quiet
+    p.eval("micnaga.pill.setLevels(0.1, 0.1)")  # -20 dBFS: hablar cerca
+    loud = p.eval(lit)
+    assert loud[0] > 0 and loud[2] > 0, loud
+    p.eval("micnaga.pill.setLevels(0.01, 0.01)")  # -40 dBFS: apenas
+    soft = p.eval(lit)
+    assert 0 < soft[0] < loud[0], (soft, loud)
+    w = p.eval("document.getElementById('pm-mic').width")
+    p.eval("micnaga.pill.setLevels(1, 1)")
+    assert p.eval("document.getElementById('pm-mic').width") == w, "la geometria no cambia"
+    assert p.eval("mic.levelToMeter(0)") == 0 and p.eval("mic.levelToMeter(0.0158)") > 0.15
+    assert p.eval("mic.levelToMeter(0.3)") == 1

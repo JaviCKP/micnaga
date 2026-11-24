@@ -1698,3 +1698,61 @@ prometto», «Dia Q», «Inkruger», «show, dancensi», frases en inglés inven
    `/CLOSEAPPLICATIONS` con `CloseApplications=no` en el `.iss`: sin probar si reactiva el Restart
    Manager (inocuo: la app ya salió y `PrepareToInstall` hace `taskkill`). No se ha instalado
    ninguna actualización real en este PC.
+
+## 34. La pastilla en reposo no gasta: WebView2 que deja de pintar, cuadrado quieto y nivel real
+
+1. **Por qué gastaba.** Medido con `psutil` sobre los `msedgewebview2` hijos (% de un núcleo):
+   9,3 % con la pastilla *oculta* (GPU 6,9, renderer 2,1). Las superposiciones se ocultan con
+   `ShowWindow` de Win32, que WinForms no ve: el control WebView2 seguía «visible» y Chromium
+   seguía produciendo fotogramas. Además el `::after` del cuadrado rojo (`dot-pulse`) era una
+   animación infinita: cada fotograma suyo era trabajo de GPU con la pastilla en pantalla.
+2. **Arreglo.** `PywebviewWindow.show/hide` ponen `webview.Visible` (=
+   `CoreWebView2Controller.IsVisible`) a la par que `ShowWindow`, en el hilo de la interfaz y solo
+   en superposiciones: oculta, la página no pinta nada. No se pausa por foco/blur (la pastilla es
+   `WS_EX_NOACTIVATE`), solo por visibilidad. El reloj solo toca el DOM cuando cambia el segundo.
+3. **Cuadrado rojo quieto** (decisión del usuario: «no me gusta que esté constantemente botando»).
+   `.pill .rec-dot::after { display: none; animation: none }`; nada en la pastilla se anima en
+   reposo (test: `document.getAnimations()` vacío tras 0,5 s).
+4. **Medidor reactivo, con el mismo aspecto de antes.** Se probó a cambiarlo por barras verticales
+   (`scaleY`) y el usuario prefirió el de siempre («horizontal y con el dither»): se mantiene la onda
+   punteada (Bayer 1-bit, `mic.wave` con `data-dither`), pero ahora refleja el audio real:
+   - *Por qué parecía enlatado:* en 8 px de alto caben 3-4 filas de celdas; el nivel pasaba por una
+     curva `^2,2` y la punta difuminada se dibujaba aun con nivel 0, así que la densidad apenas
+     variaba y lo que se veía era el patrón Bayer desplazándose con cada sondeo, sonara o no.
+   - *Ahora:* la fila (o filas) central es la línea quieta del silencio; cada fila exterior se
+     llena (difuminada) en proporción al nivel. Sin curva: `mic.levelToMeter` mapea -50..-14 dBFS a
+     0..1 (una conversación cae hacia la mitad). La tarjeta usa lo mismo; el asistente comparte
+     `mic.wave` (y por tanto el nuevo dibujo de celdas) pero sigue con su `levelToUi`: sin revisar.
+   - *Suavizado en Python* (`LevelEnvelope`, sobre el RMS por bloque de la grabadora o del monitor):
+     puerta de ruido en `LEVEL_GATE` = 0,006 (~-44 dBFS; el ruido de la sala aquí ronda 0,001 con
+     picos de 0,004), ataque 50 ms, caída 200 ms; así no titila.
+   - *Empuje, no sondeo:* un hilo envía `"lv:<micro>,<sistema>"` con `PostWebMessageAsString` a
+     `LEVELS_HZ` = 10 solo mientras la superficie está en pantalla y suena algo; tras el silencio
+     manda ceros `LEVEL_TAIL_S` (4 s) para vaciar la onda y después nada. La página no redibuja una
+     onda que ya está vacía. Oculta: nada. Fuera de la app (capturas, tests HTTP) se sigue sondeando.
+   - *Geometría constante:* el lienzo mide siempre lo mismo y las celdas se pintan en píxeles de
+     dispositivo enteros; solo cambia qué celdas se encienden.
+   - *Por qué 10 Hz y no 15:* con sonido continuo en los dos canales, 15 Hz costaba 3,7-4,8 % de
+     WebView2 y 10 Hz 2,7-3,3 % (casi todo el proceso GPU: cada paso es un fotograma de la ventana);
+     el lienzo con `willReadFrequently` (se pinta en CPU, mide 52×8) lo baja a ~2,4 %.
+5. **Medido (este PC, % de un núcleo; WebView2 = todos sus procesos; app = el proceso de Micnaga):**
+
+   | Escenario | Antes (WebView2) | Ahora (WebView2) | Ahora (app) |
+   |---|---|---|---|
+   | Pastilla oculta, en reposo | 9,27 | 0,5-1,1 | 0,3-0,6 |
+   | Pastilla visible, silencio | 4,72 | 0,2-0,6 | 0,4-0,7 |
+   | Grabando, sonido continuo en ambos canales | 3,05 | 2,4 | 0,5 |
+   | Oculta otra vez | 0,0 | 0,0-0,8 | 0,3-1,1 |
+
+   «Antes» se midió con las animaciones de Windows desactivadas y «Ahora» con ellas activadas (el
+   usuario las cambió entre medias); el ahorro en reposo no depende de eso. «Grabando» es el peor
+   caso (sonido sin pausas en micro y sistema); con voz real hay pausas y la onda se detiene en cada
+   una. La onda se desplaza a 10 columnas/s (antes 20 por sondeo).
+6. **Verificado en la ventana real** con niveles WASAPI reales (`LevelMonitor`) y un tono por los
+   altavoces: silencio = solo la línea central y 0 redibujados; con el tono la onda de «ellos» se
+   llena (filas exteriores 0 → ~50 celdas) y al acabar vuelve sola a la línea (~2 s); el lienzo mide
+   lo mismo en todas las muestras. La morfosis sigue animando (§29).
+7. **Pendiente:** con sonido continuo seguimos algo por encima del objetivo de 1-2 % (el coste es la
+   composición de la ventana transparente en cada paso); si molesta, bajar `LEVELS_HZ` a 8. La fila
+   del micro no se pudo ver moverse con audio real en este PC (el micro no captaba el tono de los
+   altavoces); el camino es el mismo que el del sistema y lo cubre el test DOM.

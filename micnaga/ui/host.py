@@ -36,6 +36,7 @@ from __future__ import annotations
 import functools
 import json
 import logging
+import math
 import os
 import sys
 import threading
@@ -95,7 +96,40 @@ seguidas en ``GUI_RESTART_WINDOW_S``; despues se sale, registrado)."""
 GUI_RESTART_WINDOW_S = 600.0
 SM_SHUTTINGDOWN = 0x2000
 THEME_POLL_S = 5.0
+LEVELS_HZ = 10
+"""Niveles reales (micro, sistema), ya suavizados, que se empujan a la superficie mientras esta en
+pantalla y suena algo. En silencio no hay llamadas ni la pagina dibuja nada (DECISIONS §34)."""
+LEVEL_GATE = 0.006
+"""Puerta de ruido (RMS lineal, ~-44 dBFS): por debajo es silencio y la onda no titila (el ruido
+de una sala tranquila ronda 0,001 con picos de 0,004)."""
+LEVEL_ATTACK_S = 0.05
+LEVEL_RELEASE_S = 0.2
+LEVEL_TAIL_S = 4.0
+"""Tras el silencio se siguen enviando ceros un rato: la onda (historia que se desplaza) se vacia
+hasta la linea quieta y despues ya no se envia nada."""
 _BG = {"light": "#f3f3f0", "dark": "#050507"}
+
+
+class LevelEnvelope:
+    """Suavizado de un nivel: puerta de ruido, ataque rapido y caida lenta (a ``hz`` pasos/s)."""
+
+    def __init__(self, hz: float = LEVELS_HZ) -> None:
+        dt = 1.0 / hz
+        self._attack = 1.0 - math.exp(-dt / LEVEL_ATTACK_S)
+        self._release = 1.0 - math.exp(-dt / LEVEL_RELEASE_S)
+        self.value = 0.0
+
+    def step(self, raw: float) -> float:
+        x = raw if raw >= LEVEL_GATE else 0.0
+        self.value += (x - self.value) * (self._attack if x > self.value else self._release)
+        if x == 0.0 and self.value < LEVEL_GATE / 4:
+            self.value = 0.0  # la caida termina en cero exacto: el silencio se reconoce
+        return self.value
+
+    def reset(self) -> None:
+        self.value = 0.0
+
+
 ENV_ACRYLIC = "MICNAGA_UI_ACRYLIC"
 ENV_SURFACE = "MICNAGA_UI_SURFACE"
 """``opaque`` fuerza la superficie opaca (la de los equipos sin transparencia): diagnostico."""
@@ -169,6 +203,8 @@ class UiHost:
         self._config: Config = config if config is not None else self._store.load()
         self._cb = callbacks or UiCallbacks()
         self._levels = levels or (lambda: (0.0, 0.0))
+        self._lv_env = (LevelEnvelope(), LevelEnvelope())
+        self._lv_tail = round(LEVEL_TAIL_S * LEVELS_HZ)
         self._ops = library_ops
         self._download = download_models
         self._diagnostics = diagnostics
@@ -371,6 +407,7 @@ class UiHost:
             )
             self._tray.start()
         self._start_theme_watch()
+        self._start_level_push()
         if on_ready is not None:
             try:
                 on_ready(self)
@@ -508,6 +545,44 @@ class UiHost:
 
     def set_levels_provider(self, provider: LevelsProvider) -> None:
         self._levels = provider
+
+    def _start_level_push(self) -> None:
+        """Un hilo empuja los niveles suavizados a la superficie (``micnaga.levels``) a
+        ``LEVELS_HZ`` mientras se ve (pastilla o tarjeta) y suena algo. Sin sondeo desde el JS:
+        con la superficie oculta o en silencio no se envia nada (DECISIONS §34)."""
+
+        def loop() -> None:
+            period = 1.0 / LEVELS_HZ
+            while not self._stopping.wait(period):
+                try:
+                    self._push_levels()
+                except Exception:
+                    log.debug("level push failed", exc_info=True)
+
+        threading.Thread(target=loop, name="micnaga-ui-levels", daemon=True).start()
+
+    def _push_levels(self) -> bool:
+        """Un paso del empuje; ``True`` si se envio algo. Oculta -> nada (y al volver se empieza
+        en reposo); silencio -> unos ceros para vaciar la onda y despues nada."""
+        win = self._pillwin
+        with self._lock:
+            shown = self._pill.shown and self._surface_phase != "hidden"
+        tail_max = round(LEVEL_TAIL_S * LEVELS_HZ)
+        if win is None or not shown:
+            self._lv_env[0].reset()
+            self._lv_env[1].reset()
+            self._lv_tail = tail_max
+            return False
+        m, sy = self.levels()
+        m, sy = self._lv_env[0].step(m), self._lv_env[1].step(sy)
+        if m == 0.0 and sy == 0.0:
+            if self._lv_tail >= tail_max:
+                return False
+            self._lv_tail += 1
+        else:
+            self._lv_tail = 0
+        win.post_message(f"lv:{m:.4f},{sy:.4f}")
+        return True
 
     def set_popup_state_provider(
         self, provider: Callable[[], tuple[float, bool] | None] | None

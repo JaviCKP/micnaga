@@ -301,3 +301,40 @@ def test_pywebview_theme_updates_never_bring_mica_back_on_the_surface() -> None:
     mica, none = winapi.DWMSBT_MAINWINDOW, winapi.DWMSBT_NONE
     attr = winapi.DWMWA_SYSTEMBACKDROP_TYPE
     assert w32.dwm == [(501, attr, mica), (501, attr, none), (502, attr, mica)]
+
+
+def test_hiding_an_overlay_stops_webview2_rendering() -> None:
+    """Las superposiciones se ocultan con Win32, que WinForms no ve: el control WebView2 se pone
+    invisible a mano (``IsVisible = false``) para que Chromium deje de dibujar oculto."""
+    from micnaga.ui.windows import PywebviewWindow, WindowSpec
+
+    class View:
+        Visible = True
+
+    class Hwnd:
+        def ToInt64(self) -> int:
+            return 77
+
+    class Native:
+        IsHandleCreated = True
+        InvokeRequired = False
+        Handle = Hwnd()
+
+        def __init__(self) -> None:
+            self.browser = type("B", (), {"webview": View()})()
+
+    class Win:
+        native = Native()
+
+    w32 = FakeWin32()
+    spec = WindowSpec(key="pill", page="pill.html", title="x", width=1, height=1, overlay=True)
+    win = PywebviewWindow(Win(), spec, w32)
+    view = Win.native.browser.webview
+    win.hide()
+    assert view.Visible is False
+    win.show(activate=False)
+    assert view.Visible is True
+    lib = WindowSpec(key="lib", page="l", title="l", width=1, height=1)
+    normal = PywebviewWindow(Win(), lib, w32)
+    normal.hide()
+    assert view.Visible is True, "solo las superposiciones (las ventanas normales las ve WinForms)"
