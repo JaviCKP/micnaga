@@ -40,6 +40,21 @@ def _dynamic_keys() -> set[str]:
     keys |= {f"settings.cards.{s}" for s in sections}
     keys |= {"settings.cards.voiceprints", "settings.cards.signals", "settings.cards.licenses"}
     keys |= {f"library.group.{g}" for g in ("today", "yesterday", "week", "earlier")}
+    keys |= {
+        f"library.pending.{phase}"
+        for phase in (
+            "queued", "waiting_models", "preparing", "transcribing",
+            "diarizing", "assembling", "failed",
+        )
+    }
+    keys |= {
+        f"toast.error.{error}.{part}"
+        for error in (
+            "capture_mic_lost", "capture_system_lost", "capture_write_failed",
+            "capture_save_failed",
+        )
+        for part in ("title", "body")
+    }
     keys |= {f"wizard.{k}_ok" for k in ("mic", "sys")}
     keys |= {f"settings.diag_state.{s}" for s in ("ok", "warn", "off", "fail")}
     keys |= {f"tray.state.{s}" for s in ("watching", "recording", "paused", "processing")}
