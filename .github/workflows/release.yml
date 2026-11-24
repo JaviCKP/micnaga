@@ -1,0 +1,70 @@
+name: Publicar Micnaga para Windows
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-2025
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.11'
+      - name: Comprobar etiqueta
+        shell: pwsh
+        run: |
+          $version = python -c 'import micnaga; print(micnaga.__version__)'
+          if ($env:GITHUB_REF_NAME -ne "v$version" -or $version -notmatch '^\d+\.\d+\.\d+$') {
+            throw 'La etiqueta debe coincidir con la versión estable de Micnaga.'
+          }
+          git merge-base --is-ancestor $env:GITHUB_SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw 'La etiqueta debe referirse a un commit de main.' }
+      - name: Instalar dependencias de compilación
+        shell: pwsh
+        run: |
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu torch==2.8.0 torchaudio==2.8.0
+          python -m pip install -e '.[asr,diar,aec,ui]' pyinstaller
+      - name: Compilar y firmar el instalador
+        shell: pwsh
+        env:
+          CERTIFICATE_BASE64: ${{ secrets.MICNAGA_SIGN_PFX_BASE64 }}
+          MICNAGA_SIGN_PFX_PASSWORD: ${{ secrets.MICNAGA_SIGN_PFX_PASSWORD }}
+        run: |
+          if (-not $env:CERTIFICATE_BASE64) { throw 'Falta el certificado de publicación de Micnaga.' }
+          $certFile = Join-Path $env:RUNNER_TEMP 'micnaga-release.pfx'
+          try {
+            [IO.File]::WriteAllBytes($certFile, [Convert]::FromBase64String($env:CERTIFICATE_BASE64))
+            Remove-Item Env:CERTIFICATE_BASE64
+            $params = @{FilePath = $certFile; CertStoreLocation = 'Cert:\CurrentUser\My'}
+            if ($env:MICNAGA_SIGN_PFX_PASSWORD) {
+              $params.Password = ConvertTo-SecureString $env:MICNAGA_SIGN_PFX_PASSWORD -AsPlainText -Force
+              Remove-Item Env:MICNAGA_SIGN_PFX_PASSWORD
+            }
+            $signers = @(Import-PfxCertificate @params | Where-Object HasPrivateKey)
+            if ($signers.Count -ne 1) { throw 'El PFX debe contener un certificado con clave privada.' }
+            $env:MICNAGA_SIGN_THUMBPRINT = $signers[0].Thumbprint
+            ./scripts/build.ps1 -Python (Get-Command python).Source
+            $setup = "dist/installer/Micnaga-Setup-$($env:GITHUB_REF_NAME.Substring(1)).exe"
+            if (!(Test-Path $setup) -or (Get-AuthenticodeSignature $setup).Status -ne 'Valid') {
+              throw 'El instalador de publicación debe tener una firma Authenticode válida.'
+            }
+          } finally {
+            Remove-Item -LiteralPath $certFile -Force -ErrorAction SilentlyContinue
+          }
+      - name: Publicar instalador y extensión de Claude Desktop
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $setup = "dist/installer/Micnaga-Setup-$($env:GITHUB_REF_NAME.Substring(1)).exe"
+          gh release create $env:GITHUB_REF_NAME $setup dist/installer/SHA256SUMS.txt `
+            dist/micnaga/Micnaga-Meetings.mcpb --verify-tag --generate-notes
