@@ -21,6 +21,7 @@ import os
 import re
 import threading
 import time
+import webbrowser
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Protocol
@@ -900,7 +901,31 @@ class SettingsApi:
             "has_diagnostics": self._diagnostics is not None,
             "has_voiceprints": self._ops is not None,
             "has_secretaria": self._brain is not None,
+            "has_remote_sync": self._cb.remote_sync() is not None,
         }
+
+    def remote_library(self, action: str, url: str = "", key: str = "") -> Result:
+        sync = self._cb.remote_sync()
+        if sync is None:
+            return fail("settings.remote.unavailable")
+        try:
+            if action == "connect" and isinstance(url, str) and isinstance(key, str):
+                return ok(**sync.connect(url, key))
+            if action == "disconnect":
+                sync.disconnect()
+            elif action == "refresh":
+                sync.kick()
+            elif action == "claude":
+                if not webbrowser.open("https://claude.ai/customize/connectors"):
+                    return fail("settings.remote.unavailable")
+            elif action != "status":
+                return fail("settings.remote.invalid")
+            return ok(**sync.status())
+        except ValueError:
+            return fail("settings.remote.invalid")
+        except Exception as exc:
+            log.warning("remote library settings failed: %s", type(exc).__name__)
+            return fail("settings.remote.unavailable")
 
     def save_settings(self, values: dict[str, Any]) -> Result:
         if not isinstance(values, dict):

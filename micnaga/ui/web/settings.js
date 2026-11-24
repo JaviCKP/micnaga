@@ -16,7 +16,7 @@
     "secretaria.horas_nudge": "odoo",
   };
 
-  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, groupEls: {}, invalid: new Set(), diagTimer: 0 };
+  const S = { schema: [], cur: {}, orig: {}, hasDiag: false, hasVp: false, hasSec: false, hasRemote: false, groupEls: {}, invalid: new Set(), diagTimer: 0, remoteTimer: 0 };
 
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const get = (path) => { const [s, k] = path.split("."); return S.cur[s][k]; };
@@ -218,6 +218,7 @@
       cards.get(sec).append(fieldRow(f));
     }
     if (g.id === "secretaria" && S.hasSec) secretariaExtras(pane, cards);
+    if (g.id === "privacy" && S.hasRemote) pane.append(remoteCard());
     if (g.id === "privacy" && S.hasVp) pane.append(voiceprintCard());
     if (g.id === "privacy") pane.append(legalCard());
     if (g.id === "processing") pane.append(modelsCard());
@@ -243,6 +244,101 @@
       pane.append(c.parentElement);
     }
     return pane;
+  }
+
+  function remoteCard() {
+    const card = group(mic.t("settings.remote.title"));
+    const form = el("form", "frow col");
+    const intro = el("p", "empty-note", mic.t("settings.remote.intro"));
+    const label = el("label", "flabel", mic.t("settings.remote.url"));
+    const url = el("input", "field-input wide");
+    url.id = "remote-url";
+    url.type = "url";
+    url.required = true;
+    url.maxLength = 500;
+    url.spellcheck = false;
+    label.htmlFor = url.id;
+    const keyLabel = el("label", "flabel", mic.t("settings.remote.key"));
+    const key = el("input", "field-input wide");
+    key.id = "remote-key";
+    key.type = "password";
+    key.required = true;
+    key.maxLength = 60;
+    key.autocomplete = "off";
+    keyLabel.htmlFor = key.id;
+    const connect = el("button", "btn btn-sm btn-primary", mic.t("settings.remote.connect"));
+    connect.type = "submit";
+    form.append(intro, label, url, keyLabel, key, connect);
+
+    const linked = el("div", "frow col");
+    linked.hidden = true;
+    const workspace = el("div", "flabel");
+    const detail = el("input", "field-input wide");
+    detail.readOnly = true;
+    detail.setAttribute("aria-label", mic.t("settings.remote.url"));
+    detail.addEventListener("focus", () => detail.select());
+    const controls = el("div", "ctl");
+    const claude = el("button", "btn btn-sm btn-primary", mic.t("settings.remote.claude"));
+    const refresh = el("button", "btn btn-sm", mic.t("settings.remote.refresh"));
+    const disconnect = el("button", "btn btn-sm btn-ghost", mic.t("settings.remote.disconnect"));
+    controls.append(claude, refresh, disconnect);
+    linked.append(workspace, detail, controls, el("p", "empty-note", mic.t("settings.remote.claude_help")));
+    const status = el("p", "frow empty-note");
+    status.setAttribute("role", "status");
+    card.append(form, linked, status);
+
+    const states = {
+      off: mic.t("settings.remote.off"), ready: mic.t("settings.remote.ready"),
+      pending: mic.t("settings.remote.pending"), offline: mic.t("settings.remote.offline"),
+      paused: mic.t("settings.remote.paused"), credentials: mic.t("settings.remote.credentials"),
+      error: mic.t("settings.remote.error"), library_changed: mic.t("settings.remote.library_changed"),
+    };
+    let working = false;
+    let problem = "";
+    function paint(r) {
+      if (!r || !r.ok) return;
+      form.hidden = r.state !== "off";
+      linked.hidden = !form.hidden;
+      if (r.url) detail.value = r.url;
+      workspace.textContent = r.workspace || "";
+      status.textContent = problem || states[r.state] || states.error;
+    }
+    async function action(name, ...args) {
+      if (working) return;
+      const read = name === "status";
+      if (!read) {
+        working = true;
+        problem = "";
+        [connect, claude, refresh, disconnect].forEach((b) => { b.disabled = true; });
+      }
+      try {
+        const r = await mic.call("remote_library", name, ...args);
+        if (read && working) return;
+        if (r && r.ok) paint(r);
+        else if (!read) {
+          problem = mic.t((r && r.error) || "settings.remote.unavailable");
+          status.textContent = problem;
+        }
+      } catch (e) {
+        if (!read) status.textContent = mic.t("settings.remote.unavailable");
+      } finally {
+        if (!read) {
+          working = false;
+          [connect, claude, refresh, disconnect].forEach((b) => { b.disabled = false; });
+        }
+      }
+    }
+    form.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const value = key.value;
+      key.value = "";
+      action("connect", url.value, value);
+    });
+    claude.addEventListener("click", () => action("claude"));
+    refresh.addEventListener("click", () => action("refresh"));
+    disconnect.addEventListener("click", () => action("disconnect"));
+    S.pollRemote = () => action("status");
+    return card.parentElement;
   }
 
   // ------------------------------------------------------------------ secretaria
@@ -851,7 +947,9 @@
     document.querySelectorAll(".tab").forEach((t) => t.setAttribute("aria-selected", String(t.dataset.id === id)));
     document.querySelectorAll(".pane").forEach((p) => { p.hidden = p.id !== "pane-" + id; });
     clearInterval(S.diagTimer);
+    clearInterval(S.remoteTimer);
     if (id === "diagnostics") { pollDiag(); S.diagTimer = setInterval(pollDiag, 1000); }
+    if (id === "privacy" && S.pollRemote) { S.pollRemote(); S.remoteTimer = setInterval(S.pollRemote, 2500); }
     try { sessionStorage.setItem("mic.settings.tab", id); } catch (e) { /* private window */ }
   }
 
@@ -882,6 +980,7 @@
     S.hasDiag = !!data.has_diagnostics;
     S.hasVp = !!data.has_voiceprints;
     S.hasSec = !!data.has_secretaria;
+    S.hasRemote = !!data.has_remote_sync;
     const nav = $("nav"), panes = $("panes");
     const ids = [];
     const addTab = (id) => {

@@ -1,0 +1,7 @@
+*
+!micnaga/
+!micnaga/**
+!remote/
+!remote/*.py
+!remote/requirements.txt
+**/__pycache__

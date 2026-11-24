@@ -65,6 +65,13 @@ def _noop(*_args: object, **_kwargs: object) -> None:
     return None
 
 
+class RemoteSyncPort(Protocol):
+    def status(self) -> dict[str, Any]: ...
+    def connect(self, value: str, key: str) -> dict[str, Any]: ...
+    def disconnect(self) -> None: ...
+    def kick(self) -> None: ...
+
+
 @dataclass
 class UiCallbacks:
     """Lo que la UI notifica al resto de la app. Todos opcionales (no-op por defecto)."""
@@ -107,6 +114,7 @@ class UiCallbacks:
     on_first_run_done: Callable[[], None] = _noop
     on_levels_monitor: Callable[[bool], None] = _noop
     """El asistente (paso 3) pide abrir/cerrar los dispositivos solo para medir niveles."""
+    remote_sync: Callable[[], RemoteSyncPort | None] = _noop
 
 
 _APP_ACTIONS: dict[str, Callable[[], object]] = {}

@@ -1,0 +1,25 @@
+services:
+  app:
+    build:
+      context: ..
+      dockerfile: remote/Dockerfile
+    environment:
+      MICNAGA_REMOTE_URL: https://${MICNAGA_REMOTE_HOST:?Configura MICNAGA_REMOTE_HOST}/mcp
+      MICNAGA_OAUTH_ISSUER: ${MICNAGA_OAUTH_ISSUER:?Configura MICNAGA_OAUTH_ISSUER}
+    volumes:
+      - meetings:/data
+    restart: unless-stopped
+  https:
+    image: caddy:2.10.2-alpine
+    environment:
+      MICNAGA_REMOTE_HOST: ${MICNAGA_REMOTE_HOST}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - certificates:/data
+    restart: unless-stopped
+volumes:
+  meetings:
+  certificates:
