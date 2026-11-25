@@ -728,6 +728,10 @@ class BrainService(GoogleApiMixin):
                 confirm.append(it["id"])
         if not expect:
             return {"ok": False, "error": "secretaria.err.stale"}
+        # «Acta a Drive» sube el acta COMPLETA: se escribe antes (fuera del cerrojo del acta, tarda
+        # minutos) y, si no se puede, no se aplica nada en vez de subir la breve
+        if self._wants_drive(path, list(expect)) and not self._ensure_full_acta(path):
+            return {"ok": False, "error": "secretaria.err.full_acta"}
         try:
             with self._acta_lock:
                 acta = self._executor(path).apply(list(expect), expect=expect, confirm=confirm)
@@ -957,6 +961,44 @@ class BrainService(GoogleApiMixin):
             state = {"fase": "error", "error": str(getattr(exc, "kind", "failed"))}
         with self._lock:
             self._full[key] = state
+
+    def _full_acta_md(self, path: Path) -> str | None:
+        """El Markdown del «Acta completa» guardada (``None`` si no la hay)."""
+        from micnaga.brain import full_acta
+
+        doc = full_acta.read(path)
+        return doc["md"] if doc else None
+
+    def _ensure_full_acta(self, path: Path) -> bool:
+        """Que exista el «Acta completa» (la que se sube a Drive): si no la hay, se escribe ahora,
+        con el mismo estado «escribiendo» que la vista (un solo escritor; si ya se esta
+        escribiendo, se espera). ``True`` si al final la hay."""
+        from micnaga.brain import full_acta
+
+        if full_acta.read(path) is not None:
+            return True
+        key = path.name
+        with self._lock:
+            busy = (self._full.get(key) or {}).get("fase") == "escribiendo"
+            if not busy:
+                self._full[key] = {"fase": "escribiendo", "texto": "", "inicio": time.time()}
+        if busy:
+            deadline = time.monotonic() + full_acta.TIMEOUT_S + 60
+            while time.monotonic() < deadline:
+                with self._lock:
+                    if (self._full.get(key) or {}).get("fase") != "escribiendo":
+                        break
+                time.sleep(0.5)
+        else:
+            self._write_full(path)
+        return full_acta.read(path) is not None
+
+    def _wants_drive(self, path: Path, ids: list[str]) -> bool:
+        acta = acta_io.read_acta(path) or {}
+        return any(
+            p.get("tipo") == "acta_drive" and p.get("id") in ids
+            for p in acta.get("propuestas") or []
+        )
 
     def _api_full_acta_open(self, args: dict[str, Any]) -> dict[str, Any]:
         from micnaga.brain import full_acta

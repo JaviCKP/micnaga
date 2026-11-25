@@ -42,10 +42,15 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 MONITOR_DEFAULTTONEAREST = 2
 SPI_GETCLIENTAREAANIMATION = 0x1042
+SM_REMOTESESSION = 0x1000
 
 DWMWA_USE_IMMERSIVE_DARK_MODE = 20
 DWMWA_WINDOW_CORNER_PREFERENCE = 33
 DWMWA_SYSTEMBACKDROP_TYPE = 38
+DWMWA_BORDER_COLOR = 34
+DWMWA_CAPTION_COLOR = 35
+DWMWA_TEXT_COLOR = 36
+CAPTION_COLOR_MIN_BUILD = 22000  # Windows 11
 DWMSBT_NONE = 1  # sin fondo de sistema
 DWMSBT_MAINWINDOW = 2  # Mica
 DWMSBT_TRANSIENTWINDOW = 3  # acrilico
@@ -198,6 +203,13 @@ class Win32:
             ctypes.windll.dwmapi.DwmFlush()
         except (AttributeError, OSError):
             time.sleep(1 / 60)
+
+    def remote_session(self) -> bool:
+        """Sesion de Escritorio remoto (``SM_REMOTESESSION``)."""
+        try:
+            return bool(ctypes.windll.user32.GetSystemMetrics(SM_REMOTESESSION))
+        except (AttributeError, OSError):
+            return False
 
     def client_area_animation(self) -> bool:
         flag = ctypes.c_int(1)
@@ -540,12 +552,26 @@ def resolve_theme(setting: str, api: Win32 | None = None) -> Theme:
     return system_theme(api)
 
 
-def animations_enabled(api: Win32 | None = None) -> bool:
-    """``False`` si «Efectos de animacion» esta apagado (``SPI_GETCLIENTAREAANIMATION``)."""
+def animations_enabled(api: Win32 | None = None, setting: str = "auto") -> bool:
+    """¿Animar? ``setting`` es ``ui.motion``: ``on`` / ``off`` mandan; ``auto`` sigue a
+    «Efectos de animacion» (``SPI_GETCLIENTAREAANIMATION``) salvo en una sesion de Escritorio
+    remoto, donde Windows los apaga por su cuenta para ahorrar ancho de banda: alli no es una
+    eleccion del usuario y la app se quedaba congelada (el fondo sin moverse, sin cargas)."""
+    if setting == "on":
+        return True
+    if setting == "off":
+        return False
+    w = api or default_api()
     try:
-        return (api or default_api()).client_area_animation()
+        if w.client_area_animation():
+            return True
     except (OSError, AttributeError):  # pragma: no cover - defensivo
         return True
+    remote = getattr(w, "remote_session", None)
+    try:
+        return bool(remote()) if callable(remote) else False
+    except OSError:  # pragma: no cover - defensivo
+        return False
 
 
 def do_not_disturb(api: Win32 | None = None) -> bool:
@@ -590,6 +616,40 @@ def set_backdrop(
         DWMWA_SYSTEMBACKDROP_TYPE,
         DWMSBT_MAINWINDOW if kind == "mica" else DWMSBT_TRANSIENTWINDOW,
     )
+
+
+def colorref(hex_color: str) -> int:
+    """``#rrggbb`` -> ``COLORREF`` (``0x00bbggrr``)."""
+    h = hex_color.lstrip("#")
+    r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+    return (b << 16) | (g << 8) | r
+
+
+#: Barra de titulo de las ventanas normales: el fondo de la app (``--bg``), su tinta y una
+#: linea apenas visible. Asi la barra deja de ser la franja blanca de Windows.
+TITLE_BAR = {
+    "dark": {"caption": "#131318", "text": "#f4f4f7", "border": "#26262e"},
+    "light": {"caption": "#f3f3f0", "text": "#0b0b0f", "border": "#d9d9d3"},
+}
+
+
+def set_title_bar(hwnd: int, *, dark: bool, api: Win32 | None = None) -> bool:
+    """Barra de titulo con los colores de la app (sigue el tema de la APP, no el del sistema).
+
+    Modo oscuro inmersivo (los glifos de minimizar/cerrar) en Windows 10 1809+ y, en Windows 11,
+    el color de la barra, del texto y del borde (``DWMWA_CAPTION_COLOR``...). pywebview vuelve a
+    poner el modo oscuro segun el SISTEMA en cada cambio de preferencias: la app lo reaplica en
+    su sondeo del tema. ``False`` si la barra no admite color (Windows 10)."""
+    w = api or default_api()
+    if not hwnd:
+        return False
+    w.dwm_set(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, 1 if dark else 0)
+    if w.windows_build() < CAPTION_COLOR_MIN_BUILD:
+        return False
+    c = TITLE_BAR["dark" if dark else "light"]
+    ok = w.dwm_set(hwnd, DWMWA_CAPTION_COLOR, colorref(c["caption"]))
+    ok = w.dwm_set(hwnd, DWMWA_TEXT_COLOR, colorref(c["text"])) and ok
+    return w.dwm_set(hwnd, DWMWA_BORDER_COLOR, colorref(c["border"])) and ok
 
 
 def acrylic_supported(api: Win32 | None = None) -> bool:

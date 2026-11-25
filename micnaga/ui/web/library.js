@@ -1045,7 +1045,7 @@
       const root = document.documentElement;
       const p = new URLSearchParams({ embed: "1" });
       if (root.dataset.theme) p.set("theme", root.dataset.theme);
-      if (root.dataset.motion === "off") p.set("motion", "off");
+      if (root.dataset.motion) p.set("motion", root.dataset.motion);
       if (root.dataset.backdrop) p.set("backdrop", root.dataset.backdrop);
       f = document.createElement("iframe");
       f.src = "settings.html?" + p.toString();

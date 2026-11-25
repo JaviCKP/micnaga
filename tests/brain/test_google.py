@@ -782,6 +782,31 @@ def test_drive_saves_the_acta_as_a_google_doc(tmp_path: Path) -> None:
     )
 
 
+def test_drive_uploads_the_full_acta_and_never_the_short_one_instead(tmp_path: Path) -> None:
+    runner = FakeGoogleRunner()
+    folder = tmp_path / "2026-11-19_1030_reunion"
+    folder.mkdir()
+    p = {
+        "id": "p5",
+        "grupo": "google",
+        "tipo": "acta_drive",
+        "estado": "pendiente",
+        "datos": {"titulo": "Acta · X"},
+    }
+    md = "# Acta: X\n\n| Responsable | Tarea |\n|---|---|\n| Ana | Enviar |\n"
+    ap = apply.GoogleApplier(folder, runner=runner, db_factory=open_database, full_acta=lambda: md)
+    ap.apply(p, {"titulo": "X", "resumen": ["breve"]})
+    _tool, inp = runner.google.calls[0]
+    assert "<td>Ana</td><td>Enviar</td>" in inp["textContent"]
+    assert "breve" not in inp["textContent"]
+    missing = apply.GoogleApplier(
+        folder, runner=runner, db_factory=open_database, full_acta=lambda: None
+    )
+    with pytest.raises(apply.GoogleApplyError, match="google_no_full_acta"):
+        missing.apply({**p, "id": "p6", "uid": "u6"}, {"titulo": "X"})
+    assert len(runner.google.calls) == 1
+
+
 # ============================================================================== espejo en Odoo
 
 

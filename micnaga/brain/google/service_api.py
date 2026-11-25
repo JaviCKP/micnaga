@@ -45,6 +45,9 @@ class GoogleApiMixin:
     def _odoo_client(self) -> Any:  # pragma: no cover
         raise NotImplementedError
 
+    def _full_acta_md(self, path: Path) -> str | None:  # pragma: no cover
+        raise NotImplementedError
+
     # ------------------------------------------------------------------ ajustes
 
     def _api_google_status(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -103,4 +106,10 @@ class GoogleApiMixin:
 
         cfg = self.config
         odoo = self._odoo_client if cfg.secretaria.odoo_url else None
-        return GoogleApplier(path, runner=self._runner(), db_factory=self._db, odoo=odoo)
+        return GoogleApplier(
+            path,
+            runner=self._runner(),
+            db_factory=self._db,
+            odoo=odoo,
+            full_acta=lambda: self._full_acta_md(path),
+        )

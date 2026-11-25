@@ -15,6 +15,7 @@ class FakeWin32(winapi.Win32):
         self.rects: dict[int, Rect] = {}
         self.monitor = winapi.MonitorInfo((0, 0, 1920, 1040), 1.25)
         self.animation = True
+        self.remote = False
         self.qstate: int | None = winapi.QUNS_ACCEPTS_NOTIFICATIONS
         self.hkcu: dict[tuple[str, str], int] = {}
         self.build = 26200
@@ -77,6 +78,9 @@ class FakeWin32(winapi.Win32):
 
     def client_area_animation(self) -> bool:
         return self.animation
+
+    def remote_session(self) -> bool:
+        return self.remote
 
     def notification_state(self) -> int | None:
         return self.qstate

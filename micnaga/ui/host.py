@@ -107,7 +107,7 @@ LEVEL_RELEASE_S = 0.2
 LEVEL_TAIL_S = 4.0
 """Tras el silencio se siguen enviando ceros un rato: la onda (historia que se desplaza) se vacia
 hasta la linea quieta y despues ya no se envia nada."""
-_BG = {"light": "#f3f3f0", "dark": "#050507"}
+_BG = {"light": "#f3f3f0", "dark": "#131318"}  # = --bg de tokens.css
 
 
 class LevelEnvelope:
@@ -498,23 +498,28 @@ class UiHost:
     def _theme(self) -> str:
         return winapi.resolve_theme(self._config.ui.theme, self._w32)
 
+    def _motion_on(self) -> bool:
+        return winapi.animations_enabled(self._w32, self._config.ui.motion)
+
     def _page_params(self) -> dict[str, Any]:
         params: dict[str, Any] = {"theme": self._theme(), "lang": self._config.ui.language}
-        if not winapi.animations_enabled(self._w32):
-            params["motion"] = "off"
+        # "on" explicito: la pagina ignora prefers-reduced-motion (WebView2 lo deriva del mismo
+        # ajuste de Windows, que el Escritorio remoto apaga solo)
+        params["motion"] = "on" if self._motion_on() else "off"
         return params
 
     def apply_config(self, config: Config) -> None:
         """Aplica una configuracion nueva (tema, idioma, recordatorio) a las ventanas abiertas."""
         self._config = config
         self._push_theme(force=True)
+        self._repaint_title_bars()
 
     def _push_theme(self, *, force: bool = False) -> None:
         theme = self._theme()
         if theme == self._pushed_theme and not force:
             return
         self._pushed_theme = theme
-        motion = "true" if winapi.animations_enabled(self._w32) else "false"
+        motion = "true" if self._motion_on() else "false"
         script = f"window.mic && (mic.setTheme({json.dumps(theme)}), mic.setMotion({motion}))"
         if self._acrylic and self._popup is not None and self._popup.hwnd:
             winapi.set_backdrop(self._popup.hwnd, "acrylic", dark=theme == "dark", api=self._w32)
@@ -531,6 +536,7 @@ class UiHost:
                 try:
                     self._push_theme()
                     self._clear_surface_backdrop()
+                    self._repaint_title_bars()
                 except Exception:
                     log.debug("theme poll failed", exc_info=True)
 
@@ -688,7 +694,7 @@ class UiHost:
             total <= 0
             or current is None
             or current == target
-            or not winapi.animations_enabled(self._w32)  # sin animaciones el CSS salta al destino
+            or not self._motion_on()  # sin animaciones el CSS salta al destino
         ):
             self._apply_region(gen, target, mon.scale, kind)
             return
@@ -910,7 +916,7 @@ class UiHost:
             gen = self._vanish_gen
             self._surface_phase = "hidden"
         win.run_js("micnaga.pill.vanish()")
-        delay = VANISH_S if winapi.animations_enabled(self._w32) else 0.0
+        delay = VANISH_S if self._motion_on() else 0.0
 
         def done() -> None:
             with self._lock:
@@ -1000,7 +1006,7 @@ class UiHost:
             self._surface_phase = "expanding"
         self._prepare_surface(win)
         layout = self._layout_stage(mon, self._pill_target(mon))
-        motion = "true" if winapi.animations_enabled(self._w32) else "false"
+        motion = "true" if self._motion_on() else "false"
         win.run_js(f"mic.setMotion({motion});")
         if born:
             pill_payload = {
@@ -1560,9 +1566,42 @@ class UiHost:
         self._cb.on_open_settings()
 
     def _tray_quit(self) -> None:
-        self._quit_reason = "tray_quit"
-        self._cb.on_quit()  # primero el integrador (parar captura/vigilante), luego la GUI
-        self.quit("tray_quit")
+        """«Salir»: la app desaparece AL MOMENTO (icono y ventanas fuera) y el cierre ordenado
+        (parar la captura, guardar lo grabado, esperar al worker) sigue en segundo plano.
+
+        Antes se llamaba al integrador aqui mismo, en el hilo de pystray: su espera (hasta 120 s)
+        bloqueaba el bucle del icono, que seguia en la bandeja sin responder, y las ventanas
+        seguian abiertas: «Salir» parecia no hacer nada."""
+        with self._lock:
+            if self._quit_reason is not None:
+                return  # segundo clic mientras se cierra
+            self._quit_reason = "tray_quit"
+        self._hide_all_for_quit()
+        threading.Thread(target=self._finish_quit, name="micnaga-quit", daemon=True).start()
+
+    def _hide_all_for_quit(self) -> None:
+        """Quita de la vista el icono de bandeja y todas las ventanas (sin destruirlas aun)."""
+        tray = self._tray
+        if tray is not None:
+            try:
+                tray.stop()
+            except Exception:
+                log.exception("could not remove the tray icon")
+        with self._lock:
+            wins = list(self._windows.values())
+        for w in [*wins, *self._overlays()]:
+            try:
+                w.hide()
+            except Exception:
+                log.debug("could not hide a window on quit", exc_info=True)
+
+    def _finish_quit(self) -> None:
+        try:
+            self._cb.on_quit()  # primero el integrador (parar captura/vigilante), luego la GUI
+        except Exception:
+            log.exception("shutdown failed; exiting anyway")
+        finally:
+            self.quit("tray_quit")
 
     def set_processing(self, processing: bool) -> None:
         """Azul en la bandeja mientras el worker procesa."""
@@ -1640,7 +1679,33 @@ class UiHost:
         win.on_closed(closed)
         if self._backdrop == "mica":
             self._spawn(lambda: self._apply_backdrop(win))
+        else:
+            self._spawn(lambda: self._apply_title_bar(win, wait=True))
         return win
+
+    def _apply_title_bar(self, win: UiWindow, *, wait: bool = False) -> None:
+        """En cuanto existe el HWND (que no se vea la barra blanca al abrir) y otra vez al
+        cargar la pagina (pywebview la retoca al mostrar el formulario)."""
+        dark = self._theme() == "dark"
+        if not wait:
+            winapi.set_title_bar(win.hwnd, dark=dark, api=self._w32)
+            return
+        deadline = time.monotonic() + 3.0
+        while not win.hwnd and time.monotonic() < deadline and not self._stopping.is_set():
+            time.sleep(0.02)
+        winapi.set_title_bar(win.hwnd, dark=dark, api=self._w32)
+        win.wait_loaded(10.0)
+        winapi.set_title_bar(win.hwnd, dark=dark, api=self._w32)
+
+    def _repaint_title_bars(self) -> None:
+        """Las ventanas normales con la barra de la app (pywebview la devuelve al tema del
+        sistema cuando cambian las preferencias de Windows)."""
+        if self._backdrop == "mica":
+            return
+        with self._lock:
+            wins = list(self._windows.values())
+        for w in wins:
+            self._apply_title_bar(w)
 
     def _apply_backdrop(self, win: UiWindow) -> None:
         win.wait_loaded(10.0)

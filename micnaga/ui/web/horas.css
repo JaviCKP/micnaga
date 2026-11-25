@@ -129,4 +129,4 @@
   .hx-origin { display: none; }
 }
 :root[data-motion="off"] .horas { animation: none; }
-@media (prefers-reduced-motion: reduce) { .horas { animation: none; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion="on"]) .horas { animation: none; } }

@@ -22,7 +22,9 @@
 
   const theme = params.get("theme");
   if (theme === "light" || theme === "dark") root.dataset.theme = theme;
-  if (params.get("motion") === "off") root.dataset.motion = "off";
+  // motion: "off" (no animation) | "on" (forced: beats prefers-reduced-motion, which WebView2
+  // derives from the Windows setting that Remote Desktop switches off by itself) | absent
+  if (params.get("motion") === "off" || params.get("motion") === "on") root.dataset.motion = params.get("motion");
   if (params.get("backdrop")) root.dataset.backdrop = params.get("backdrop");
   if (params.get("stage")) document.addEventListener("DOMContentLoaded", () => document.body.classList.add("stage-demo"));
 
@@ -31,7 +33,7 @@
   mic.params = params;
   mic.mock = mic.mock || {};
   Object.defineProperty(mic, "motion", {
-    get() { return root.dataset.motion !== "off" && !(reducedMq && reducedMq.matches); },
+    get() { return root.dataset.motion === "on" || (root.dataset.motion !== "off" && !(reducedMq && reducedMq.matches)); },
   });
   mic.dur = (ms) => (mic.motion ? ms : 0);
   mic.isHost = !!(window.chrome && window.chrome.webview);
@@ -78,7 +80,7 @@
     document.dispatchEvent(new Event("mic:theme"));
   };
   if (window.matchMedia) matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => document.dispatchEvent(new Event("mic:theme")));
-  mic.setMotion = (on) => { if (on) delete root.dataset.motion; else root.dataset.motion = "off"; };
+  mic.setMotion = (on) => { root.dataset.motion = on ? "on" : "off"; };
   mic.setBackdrop = (b) => { if (b) root.dataset.backdrop = b; else delete root.dataset.backdrop; };
 
   // ---- i18n -------------------------------------------------------------------------

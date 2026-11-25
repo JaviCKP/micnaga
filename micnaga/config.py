@@ -104,6 +104,9 @@ class HotkeysConfig:
 @dataclass
 class UiConfig:
     theme: str = "system"  # system | light | dark
+    # Animaciones: ``auto`` sigue a Windows («Efectos de animacion»), salvo en Escritorio remoto,
+    # donde Windows las apaga solo (no es una eleccion del usuario); ``on`` / ``off`` fuerzan.
+    motion: str = "auto"  # auto | on | off
     language: str = "es"
     sound: bool = False  # sonido suave del popup
 
@@ -190,6 +193,7 @@ class Config:
         _check_choice("processing.diarization", self.processing.diarization, DIARIZERS)
         _check_choice("processing.aec", self.processing.aec, AEC_MODES + AEC_LEGACY)
         _check_choice("ui.theme", self.ui.theme, ("system", "light", "dark"))
+        _check_choice("ui.motion", self.ui.motion, ("auto", "on", "off"))
         d = self.detection
         for key in (
             "confirm_after_s",

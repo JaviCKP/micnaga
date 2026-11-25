@@ -112,7 +112,7 @@ class Tray:
         return self._state
 
     def title(self) -> str:
-        """«Micnaga 0.1.1 · vigilando» (la version siempre a la vista)."""
+        """«Micnaga 0.1.2 · vigilando» (la version siempre a la vista)."""
         state = (
             f"toast.error.{self._capture_issue}.title"
             if self._capture_issue is not None

@@ -113,6 +113,30 @@ def test_system_theme_and_resolution() -> None:
     assert winapi.resolve_theme("system", w) == "light"
 
 
+def test_motion_setting_and_remote_desktop() -> None:
+    w = FakeWin32()
+    w.animation = False
+    assert not winapi.animations_enabled(w)
+    w.remote = True  # Escritorio remoto: Windows las apaga solo; «auto» no se lo cree
+    assert winapi.animations_enabled(w)
+    assert not winapi.animations_enabled(w, "off")
+    w.remote = False
+    assert winapi.animations_enabled(w, "on")
+
+
+def test_title_bar_takes_the_app_colours() -> None:
+    w = FakeWin32()
+    w.build = 26100
+    assert winapi.set_title_bar(7, dark=True, api=w)
+    attrs = {a: v for _h, a, v in w.dwm}
+    assert attrs[winapi.DWMWA_USE_IMMERSIVE_DARK_MODE] == 1
+    assert attrs[winapi.DWMWA_CAPTION_COLOR] == winapi.colorref("#131318") == 0x181313
+    w.dwm.clear()
+    w.build = 19045  # Windows 10: solo los glifos oscuros, sin color de barra
+    assert not winapi.set_title_bar(7, dark=True, api=w)
+    assert [a for _h, a, _v in w.dwm] == [winapi.DWMWA_USE_IMMERSIVE_DARK_MODE]
+
+
 def test_animations_enabled_follows_windows_setting() -> None:
     w = FakeWin32()
     assert winapi.animations_enabled(w)
