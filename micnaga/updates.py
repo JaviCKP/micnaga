@@ -3,8 +3,8 @@
 Que hace
 --------
 * Comprueba ``/releases/latest`` (la API ya excluye borradores y prereleases; se vuelve a mirar)
-  un minuto despues de arrancar, cada 12 h y cuando se pulsa «Buscar actualizaciones». Compara la
-  version (``X.Y.Z``) con ``micnaga.__version__`` y respeta «Omitir esta version».
+  un minuto despues de CADA arranque, cada 3 h y cuando se pulsa «Buscar actualizaciones».
+  Compara la version (``X.Y.Z``) con ``micnaga.__version__`` y respeta «Omitir esta version».
 * La peticion no lleva datos del usuario: solo ``User-Agent: Micnaga/<version>`` y, si la hay, la
   ``ETag`` de la ultima respuesta (``If-None-Match``: un 304 no gasta cuota). Sin red o con el
   limite de la API agotado no se avisa de nada (solo una comprobacion pedida a mano dice «no se
@@ -66,7 +66,9 @@ ALLOWED_SUFFIXES: tuple[str, ...] = (".githubusercontent.com",)
 """Activos de las releases: ``objects.githubusercontent.com`` / ``release-assets...``."""
 
 FIRST_CHECK_DELAY_S = 60.0
-CHECK_INTERVAL_S = 12 * 3600.0
+# Antes 12 h y contadas entre arranques: una release publicada por la tarde no se veia hasta el
+# dia siguiente aunque se reiniciara la app. Con la ETag, una respuesta 304 no gasta cuota.
+CHECK_INTERVAL_S = 3 * 3600.0
 IDLE_POLL_S = 20.0
 """Instalacion pendiente: cada cuanto se mira si la app ya esta en reposo."""
 HTTP_TIMEOUT_S = 30.0
@@ -657,7 +659,7 @@ class UpdateService:
 
     # ------------------------------------------------------------------ ciclo de vida
     def start(self) -> None:
-        """Hilo de fondo: novedades tras actualizar, primera comprobacion y cada 12 h."""
+        """Hilo de fondo: novedades tras actualizar, primera comprobacion y cada 3 h."""
         if self._snap.state == "disabled" or self._worker is not None:
             return
         self._note_version_change()
@@ -685,9 +687,11 @@ class UpdateService:
     def _loop(self) -> None:
         if self._stop.wait(self._first_delay):
             return
+        first = True  # al arrancar se comprueba siempre (no cuenta la ultima vez de otra sesion)
         while not self._stop.is_set():
             last = float(self._state.get("last_check", 0) or 0)
-            due = self._clock() - last >= self._interval * 0.98
+            due = first or self._clock() - last >= self._interval * 0.98
+            first = False
             if due and self._auto_on():
                 try:
                     self.check(manual=False)

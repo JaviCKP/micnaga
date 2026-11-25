@@ -309,6 +309,24 @@ def test_auto_check_loop_respects_the_setting(tmp_path: Path) -> None:
     assert not fake.requests
 
 
+def test_checks_at_every_start_even_after_a_recent_check(tmp_path: Path) -> None:
+    """Una release publicada despues de la ultima comprobacion se ve al reiniciar la app."""
+    fake = FakeHttps()
+    serve_latest(fake, release_json())
+    first = make_service(tmp_path, fake)
+    first.check()
+    sent = len(fake.requests)
+    svc = make_service(tmp_path, fake, first_delay_s=0.0)  # otra sesion, mismo estado
+    svc.start()
+    for _ in range(100):
+        if len(fake.requests) > sent:
+            break
+        time.sleep(0.02)
+    svc.stop()
+    assert len(fake.requests) > sent
+    assert updates.CHECK_INTERVAL_S <= 3 * 3600
+
+
 def test_disabled_by_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     fake = FakeHttps()
     serve_latest(fake, release_json())
