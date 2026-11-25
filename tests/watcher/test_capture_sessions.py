@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from micnaga.watcher.capture_sessions import CaptureSessionMicSource, CombinedMicSource
@@ -56,6 +59,52 @@ def test_lister_error_is_reported_not_raised() -> None:
     r = CaptureSessionMicSource(BROWSERS, boom, own_paths=frozenset(), own_pid=1).read()
     assert not r.reading.active
     assert r.reading.error is not None and "no capture device" in r.reading.error
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="necesita comtypes")
+@pytest.mark.parametrize("failure_at", ["endpoint", "manager", "session"])
+def test_failing_wasapi_device_or_session_keeps_other_microphones_visible(
+    monkeypatch: pytest.MonkeyPatch, failure_at: str
+) -> None:
+    import comtypes
+    import psutil
+
+    def fail(*args: object) -> None:
+        raise comtypes.COMError(-2147467259, "device removed", None)
+
+    proc = SimpleNamespace(name=lambda: "Chrome.exe", exe=lambda: r"C:\Chrome\chrome.exe")
+    monkeypatch.setattr(psutil, "Process", lambda pid: proc)
+    good_session = SimpleNamespace(GetState=lambda: 1, GetProcessId=lambda: 42)
+    sessions = SimpleNamespace(
+        GetCount=lambda: 2,
+        GetSession=lambda i: SimpleNamespace(
+            QueryInterface=fail if i == 0 and failure_at == "session" else lambda _: good_session
+        ),
+    )
+    good_manager = SimpleNamespace(GetSessionEnumerator=lambda: sessions)
+    bad_manager = SimpleNamespace(GetSessionEnumerator=fail)
+    endpoints = SimpleNamespace(
+        GetCount=lambda: 2,
+        Item=lambda i: SimpleNamespace(
+            Activate=fail
+            if i == 0 and failure_at == "endpoint"
+            else lambda *args: SimpleNamespace(
+                QueryInterface=lambda _: (
+                    bad_manager if i == 0 and failure_at == "manager" else good_manager
+                )
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        comtypes,
+        "CoCreateInstance",
+        lambda *args: SimpleNamespace(EnumAudioEndpoints=lambda *a: endpoints),
+    )
+
+    reading = CaptureSessionMicSource(BROWSERS, own_pid=1).read()
+
+    assert reading.browsers == frozenset({"chrome.exe"})
+    assert {app.key for app in reading.apps} == {"app:chrome.exe"}
 
 
 class _Fixed:
