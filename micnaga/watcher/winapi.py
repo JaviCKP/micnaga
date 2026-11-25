@@ -111,15 +111,17 @@ class UiaTabNameReader:
         self._no_tabcontrol_until: dict[int, float] = {}
 
     def _init(self) -> None:
-        import comtypes
         import comtypes.client
 
         uia_mod = comtypes.client.GetModule("UIAutomationCore.dll")
 
         self._module = uia_mod
         self._uia = comtypes.client.CreateObject(
-            uia_mod.CUIAutomation, interface=uia_mod.IUIAutomation
+            uia_mod.CUIAutomation8, interface=uia_mod.IUIAutomation2
         )
+        # Un proveedor de un navegador lento bloquea el sondeo hasta que UIA responde.
+        self._uia.ConnectionTimeout = 500
+        self._uia.TransactionTimeout = 1000
         self._cond_tab_item = self._uia.CreatePropertyCondition(
             uia_mod.UIA_ControlTypePropertyId, uia_mod.UIA_TabItemControlTypeId
         )

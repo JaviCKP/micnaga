@@ -70,6 +70,7 @@ from micnaga.capture.sources import (
 log = logging.getLogger(__name__)
 
 BUFFER_S = 0.1
+STREAM_CHECK_INTERVAL_S = 1.0
 OPEN_TIMEOUT_S = 3.0
 """Espera maxima de una apertura (incluido un reinicio de PortAudio)."""
 CLOSE_TIMEOUT_S = 1.5
@@ -329,6 +330,7 @@ class PortAudioSource:
         self._stream: Any = None
         self._error: str | None = None
         self._closed = False
+        self._next_stream_check = time.monotonic() + STREAM_CHECK_INTERVAL_S
 
     # --- ciclo de vida
 
@@ -374,8 +376,10 @@ class PortAudioSource:
         stream, self._stream = self._stream, None
         if stream is not None:
             try:
-                stream.stop_stream()
-                stream.close()
+                try:
+                    stream.stop_stream()
+                finally:
+                    stream.close()
             except Exception:
                 log.exception("closing stream for %s", self.info.name)
 
@@ -395,9 +399,28 @@ class PortAudioSource:
         try:
             data, arrival = self._q.get(timeout=timeout) if timeout > 0 else self._q.get_nowait()
         except queue.Empty:
+            if timeout > 0 and not self._closed:
+                now = time.monotonic()
+                if now >= self._next_stream_check:
+                    self._next_stream_check = now + STREAM_CHECK_INTERVAL_S
+                    self._backend.call(
+                        self._check_stream_here, timeout=self._backend.close_timeout_s
+                    )
             return None
+        self._next_stream_check = time.monotonic() + STREAM_CHECK_INTERVAL_S
         frames = np.frombuffer(data, dtype=np.float32).reshape(-1, self.channels)
         return Packet(frames=frames, arrival_ns=arrival)
+
+    def _check_stream_here(self) -> None:
+        """En el hilo de PortAudio. El loopback puede estar activo sin entregar paquetes."""
+        if self._closed:
+            return
+        try:
+            active = self._stream is not None and self._stream.is_active()
+        except Exception as exc:
+            raise SourceError(f"cannot check stream for {self.info.name!r}: {exc}") from exc
+        if not active:
+            raise SourceError(f"audio stream for {self.info.name!r} is inactive")
 
     def close(self) -> None:
         if self._closed:

@@ -98,6 +98,10 @@ class FakeStream:
         _record("close")
         self.closed = True
 
+    def is_active(self) -> bool:
+        _record("is_active")
+        return not (self.stopped or self.closed)
+
 
 class FakePA:
     """PortAudio toma una instantanea de ``world`` al crearse (como Pa_Initialize)."""
@@ -237,6 +241,27 @@ def test_wasapi_mic_is_the_communications_device_by_name(fake_pa: type[FakePA]) 
     assert mic._stream.kwargs["input_device_index"] == 3  # type: ignore[attr-defined]
     assert mic.sample_rate == 16000 and mic.channels == 1
     backend.close()
+
+
+def test_silent_loopback_distinguishes_inactive_stream_from_silence(
+    fake_pa: type[FakePA], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    now = 0.0
+    monkeypatch.setattr(wasapi.time, "monotonic", lambda: now)
+    backend = wasapi.WasapiBackend()
+    try:
+        src = backend.open_system()
+        stream = fake_pa.instances[-1].streams[-1]
+        now = 2.0
+        assert src.read(0.001) is None  # un loopback activo puede no entregar paquetes
+        stream.stopped = True
+        now = 4.0
+        with pytest.raises(SourceError, match="inactive"):
+            src.read(0.001)
+        assert src.read(0.0) is None  # el drenaje no consulta al controlador
+        assert all(name == wasapi.THREAD_NAME for op, name, _ in CALLS if op == "is_active")
+    finally:
+        backend.close()
 
 
 def test_hot_swap_reinitialises_portaudio_when_the_new_device_is_not_visible(

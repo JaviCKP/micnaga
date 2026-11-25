@@ -12,6 +12,7 @@ importan de forma perezosa.
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from collections.abc import Callable, Iterable
@@ -25,6 +26,8 @@ from micnaga.watcher.registry_mic import (
 )
 from micnaga.watcher.sources import MicReading, MicSource
 
+log = logging.getLogger(__name__)
+
 CaptureLister = Callable[[], Iterable[tuple[int, str, str]]]
 """Devuelve ``(pid, exe_en_minusculas, ruta_del_exe)`` por cada sesion de captura ACTIVA."""
 
@@ -35,6 +38,8 @@ ENDPOINTS_REFRESH_S = 10.0
 
 
 def _session_managers() -> list[object]:
+    from _ctypes import COMError
+
     import comtypes
     from pycaw.api.mmdeviceapi import IMMDeviceEnumerator
     from pycaw.constants import CLSID_MMDeviceEnumerator
@@ -44,19 +49,30 @@ def _session_managers() -> list[object]:
         CLSID_MMDeviceEnumerator, IMMDeviceEnumerator, comtypes.CLSCTX_INPROC_SERVER
     )
     devices = enumerator.EnumAudioEndpoints(1, 1)  # eCapture, DEVICE_STATE_ACTIVE
-    return [
-        devices.Item(i)
-        .Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
-        .QueryInterface(IAudioSessionManager2)
-        for i in range(devices.GetCount())
-    ]
+    managers: list[object] = []
+    last_error: COMError | None = None
+    for i in range(devices.GetCount()):
+        try:
+            manager = (
+                devices.Item(i)
+                .Activate(IAudioSessionManager2._iid_, comtypes.CLSCTX_ALL, None)
+                .QueryInterface(IAudioSessionManager2)
+            )
+        except COMError as exc:
+            last_error = exc
+            log.debug("could not activate WASAPI capture endpoint %d: %s", i, exc)
+        else:
+            managers.append(manager)
+    if not managers and last_error is not None:
+        raise last_error
+    return managers
 
 
 class CachedCaptureLister:
     """``CaptureLister`` que reutiliza los gestores de sesion de cada micro durante
     ``refresh_s`` (un micro enchufado a mitad aparece como mucho ``refresh_s`` despues en ESTA
-    senal secundaria; el registro de privacidad sigue en cada tick). Cualquier error tira la cache
-    y se reintenta con una enumeracion nueva. Solo desde el hilo del vigilante (objetos COM STA).
+    senal secundaria; el registro de privacidad sigue en cada tick). Si fallan todos los gestores
+    se reintenta con una enumeracion nueva. Solo desde el hilo del vigilante (objetos COM STA).
     """
 
     def __init__(
@@ -88,17 +104,32 @@ def wasapi_capture_sessions() -> list[tuple[int, str, str]]:
 
 
 def _active_sessions(managers: Iterable[object]) -> list[tuple[int, str, str]]:
+    from _ctypes import COMError
+
     import psutil
     from pycaw.pycaw import IAudioSessionControl2
 
     out: list[tuple[int, str, str]] = []
+    last_error: COMError | None = None
+    enumerated = False
     for manager in managers:
-        sessions = manager.GetSessionEnumerator()  # type: ignore[attr-defined]
-        for j in range(sessions.GetCount()):
-            control = sessions.GetSession(j).QueryInterface(IAudioSessionControl2)
-            if int(control.GetState()) != 1:  # AudioSessionStateActive
+        try:
+            sessions = manager.GetSessionEnumerator()  # type: ignore[attr-defined]
+            count = sessions.GetCount()
+        except COMError as exc:
+            last_error = exc
+            log.debug("could not enumerate sessions for a WASAPI capture endpoint: %s", exc)
+            continue
+        enumerated = True
+        for j in range(count):
+            try:
+                control = sessions.GetSession(j).QueryInterface(IAudioSessionControl2)
+                if int(control.GetState()) != 1:  # AudioSessionStateActive
+                    continue
+                pid = int(control.GetProcessId())
+            except COMError as exc:
+                log.debug("could not read WASAPI capture session %d: %s", j, exc)
                 continue
-            pid = int(control.GetProcessId())
             if pid == 0:
                 continue
             try:
@@ -108,6 +139,8 @@ def _active_sessions(managers: Iterable[object]) -> list[tuple[int, str, str]]:
             except (psutil.Error, OSError):
                 continue
             out.append((pid, name, path))
+    if not enumerated and last_error is not None:
+        raise last_error
     return out
 
 
