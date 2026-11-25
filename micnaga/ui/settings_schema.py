@@ -49,6 +49,7 @@ GROUPS: tuple[tuple[str, tuple[FieldSpec, ...]], ...] = (
         (
             _f("startup.run_at_login", "bool"),
             _f("ui.theme", "choice", choices=("system", "light", "dark")),
+            _f("ui.motion", "choice", choices=("auto", "on", "off")),
             _f("ui.language", "choice", choices=("es",)),
             _f("ui.sound", "bool"),
             _f("hotkeys.marker", "hotkey", restart=True),

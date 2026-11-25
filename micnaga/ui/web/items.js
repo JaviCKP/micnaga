@@ -272,6 +272,7 @@
     google_unguarded: () => mic.t("items.err.unguarded"),
     not_undoable: () => mic.t("items.err.not_undoable"),
     google_unknown_outcome: () => mic.t("items.err.unknown_outcome"),
+    google_no_full_acta: () => mic.t("items.err.no_full_acta"),
   };
   const errorText = (key) => (ERR[key] ? ERR[key]() : null);
 

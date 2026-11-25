@@ -86,15 +86,27 @@ def mail_input(d: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     }
 
 
-def drive_input(d: dict[str, Any], acta: dict[str, Any]) -> dict[str, Any]:
+def drive_input(
+    d: dict[str, Any], acta: dict[str, Any], full_md: str | None = None
+) -> dict[str, Any]:
+    """Lo que se sube a Drive: el «Acta completa» (``full_md``) si la hay; si no, la breve."""
+    from micnaga.brain import md_html
+
     out: dict[str, Any] = {
         "title": str(d.get("titulo") or "Acta"),
-        "textContent": acta_document(acta),
+        "textContent": md_html.document(full_md) if full_md else acta_document(acta),
         "contentMimeType": "text/html",
     }
     if d.get("carpeta"):
         out["parentId"] = str(d["carpeta"])
     return out
+
+
+def drive_timeout(tool_input: dict[str, Any]) -> float:
+    """El modelo copia la entrada letra a letra: un acta larga necesita mas tiempo (unos 2 min
+    de base y 1 s por cada 120 caracteres, hasta 8 min)."""
+    size = len(str(tool_input.get("textContent") or ""))
+    return min(480.0, 120.0 + size / 120.0)
 
 
 def acta_document(acta: dict[str, Any]) -> str:
@@ -166,11 +178,15 @@ class GoogleApplier:
         runner: Any,
         db_factory: DbFactory,
         odoo: OdooGetter | None = None,
+        full_acta: Callable[[], str | None] | None = None,
     ) -> None:
         self.folder = folder
         self.runner = runner
         self._db_factory = db_factory
         self._odoo = odoo
+        #: el Markdown del «Acta completa» (lo que se sube a Drive). ``None`` = sin acta completa
+        #: (con getter, eso es un error: no se sube la breve a escondidas)
+        self._full_acta = full_acta
 
     def _db(self) -> Any:
         db = self._db_factory()
@@ -211,6 +227,7 @@ class GoogleApplier:
         tool_input: dict[str, Any],
         *,
         confirm: bool = False,
+        timeout_s: float = 120.0,
     ) -> calls.CallOutcome:
         key = self._key(p, op)
         db = self._db()
@@ -239,7 +256,13 @@ class GoogleApplier:
         self._put(key, p, op, tool, "intent")
         try:
             outcome = calls.run_tool(
-                self.runner, service, tool, tool_input, key=key, foreign=detect.foreign_servers()
+                self.runner,
+                service,
+                tool,
+                tool_input,
+                key=key,
+                foreign=detect.foreign_servers(),
+                timeout_s=timeout_s,
             )
         except calls.GuardError:
             self._put(key, p, op, tool, "failed", error="guard")
@@ -359,8 +382,20 @@ class GoogleApplier:
                 return {"google": "enviado", "message_id": links.get("id")}
             return {"google": "borrador", "draft_id": links.get("id")}
         if kind == "acta_drive":
+            full_md = None
+            if self._full_acta is not None:
+                full_md = self._full_acta()
+                if not full_md:
+                    raise GoogleApplyError("google_no_full_acta")
+            tool_input = drive_input(d, acta, full_md)
             out = self._call(
-                p, "create", "drive", "create_file", drive_input(d, acta), confirm=confirm
+                p,
+                "create",
+                "drive",
+                "create_file",
+                tool_input,
+                confirm=confirm,
+                timeout_s=drive_timeout(tool_input),
             )
             links = out.extra.get("stored") or file_links(out.structured)
             if "stored" not in out.extra:

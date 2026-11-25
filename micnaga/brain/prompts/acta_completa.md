@@ -11,7 +11,8 @@ Estructura, en este orden:
    argumentos, las cifras, las objeciones y cómo se resolvieron. Cita el momento de cada punto
    con su marca `[mm:ss]` (o `[h:mm:ss]`) tal como aparece en la transcripción.
 4. `## Decisiones`: cada una con su motivo y su `[mm:ss]`.
-5. `## Acuerdos y tareas`: responsable, tarea y fecha (si se dijo).
+5. `## Acuerdos y tareas`: una tabla Markdown con las columnas Responsable, Tarea, Fecha (si se
+   dijo, si no «Sin fecha») y Momento (su `[mm:ss]`).
 6. `## Preguntas abiertas`.
 7. `## Próximos pasos`.
 8. `## Fuentes consultadas`: solo las que te doy (actas anteriores, correos, documentos, Odoo),

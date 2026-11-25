@@ -4,9 +4,10 @@
  *  1. Ground: the planet limb and its haze from the Bitnaga promo, ordered-dithered with an
  *     8x8 Bayer matrix in 4 px cells. WebGL2 renders ONE pixel per cell into a canvas at 1/4 of
  *     the window and CSS scales it up with image-rendering: pixelated (cells stay exact).
- *     ~12 fps; paused while the window is hidden, minimized or not focused; one still frame
- *     with prefers-reduced-motion or data-motion="off"; a CPU poster of the same light when
- *     WebGL2 is missing. Mounted into `.ambient` (data-rise / data-cx / data-gain / data-fall
+ *     ~12 fps; paused only while the window is hidden or minimized (a window in the WebView2
+ *     host often reports no focus while it is in plain view, which froze it); one still frame
+ *     with prefers-reduced-motion or data-motion="off". Without WebGL2 the CPU paints the same
+ *     light, animated at a lower rate. Mounted into `.ambient` (data-rise / data-cx / data-gain / data-fall
  *     tune the limb per surface). Not mounted inside the embedded Ajustes (the parent paints).
  *  2. Accents: tiny textures generated once per theme and published as CSS custom properties
  *     (--dither-edge: the dissolving edge of a progress fill; --dither-band: the «thinking»
@@ -24,12 +25,12 @@
   const FPS = 12;
   const reduced = window.matchMedia ? matchMedia("(prefers-reduced-motion: reduce)") : null;
   const darkMq = window.matchMedia ? matchMedia("(prefers-color-scheme: dark)") : null;
-  const motionOn = () => root.dataset.motion !== "off" && !(reduced && reduced.matches);
+  const motionOn = () => root.dataset.motion === "on" || (root.dataset.motion !== "off" && !(reduced && reduced.matches));
   const isDark = () => (root.dataset.theme ? root.dataset.theme === "dark" : !!(darkMq && darkMq.matches));
 
   // level 1..3 tones; level 0 is the ground (transparent). Dark: the promo's violet ramp.
   const TONES = {
-    dark: ["#160e36", "#4d38a8", "#a78bfa"],
+    dark: ["#2b2060", "#5a45b8", "#b29cfb"],
     light: ["#e5e0f5", "#c7bcef", "#8f7ae6"],
   };
   const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
@@ -184,14 +185,14 @@ void main(){
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       return;
     }
-    // CPU poster: computed once per size / theme (never animated)
+    // CPU: the same light, one pixel per cell (animated by the loop at CPU_FPS)
     const g = ground.cv.getContext("2d");
     if (!g) return;
     const w = ground.cw, h = ground.ch, img = g.createImageData(w, h), W = w * CELL;
     for (let y = 0; y < h; y++) {
       const qy = h - 1 - y;                                   // canvas rows go down; the light goes up
       for (let x = 0; x < w; x++) {
-        const l = Math.floor(Math.min(1, Math.max(0, lightCPU((x + 0.5) * CELL, (qy + 0.5) * CELL, W, c, 8))) * 3 + bayer(x, qy));
+        const l = Math.floor(Math.min(1, Math.max(0, lightCPU((x + 0.5) * CELL, (qy + 0.5) * CELL, W, c, ground.t))) * 3 + bayer(x, qy));
         if (l < 1) continue;
         const col = tones[Math.min(3, l) - 1], i = (y * w + x) * 4;
         img.data[i] = col[0]; img.data[i + 1] = col[1]; img.data[i + 2] = col[2]; img.data[i + 3] = 255;
@@ -200,10 +201,11 @@ void main(){
     g.putImageData(img, 0, 0);
   }
 
-  // ---- the loop: ~12 fps, only while it can be seen ----------------------------------------
-  const visible = () => !document.hidden && document.hasFocus();
+  // ---- the loop: ~12 fps (CPU: ~8), only while it can be seen ------------------------------
+  const CPU_FPS = 8;
+  const visible = () => !document.hidden;
   function loop() {
-    if (!ground.gl || ground.timer || ground.raf) return;
+    if (!(ground.gl || ground.cpu) || ground.timer || ground.raf) return;
     if (!motionOn() || !visible()) { ground.last = 0; return; }
     ground.timer = setTimeout(() => {
       ground.timer = 0;
@@ -215,7 +217,7 @@ void main(){
         paint();
         loop();
       });
-    }, 1000 / FPS);
+    }, 1000 / (ground.gl ? FPS : CPU_FPS));
   }
   function stop() {
     clearTimeout(ground.timer); ground.timer = 0;
@@ -258,7 +260,7 @@ void main(){
     const g = cv.getContext("2d");
     if (!g) { cv.remove(); mid(); return Promise.resolve(); }
     const cs = getComputedStyle(root);
-    const bg = rgb(toHex(cs.getPropertyValue("--bg").trim()) || (isDark() ? "#050507" : "#f3f3f0"));
+    const bg = rgb(toHex(cs.getPropertyValue("--bg").trim()) || (isDark() ? "#131318" : "#f3f3f0"));
     const ed = rgb(toHex(cs.getPropertyValue("--accent").trim()) || (isDark() ? "#a78bfa" : "#4d38a8"));
     const th = new Float32Array(w * h);
     for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) th[y * w + x] = bayer(x, y) * 0.45 + (x / w) * 0.55;

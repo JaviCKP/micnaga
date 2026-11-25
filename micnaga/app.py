@@ -151,6 +151,33 @@ def _enable_crash_traces() -> IO[str] | None:
         return None
 
 
+EXIT_GRACE_S = 8.0
+
+
+def _exit_watchdog(grace_s: float = EXIT_GRACE_S) -> None:
+    """Todo esta cerrado y guardado: si algun hilo no-daemon (una libreria, un proceso hijo
+    colgado...) mantiene vivo el proceso, se sale igualmente pasados ``grace_s``. Sin esto el
+    proceso podia quedarse en segundo plano tras «Salir»."""
+
+    def _force() -> None:
+        lingering = [
+            t.name
+            for t in threading.enumerate()
+            if t is not threading.current_thread() and not t.daemon and t.is_alive()
+        ]
+        log.warning(
+            "process still alive %.0f s after exiting (%s); forcing exit",
+            grace_s,
+            ", ".join(lingering) or "no threads",
+        )
+        logging.shutdown()
+        os._exit(0)
+
+    timer = threading.Timer(grace_s, _force)
+    timer.daemon = True
+    timer.start()
+
+
 def _parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="micnaga app", description="Bandeja, vigilante y ventanas.")
     p.add_argument("--exit-after", type=float, default=0.0, metavar="S", help="salir tras S s")
@@ -202,6 +229,7 @@ def run(argv: list[str]) -> int:
         console = ConsoleGuard(app.request_quit)
         console.install()
         try:
+
             def ready(host: object) -> None:
                 app.start(host)
                 if link is not None:
@@ -217,6 +245,7 @@ def run(argv: list[str]) -> int:
             time.time() - (started or time.time()),
             reason,
         )
+        _exit_watchdog()
         return 0
     finally:
         guard.release()

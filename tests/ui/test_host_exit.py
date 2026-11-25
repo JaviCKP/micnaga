@@ -180,3 +180,75 @@ def test_console_close_logoff_shutdown_quit_with_reason(event: int, reason: str)
     guard = app_mod.ConsoleGuard(exits.append)
     assert guard.handle(event) is True
     assert exits == [reason]
+
+
+class _TrayStub:
+    def __init__(self) -> None:
+        self.stopped = 0
+
+    def stop(self) -> None:
+        self.stopped += 1
+
+
+def test_tray_quit_hides_everything_before_the_slow_shutdown() -> None:
+    """«Salir» con una parada lenta (guardar la grabacion, esperar al worker): el icono y las
+    ventanas desaparecen al momento; la GUI se cierra cuando termina la parada."""
+    import threading
+
+    release = threading.Event()
+    entered = threading.Event()
+
+    def slow_quit() -> None:
+        entered.set()
+        release.wait(5)
+
+    r = Rig(on_quit=slow_quit)
+    tray = _TrayStub()
+    r.host._tray = tray  # type: ignore[assignment]
+    r.host.open_library()
+    lib = r.fac.windows["library"]
+    lib.visible = True
+    r.host._tray_quit()  # vuelve al momento: no bloquea el hilo de pystray
+    assert tray.stopped == 1
+    assert not lib.visible
+    assert entered.wait(2)
+    assert not r.host._stopping.is_set(), "la GUI sigue hasta que el integrador termine"
+    r.host._tray_quit()  # un segundo clic no lanza otra parada
+    release.set()
+    for _ in range(100):
+        if r.host._stopping.is_set():
+            break
+        threading.Event().wait(0.02)
+    assert r.host._stopping.is_set()
+    assert r.host._quit_reason == "tray_quit"
+
+
+def test_tray_quit_still_exits_when_the_shutdown_fails() -> None:
+    import threading
+
+    def broken() -> None:
+        raise RuntimeError("boom")
+
+    r = Rig(on_quit=broken)
+    r.host._tray_quit()
+    for _ in range(100):
+        if r.host._stopping.is_set():
+            break
+        threading.Event().wait(0.02)
+    assert r.host._stopping.is_set()
+
+
+def test_exit_watchdog_forces_the_exit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import threading
+
+    exited: list[int] = []
+    done = threading.Event()
+
+    def fake_exit(code: int) -> None:
+        exited.append(code)
+        done.set()
+
+    monkeypatch.setattr(app_mod.os, "_exit", fake_exit)
+    monkeypatch.setattr(app_mod.logging, "shutdown", lambda: None)
+    app_mod._exit_watchdog(0.05)
+    assert done.wait(2) and exited == [0]

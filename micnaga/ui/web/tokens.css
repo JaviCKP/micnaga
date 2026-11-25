@@ -51,23 +51,23 @@
   color-scheme: light dark;
 
   /* ---- ground + surfaces (flat) ---------------------------------------------------- */
-  --bg: light-dark(#f3f3f0, #050507);
-  --bg-2: light-dark(#ebebe7, #08080b);
-  --surface: light-dark(#fbfbf9, #0a090f);           /* a card */
-  --surface-2: light-dark(#ffffff, #100f16);         /* inputs, chips */
-  --surface-3: light-dark(#e7e7e2, #1a1822);         /* pressed / selected segment */
+  --bg: light-dark(#f3f3f0, #131318);
+  --bg-2: light-dark(#ebebe7, #17171d);
+  --surface: light-dark(#fbfbf9, #1b1a22);           /* a card */
+  --surface-2: light-dark(#ffffff, #222129);         /* inputs, chips */
+  --surface-3: light-dark(#e7e7e2, #2e2c38);         /* pressed / selected segment */
 
   /* ---- ink ------------------------------------------------------------------------- */
   --text: light-dark(#0b0b0f, #f4f4f7);
   --text-2: light-dark(#45454f, #b9b9c4);
-  --text-3: light-dark(#5e5e67, #8c8c99);           /* AA (4.5) on every light plane, the selected row included */
+  --text-3: light-dark(#5e5e67, #9d9dac);           /* AA (4.5) on every light plane, the selected row included */
   --text-inv: light-dark(#f4f4f7, #0b0b0f);
 
   /* ---- lines (hairlines are the structure) ----------------------------------------- */
-  --line: light-dark(rgb(11 11 15 / 0.09), rgb(244 244 247 / 0.08));
-  --line-strong: light-dark(rgb(11 11 15 / 0.17), rgb(244 244 247 / 0.16));
-  --hover: light-dark(rgb(11 11 15 / 0.045), rgb(244 244 247 / 0.05));
-  --press: light-dark(rgb(11 11 15 / 0.08), rgb(244 244 247 / 0.085));
+  --line: light-dark(rgb(11 11 15 / 0.09), rgb(244 244 247 / 0.10));
+  --line-strong: light-dark(rgb(11 11 15 / 0.17), rgb(244 244 247 / 0.19));
+  --hover: light-dark(rgb(11 11 15 / 0.045), rgb(244 244 247 / 0.06));
+  --press: light-dark(rgb(11 11 15 / 0.08), rgb(244 244 247 / 0.10));
 
   /* legacy glass names: flat now */
   --glass: var(--surface);
@@ -110,7 +110,7 @@
   --mark-ink: inherit;
 
   /* meters */
-  --meter-track: light-dark(rgb(11 11 15 / 0.08), rgb(244 244 247 / 0.09));
+  --meter-track: light-dark(rgb(11 11 15 / 0.08), rgb(244 244 247 / 0.11));
   --meter-lo: light-dark(#3a3a44, #d6d6de);
 
   /* ---- shape ----------------------------------------------------------------------- */
@@ -163,7 +163,7 @@
   --press-scale: 1; --press-scale-sm: 1; --press-scale-lg: 1;
 }
 @media (prefers-reduced-motion: reduce) {
-  :root {
+  :root:not([data-motion="on"]) {
     --dur-hover: 0.01ms; --dur-fast: 0.01ms; --dur: 0.01ms; --dur-slow: 0.01ms; --dur-morph: 0.01ms;
     --dur-enter: 0.01ms; --stagger: 0ms; --dur-press: 0.01ms;
     --press-scale: 1; --press-scale-sm: 1; --press-scale-lg: 1;
@@ -173,7 +173,7 @@
   animation-duration: 0.01ms !important; animation-iteration-count: 1 !important;
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
+  :root:not([data-motion="on"]) *, :root:not([data-motion="on"]) *::before, :root:not([data-motion="on"]) *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; }
 }
 
 /* ---- base -------------------------------------------------------------------------- */
@@ -354,7 +354,7 @@ kbd, .keycap {
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23888' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
   background-repeat: no-repeat; background-position: right 10px center;
 }
-.field-select option { background: light-dark(#fff, #100f16); color: var(--text); }
+.field-select option { background: light-dark(#fff, #222129); color: var(--text); }
 textarea.field-input { height: auto; padding: 8px 10px; resize: vertical; font-family: var(--mono); font-size: 12px; line-height: 1.6; }
 
 /* toggle: the promo's switch, a square knob in a hairline box; violet when on */

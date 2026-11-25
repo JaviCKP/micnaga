@@ -454,6 +454,6 @@ body:has(.settings-view:not([hidden])) .ambient {
 .bf-more { margin-left: 8px; font: 500 11px/1 var(--mono); color: var(--text-3); }
 .bf-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-top: 26px; }
 .bf-go .ico.mini { width: 14px; height: 14px; margin-left: 6px; }
-@media (prefers-reduced-motion: reduce) { .bf { animation: none; } .view-tab::after { transition: none; } }
+@media (prefers-reduced-motion: reduce) { :root:not([data-motion="on"]) .bf { animation: none; } :root:not([data-motion="on"]) .view-tab::after { transition: none; } }
 /* con pestañas, las etiquetas «ACTA» / «PROPUESTAS» de dentro sobran: ya lo dice la pestaña */
 #sec.has-acta .sec-badge { display: none; }

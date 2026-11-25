@@ -287,6 +287,6 @@ body.pill-page { width: 100vw; height: 100vh; margin: 0; overflow: hidden; backg
 :root[data-motion="off"] :is(.pill, .pill::before, .pill > .pill-row, .pill > .undo, .pill .lift) { transition: none !important; }
 :root[data-motion="off"] .pill .lift * { animation-delay: 0ms !important; animation-duration: 1ms !important; }
 @media (prefers-reduced-motion: reduce) {
-  :is(.pill, .pill::before, .pill > .pill-row, .pill > .undo, .pill .lift) { transition: none !important; }
-  .pill .lift * { animation-delay: 0ms !important; animation-duration: 1ms !important; }
+  :root:not([data-motion="on"]) :is(.pill, .pill::before, .pill > .pill-row, .pill > .undo, .pill .lift) { transition: none !important; }
+  :root:not([data-motion="on"]) .pill .lift * { animation-delay: 0ms !important; animation-duration: 1ms !important; }
 }

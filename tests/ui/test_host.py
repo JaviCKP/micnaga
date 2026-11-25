@@ -536,7 +536,7 @@ def test_system_theme_param_follows_the_registry_value() -> None:
     r.w32.hkcu[(winapi.PERSONALIZE_KEY, "AppsUseLightTheme")] = 0
     r.host.open_settings()
     assert r.fac.windows["library"].spec.params["theme"] == "dark"
-    assert r.fac.windows["library"].spec.background == "#050507"
+    assert r.fac.windows["library"].spec.background == "#131318"
 
 
 def test_motion_param_when_windows_animations_off() -> None:
